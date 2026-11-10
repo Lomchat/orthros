@@ -234,7 +234,7 @@ export function createServer(opts = {}) {
   // testing: a slower network (opts.net = { delayMs, bytesPerSec }): each range answered after a round trip, its bytes
   // crossing one link shared by the answers in flight (see SimLink)
   const link = opts.net ? new SimLink(opts.net) : null;
-  const viaLink = (res, bytes, go, onStart = null) => { const cancel = link.send(bytes, go, onStart); res.on('close', cancel); };
+  const viaLink = (res, bytes, go, onStart = null, onProgress = null) => { const cancel = link.send(bytes, go, onStart, onProgress); res.on('close', cancel); };
   const send = (res, code, body, extra) => { res.writeHead(code, headers({ 'Content-Type': 'text/plain; charset=utf-8', ...extra })); res.end(body); };
   /**
    * A whole file's answer when the browser has it already (its validators, revalidated: Cache-Control no-cache): 304,
@@ -1716,8 +1716,10 @@ export function createServer(opts = {}) {
       res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
       const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': total, 'X-Orthros-Items': items.length });
       if (encoding) h['Content-Encoding'] = encoding;
-      const go = () => { if (!res.headersSent) res.writeHead(200, h); res.end(body); };
-      if (link) viaLink(res, body.length, go, () => { res.writeHead(200, h); res.flushHeaders(); }); else go();
+      // (simulated link: the body written as it crosses — a batch is read as it arrives, its first runs before its last)
+      let sent = 0;
+      const go = () => { if (!res.headersSent) res.writeHead(200, h); res.end(body.subarray(sent)); };
+      if (link) viaLink(res, body.length, go, () => { res.writeHead(200, h); res.flushHeaders(); }, (n) => { const upto = n - (n % 16384); if (upto > sent) { res.write(body.subarray(sent, upto)); sent = upto; } }); else go();
     };
     const readAll = (buf, done) => {
       let left = items.length, failed = null;

@@ -51,6 +51,7 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 let afterWait = false;
 let pagePointer = null, benchDone = false; // (the pointer position of the pageclick / pagemove steps)
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
+let scenarioQuit = false; // (a `quit` step: the run ends at the next turn)
 if (control) fs.writeFileSync(control.file, '');
 // --input-file <file>: the scenario from a file (new lines separate steps as ';' does, '#' lines are comments)
 // --account <name>:<password>: signed in to an Orthros account before the game (see below)
@@ -211,7 +212,7 @@ async function printNetStats() {
     const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json();
     if (!ns.requests) return;
     const MB = (n) => (n / 1048576).toFixed(1);
-    console.log(`[net] compressed ranges: ${ns.requests} requests, ${(ns.raw / 1048576).toFixed(0)} MB read, ${(ns.sent / 1048576).toFixed(0)} MB sent (${(100 * ns.sent / ns.raw).toFixed(0)} %), encoding ${ns.encodeMs.toFixed(0)} ms, ${ns.cacheHits} cache hits`);
+    console.log(`[net] compressed ranges: ${ns.requests} requests, ${(ns.raw / 1048576).toFixed(0)} MB read, ${(ns.sent / 1048576).toFixed(0)} MB sent (${(100 * ns.sent / ns.raw).toFixed(0)} %), encoding ${ns.encodeMs.toFixed(0)} ms, ${ns.cacheHits} cache hits${ns.batches ? `, ${ns.batches} batches of ${ns.batchItems} runs` : ''}`);
     if (ns.demand) console.log(`[net] demand ${ns.demand.requests} requests ${MB(ns.demand.sent)} MB (mean ${(ns.demand.ms / Math.max(1, ns.demand.requests)).toFixed(0)} ms); background ${ns.bg.requests} requests ${MB(ns.bg.sent)} MB delivered, ${ns.bg.aborted} aborted`);
   } catch { /* no stats */ }
 }
@@ -490,6 +491,7 @@ for (;;) {
   // --control <file>: commands appended to that file while the game runs ("click:x,y", "rclick:x,y", "move:x,y",
   // "key:vk", "text:abc", "down:x,y", "up:x,y", "shot", "quit"), executed at once — an interactive session driven from
   // outside (e.g. `echo click:400,300 >> ctl; echo shot >> ctl`), screenshots reported as [shot] lines
+  if (scenarioQuit) { await printNetStats(); await saveProfile(); break; }
   if (control) {
     let size = 0; try { size = fs.statSync(control.file).size; } catch { /* not yet */ }
     if (size > control.pos) {
@@ -545,6 +547,7 @@ for (;;) {
     // (spin:<percent> — a control for A/B of threaded designs: a page worker busy that share of every 10 ms, streaming
     // through 4 MiB of memory, the rest asleep: what any second busy thread costs the emulator's thread on this machine)
     if (ev.kind === 'spin') { await page.evaluate((pct) => { const src = `const a = new Float64Array(1 << 19), s = new Int32Array(new SharedArrayBuffer(4)); let x = 0, i = 0; for (;;) { const t0 = performance.now(); while (performance.now() - t0 < ${pct / 10}) { for (let k = 0; k < 4096; k++, i = (i + 8) & ((1 << 19) - 1)) { a[i] += x; x = x * 0.999 + 1; } } Atomics.wait(s, 0, 0, ${10 - pct / 10}); }`; window.__spin = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))); }, ev.args[0] || 25); continue; }
+    if (ev.kind === 'quit') { ev.done = true; scenarioQuit = true; console.log(`[end] quit by the scenario at ${t.toFixed(0)}s`); break; } // (quit: the run ends here — a timed load measured, nothing more to wait for)
     if (ev.kind === 'dbg') { await page.evaluate((kv) => window.orthros.worker?.postMessage({ type: 'dbg', kv }), String(ev.args[0])); continue; } // (dbg:NAME=value — a worker debug global set now, as --dbg sets them at start: A/B switches within one session)
     // mark:<label> — a phase boundary: worker-thread and GPU-process CPU since the previous mark, and the worker's
     // texture work / API time over the phase (logged as [gfx] mark)

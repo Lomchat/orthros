@@ -789,24 +789,27 @@ export class HttpBackend {
           this.fetchBackground(r.path, r.start, r.end, null, false, false, { ...turn, w }).then((d) => settle(r, d), fail);
           return;
         }
-        const total = bytes, go = (ok) => (ok ? this.fetchBatchNow(runs, turn.reason ?? 'other') : runs.map(() => null));
+        // (each run settled as soon as its bytes are here: the answer is read as it arrives, in the runs' order)
+        const total = bytes, go = (ok) => (ok ? this.fetchBatchNow(runs, turn.reason ?? 'other', (i, d) => settle(runs[i], d)) : fail());
         const quiet = this.net.fast() ? 0 : turn.prio[1];
         if (turn.forLoad) w.forLoad = true;
         const started = this.net.tryTurn(quiet, w, total) ? go(true) : this.net.turn(turn.prio[0], quiet, turn.stop, w, total).then(go);
-        Promise.resolve(started).then((ds) => runs.forEach((r, i) => settle(r, ds[i])), fail);
+        Promise.resolve(started).catch(fail);
       },
     };
     return B;
   }
   /**
-   * The runs of a batch in one request, its turn on the link taken: one answer per run (bytes, undefined for one to skip,
-   * null when the network failed). A server without batches (an older one: 404/405) turns them off for this backend and
-   * the runs go one request each.
+   * The runs of a batch in one request, its turn on the link taken: `deliver(i, answer)` once per run — its bytes as soon
+   * as they arrived (the answer is read as a stream, the runs in order), undefined for one to skip, null when the network
+   * failed. A server without batches (an older one: 404/405) turns them off for this backend and the runs go one request
+   * each.
    */
-  async fetchBatchNow(runs, reason = 'other') {
+  async fetchBatchNow(runs, reason = 'other', deliver) {
     const total = runs.reduce((n, r) => n + r.end - r.start, 0);
     const tok = this.net.begin('bg', total, null, null, reason); tok.keep = true;
-    let wire = 0, ok = false;
+    let wire = 0, ok = false, next = 0;
+    const rest = (d) => { for (; next < runs.length; next++) deliver(next, d); };
     try {
       const announced = reason === 'announced';
       const res = await fetch(`${this.batchUrl}?${announced ? 'w=1' : 'p=1'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(runs.map((r) => [r.path, r.start, r.end])) });
@@ -817,18 +820,31 @@ export class HttpBackend {
         const why = await res.text().catch(() => '');
         if ((res.status === 404 || res.status === 405) && !/^batch item/.test(why)) this.batchOff = true;
         this.stats.batchFallbacks = (this.stats.batchFallbacks ?? 0) + 1;
-        return await Promise.all(runs.map((r) => this.fetchBackgroundNow(r.path, r.start, r.end, null, false, false, reason)));
+        await Promise.all(runs.map((r, i) => this.fetchBackgroundNow(r.path, r.start, r.end, null, false, false, reason).then((d) => deliver(i, d), () => deliver(i, null))));
+        next = runs.length;
+        return;
       }
-      if (res.status !== 200) return runs.map(() => undefined);
-      const data = new Uint8Array(await res.arrayBuffer());
-      wire = wireOf(data.length, res.headers?.get?.('content-length'));
-      if (data.length !== total) return runs.map(() => null);
+      if (res.status !== 200) return rest(undefined);
+      wire = wireOf(0, res.headers?.get?.('content-length'));
+      const data = new Uint8Array(total);
+      let got = 0, at = 0;
+      // (the runs whose bytes are all here: delivered — copies, the batch's buffer not held by its pieces)
+      const flush = () => { while (next < runs.length && at + runs[next].end - runs[next].start <= got) { const n = runs[next].end - runs[next].start; deliver(next++, data.slice(at, at + n)); at += n; } };
+      const reader = res.body?.getReader?.();
+      if (reader) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (got + value.length > total) { reader.cancel().catch(() => {}); return rest(null); }
+          data.set(value, got); got += value.length; flush();
+        }
+      } else { const d = new Uint8Array(await res.arrayBuffer()); if (d.length > total) return rest(null); data.set(d); got = d.length; flush(); }
+      if (got !== total) return rest(null);
+      if (!wire) wire = total;
       ok = true;
       this.stats.batches = (this.stats.batches ?? 0) + 1; this.stats.batchRuns = (this.stats.batchRuns ?? 0) + runs.length;
       this.stats.batchRaw = (this.stats.batchRaw ?? 0) + total; this.stats.batchWire = (this.stats.batchWire ?? 0) + wire;
-      let at = 0;
-      return runs.map((r) => { const d = data.subarray(at, at + r.end - r.start); at += r.end - r.start; return d; });
-    } catch { return runs.map(() => null); } finally {
+    } catch { rest(null); } finally {
       this.net.end(tok, wire, total, ok);
     }
   }
