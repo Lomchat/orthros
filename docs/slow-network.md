@@ -2005,7 +2005,7 @@ measure only):
   that one request, when the link carries it within `DEMAND_SECONDS` (`NetLink.demandExtra`: at 1.2 MB/s about 600 KB of
   file at a 0.5 compression ratio; a thin link only files of a few pieces) and the link is not fast (`NetLink.fast`: on a
   fast link the block follows the piece in the background at once and a round trip is short; there RotWK 2.02's
-  My Heroes load measured no better with it — below). `?dbg=ORTHROS_WHOLE_FIRST=0`: off.
+  My Heroes load measured no better with it — below). Off by default (no gain measured on the thin link: 298 s before, 301 s after); `?dbg=ORTHROS_WHOLE_FIRST=1`: on.
 - A parked read whose request covers a whole block (`fetchAhead`) no longer queues that block in the background too
   (`noteMiss(..., covered)`): every piece it misses is in the request, the block is assembled from them. Its neighbour
   blocks are still noted for speculation (`near`), as before.

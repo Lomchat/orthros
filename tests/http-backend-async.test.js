@@ -342,6 +342,8 @@ test('async read: a background ask of bytes a read is fetching joins that read\'
 }));
 
 test('a small file\'s first read that misses fetches the whole file in one request, no background request after it', () => withFetch(async (calls) => {
+  globalThis.ORTHROS_WHOLE_FIRST = 1; // (off by default: no gain measured yet)
+  try {
   // (a W3D model: its chunk table at the end read first, then every chunk — each 64 KiB piece was a round trip the game
   // waited for on a link that is not fast, and the block was fetched again in the background on a fast one: Age of the
   // Ring's Create-a-Hero load reads ~900 such files)
@@ -373,5 +375,6 @@ test('a small file\'s first read that misses fetches the whole file in one reque
     await tick();
     assert.deepEqual([calls[1].start, calls[1].end], [3 * CHUNK, size]);
     calls[1].release(); await p2;
+  } finally { delete globalThis.ORTHROS_WHOLE_FIRST; }
   } finally { delete globalThis.ORTHROS_WHOLE_FIRST; }
 }));

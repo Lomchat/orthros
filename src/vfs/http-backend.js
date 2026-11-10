@@ -1844,13 +1844,14 @@ class HttpFile {
    * W3D model its chunk table at the end first, then the chunks), each 64 KiB piece a round trip of its own the game
    * waits for, and the background fetching the whole block again after the piece — two requests per file at least,
    * ~900 files in Age of the Ring's Create-a-Hero load. Small: one block at most, and no more than the link carries in
-   * DEMAND_SECONDS (NetLink.demandExtra: on a thin link only files of a few pieces). ?dbg=ORTHROS_WHOLE_FIRST=0: off.
+   * DEMAND_SECONDS (NetLink.demandExtra: on a thin link only files of a few pieces). Off by default; ?dbg=ORTHROS_WHOLE_FIRST=1: on.
    */
   wholeFirst() {
     // (not on a fast link: there the block follows the piece in the background at once — noteMiss — and a round trip is
     // short; a whole file asked for a header read only made the game wait for its bytes)
     if (this.lastEnd !== -1 || this.len > BLOCK || this.len <= CHUNK || this.b.net.fast()) return false;
-    const v = globalThis.ORTHROS_WHOLE_FIRST; if (v !== undefined && v !== '' && Number(v) === 0) return false;
+    // (off by default: no gain measured on a thin link, 298 vs 301 s; ?dbg=ORTHROS_WHOLE_FIRST=1 to try it)
+    const v = globalThis.ORTHROS_WHOLE_FIRST; if (v === undefined || v === '' || Number(v) === 0) return false;
     return this.b.net.demandExtra(this.len) >= this.len;
   }
   /** `into`: where the bytes go when the caller owns a destination of `len` bytes (guest memory: no second copy) */
