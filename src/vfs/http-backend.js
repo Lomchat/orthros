@@ -502,14 +502,16 @@ export class HttpBackend {
         };
         let pr;
         if (B) {
-          const all = [];
-          for (let j = job; j; j = nextPart(j)) {
-            const n = Math.min(j.e.size, (j.run[1] + 1) * CHUNK) - j.run[0] * CHUNK;
-            if (!B.fits(n)) break;
-            all.push(B.add(j.e.path, j.e.size, j.e.mtime, j.run[0], j.run[1]).then(settle(j)));
-          }
-          B.send();
-          pr = Promise.all(all).finally(() => parts.delete(pr));
+          // (filled when its turn comes, with the runs due then: see sendWhenDue)
+          pr = B.sendWhenDue(() => {
+            const all = [];
+            for (let j = nextPart(); j; j = nextPart(j)) {
+              const n = Math.min(j.e.size, (j.run[1] + 1) * CHUNK) - j.run[0] * CHUNK;
+              if (!B.fits(n)) break;
+              all.push(B.add(j.e.path, j.e.size, j.e.mtime, j.run[0], j.run[1]).then(settle(j)));
+            }
+            return all;
+          }).finally(() => parts.delete(pr));
         } else pr = this.fetchPartBg(job.e.path, job.e.size, job.e.mtime, job.run[0], job.run[1], prioOf(job.r), stop, false, { reason: job.tier === 1 ? 'pf1' : 'pf2', forLoad: !!opts.learnedOnly }).then(settle(job)).finally(() => parts.delete(pr));
         parts.add(pr);
         if (failed) { failed = false; if (stop()) return; await new Promise((res) => setTimeout(res, 1000)); }
@@ -807,6 +809,34 @@ export class HttpBackend {
         if (turn.forLoad) w.forLoad = true;
         const started = this.net.tryTurn(quiet, w, total) ? go(true) : this.net.turn(turn.prio[0], quiet, turn.stop, w, total).then(go);
         Promise.resolve(started).catch(fail);
+      },
+      /**
+       * Its turn on the link first (for batchBytes()), then `fill(B)` adds the runs due at that moment and they go: a
+       * batch waiting for its turn holds no run — the pieces of a queued batch would be on their way for everyone else
+       * (the learned read-ahead skips them, a read joins them) while the batch may not start (a load's silence holds the
+       * learned order's pass). Resolves once its runs settled (none: at once, the turn's reservation left to expire).
+       */
+      sendWhenDue: async (fill) => {
+        const quiet = this.net.fast() ? 0 : turn.prio[1];
+        if (turn.forLoad) w.forLoad = true;
+        const est = this.batchBytes();
+        if (!this.net.tryTurn(quiet, w, est) && !(await this.net.turn(turn.prio[0], quiet, turn.stop, w, est))) return;
+        const all = fill(B);
+        if (!runs.length) return;
+        const settle = (r, d) => {
+          if (d === ABORTED) return r.resolve(false);
+          if (d === null) return r.resolve(null);
+          if (!(d instanceof Uint8Array)) return r.resolve(undefined);
+          this.stats.partBytes = (this.stats.partBytes ?? 0) + d.length;
+          if (r.onData) return r.resolve(r.onData(d) ?? true);
+          this.addPieces(r.path, r.c0, r.c1, d, { size: r.size, mtime: r.mtime });
+          r.resolve(true);
+        };
+        try {
+          if (runs.length === 1) { const r = runs[0]; settle(r, await this.fetchBackgroundNow(r.path, r.start, r.end, null, false, false, turn.reason ?? 'other')); }
+          else await this.fetchBatchNow(runs, turn.reason ?? 'other', (i, d) => settle(runs[i], d));
+        } catch { for (const r of runs) r.resolve(null); }
+        await Promise.all(all);
       },
     };
     return B;
