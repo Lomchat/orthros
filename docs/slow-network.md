@@ -1973,6 +1973,72 @@ run's length: a 21 MB texture of OpenMW's in play read in 7 waits, 2 now). Archi
 (their read, and what the worker has beyond, `takeBytes`). OpenMW `?wholeloads=0`: off. Measured in play on a local link (OpenMW r19, 60 s): the waits for images 44-56 → 26 a minute, their time the same
 (the bytes, not the round trips, on that link); over a 2 MB/s, 85 ms link each wait saved is a round trip.
 
+## A load of loose files: small files whole at their first read, cheap small reads (2026-11-10)
+
+**The complaint.** Age of the Ring (aotr-10), main menu → MY CAPTAINS (Create-a-Hero): the LOADING screen for 4-6
+minutes, here and for the owner. His telemetry (session `84y54aa5`, 2026-11-10, RTX 4050 laptop, link measured 0.6-1.6
+MB/s): a 403 s stretch at 30 fps (the loading screen) with the worker busy 14 % and 45-60 guest MIPS, 1 640 game reads
+gone to the network, 116 ms each on average — 190 s of the stretch waited on them, one after another (`nw` 1 in half
+the samples, 4-5 reads every 0.5 s), the link carrying ~0.3 MB/s of its 1.2.
+
+**What the load is** (Orthros' own traces, `--net-trace`, a short `dbg:ORTHROS_TRACE_API=1` window, `--api`, the
+worker profile): the game's main thread loads while a thread of its own presents the loading screen. It opens ~900
+loose files of the mod one after another (`aotr/art/...` W3D models and TGA/DDS textures, 20-500 KB each) through the C
+runtime (`CreateFileW`, then `ReadFile` of 8 and 32 bytes, ~40 000 a second: unbuffered chunk headers), and ~200 entries
+of the `.big` archives. Each file's first read missed and parked the thread for a round trip (1 073-1 076 game reads in
+the load, the same in every run); the learned masks of the session (the server's prefetch list) show that 582 of the 592
+files of more than one 64 KiB piece were read whole. Two costs followed:
+- **One round trip per 64 KiB piece on a link that is not fast.** The parked read fetched the piece it touched (a W3D's
+  first read is its chunk table at the end); on a link that is not fast the background is held during a load
+  (`NetLink.loading`), so every further piece was a wait of its own — ~2 000 more round trips for those 592 files if
+  each piece is read once (fewer when a sequential run's `demandExtra` grows the request) —, matching the owner's 1 640
+  waits of ~one per piece. On a fast link the block was fetched a second time in the background after the piece
+  (`noteMiss`): 1 313-1 318 background requests (326-328 MB) in the load besides the game's 1 073 reads.
+- **The small reads' CPU.** `ReadFile` took 6.5-7.3 µs a call (the frame accounting's estimate, ~1.94 M calls in the load:
+  12.6-14.3 s); in the worker profile (20 s of the load) `ReadFile` was 40 % of the worker's samples, `peekBlock` alone
+  18 % (two `path#index` keys built and an LRU move per read, three times a read: prepare, read, block), the clock read
+  4-6 % (two per read for `note` and the read log, on top of the accounting's).
+
+**The changes** (`src/vfs/http-backend.js`, `src/win32/kernel32-file.js`; generic: the size of the file and the link's
+measure only):
+- `HttpFile.wholeFirst`: the first read of a file of at most one block (1 MiB) that misses asks for the whole file in
+  that one request, when the link carries it within `DEMAND_SECONDS` (`NetLink.demandExtra`: at 1.2 MB/s about 600 KB of
+  file at a 0.5 compression ratio; a thin link only files of a few pieces). `?dbg=ORTHROS_WHOLE_FIRST=0`: off.
+- A parked read whose request covers a whole block (`fetchAhead`) no longer queues that block in the background too
+  (`noteMiss`): every piece it misses is in the request, the block is assembled from them.
+- The read fast path is on by default (docs/api-layer.md "ReadFile straight into guest memory", `readFast`): the block
+  of the file's last read kept in hand — now also checked first by `prepare`, which a parked-capable `ReadFile` calls
+  before every read —, the bytes straight into guest memory; the read log told only once per 64 KiB piece (it keeps
+  each piece's first read anyway); `note` takes the accounting's last clock read instead of reading the clock.
+  `?dbg=ORTHROS_READ_FAST=0`: the former path.
+
+The same `HttpFile` serves the ports' data worker (`data-worker.js` `bytesOf`): a GoldSrc / re3 / OpenMW engine's first
+read of a small file that misses is now the whole file too (OpenMW's page already asked images whole: "A whole image at
+its first missing piece"). Not measured on the ports.
+
+**Measured** (2026-11-10, headless Chromium through `tools/with-browser-slot.sh`, `--gl-discard`, a fresh profile and
+an empty learned directory each run, `tools/headless.mjs aotr-10 ... --input-file` Escape ×6, click MY CAPTAINS at
+(199, 299), `waitframe:40,100000` — the Create-a-Hero screen draws 55-141 per frame, the loading screen 3 —; time =
+click → anchor, the anchor 3 s after the screen; before = `main` 7e3d57f, after = this change; runs interleaved B A B A
+B A, machine load 5-33):
+
+| local link (~10 MB/s) | before | after |
+|---|---|---|
+| click → Create-a-Hero screen | 83, 86, 85 s | 108, 68, 74 s |
+| emulator thread CPU in that phase | 44.7, 45.6, 46.2 s | 41.6, 35.2, 40.1 s |
+| `ReadFile` (accounting estimate, ~1.9 M calls) | 6.5, 7.3, 6.8 µs a call (12.6, 14.3, 13.2 s) | 3.7, 3.1, 5.0 µs (7.2, 6.0, 9.4 s) |
+| game reads to the network in the load | 1 073, 1 074, 1 076 | 1 066, 1 078, 1 075 |
+| … of them a later piece of a loose file | 94, 90, 97 | 52, 68, 60 |
+| background requests in the load | 1 313, 1 314, 1 318 (326-328 MB) | 746, 712, 769 (250-282 MB) |
+
+SLOWLINK_TABLE
+
+**The harness's own 3-4 minutes.** Without `--gl-discard` the same load took 193-212 s here (2 runs): the loading
+screen at 30 fps rasterized by SwiftShader kept the GPU process at 3.2 cores (800 s of CPU in 252 s) inside the
+browser's 4-core cap (`with-browser-slot.sh`), the emulator's thread then descheduled — its 63 s of CPU in that phase
+against 133 s of guest, API and read time in the frame accounting. A player's GPU does not take the emulator's cores; the
+runs above are measured with the rasterization off for that reason.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

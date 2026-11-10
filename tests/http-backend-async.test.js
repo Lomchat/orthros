@@ -339,3 +339,35 @@ test('async read: a background ask of bytes a read is fetching joins that read\'
   calls[m].release();
   assert.deepEqual(await again, bytes(6 * MiB, 6 * MiB + 1000));
 }));
+
+test('a small file\'s first read that misses fetches the whole file in one request, no background request after it', () => withFetch(async (calls) => {
+  // (a W3D model: its chunk table at the end read first, then every chunk — each 64 KiB piece was a round trip the game
+  // waited for on a link that is not fast, and the block was fetched again in the background on a fast one: Age of the
+  // Ring's Create-a-Hero load reads ~900 such files)
+  const size = 3 * CHUNK + 4000;
+  const b = new HttpBackend('/game/w/', { dirs: {}, files: { 'm.w3d': { size, mtime: 1 } } });
+  b.lastSyncFetchAt = -1e9;
+  const sync0 = syncReqs.length;
+  const f = b.open('m.w3d');
+  const p = f.prepare(size - 100, 50, true);
+  assert.ok(p, 'the read misses');
+  await tick();
+  assert.deepEqual(calls.map((c) => [c.start, c.end]), [[0, size]], 'one request: the whole file');
+  calls[0].release();
+  await p;
+  assert.equal(f.prepare(0, 100, true), null, 'the rest of the file is here');
+  assert.deepEqual(f.read(size - 100, 50), bytes(size - 100, size - 50));
+  assert.deepEqual(f.read(CHUNK - 10, 20), bytes(CHUNK - 10, CHUNK + 10));
+  await tick(50);
+  assert.equal(calls.length, 1, 'no other request (the block not asked again in the background)');
+  assert.equal(syncReqs.length, sync0, 'nor synchronously');
+  // (with the switch off: the piece the read touches only, as before)
+  globalThis.ORTHROS_WHOLE_FIRST = 0;
+  try {
+    const b2 = new HttpBackend('/game/w2/', { dirs: {}, files: { 'm.w3d': { size, mtime: 1 } } }); b2.noteMiss = () => {};
+    const p2 = b2.open('m.w3d').prepare(size - 100, 50, true);
+    await tick();
+    assert.deepEqual([calls[1].start, calls[1].end], [3 * CHUNK, size]);
+    calls[1].release(); await p2;
+  } finally { delete globalThis.ORTHROS_WHOLE_FIRST; }
+}));

@@ -70,12 +70,17 @@ frame down, all generic (no game-specific code), and how to switch them off with
   that started, rotwk-202 and bfme1-108, ended abnormally at the skirmish load — a process exit and a stalled worker —
   without a control run to say whether the change is involved), so no number is claimed. Scenarios:
   `tools/scenarios/{rotwk,bfme1-108,vicecity}-xform-ab.txt`.
-- **ReadFile straight into guest memory** (switch `ORTHROS_READ_FAST=1`, **off by default**): `File.read(off, len, into)`
+- **ReadFile straight into guest memory** (**on by default since 2026-11-10**, `?dbg=ORTHROS_READ_FAST=0`: off; it was
+  opt-in, not validated in play): `File.read(off, len, into)`
   (HttpFile, NodeFile, MemFile) fills the guest buffer itself instead of returning a new array that `ReadFile` copies, and an
   HttpFile keeps the block of its last read in hand (no `path#index` key, cache lookup and LRU move for the reads inside
   one block); the recent-reads ring for crash reports holds numbers and is formatted only by `seh.js`. Micro-benchmark
   (Node, blocks cached, per read, OFF / ON): 16 B 0.9-1.2 / 0.65 us, 256 B 2.5 / 0.8 us, 4 KiB 5.5-5.8 / 1.3-1.4 us,
-  64 KiB 40-54 / 2.8 us. Not measured in the game (load times) for the reason above.
+  64 KiB 40-54 / 2.8 us. Measured in the game (2026-11-10, docs/slow-network.md "A load of loose files"): Age of the
+  Ring's Create-a-Hero load makes ~1.94 M `ReadFile` calls of 8-32 bytes; with the memo also checked first by
+  `HttpFile.prepare` (called before every read that may park) and the read log told once per piece, `ReadFile` went from
+  6.5-7.3 to 3.1-5.0 µs a call (accounting estimate), the emulator thread's CPU in that load from 45-46 to 35-42 s.
+  Validated there and in RotWK 2.02 and BFME 1.08 loads (same document), and by tests/http-backend-fuzz.test.js.
 - **Draws from buffers are queued** (`DEFER_DRAWS`: `DrawIndexedPrimitive`, `DrawPrimitive`, Direct3D 8 and 9): they
   always return `D3D_OK`, and what they read changes only through queued calls (run before them) or calls handled in
   JavaScript (which run the queue first: a buffer lock, a texture lock, `Present`, a query's `GetData`...). A frame's

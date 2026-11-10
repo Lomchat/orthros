@@ -2,7 +2,7 @@
 // mix of 64 KiB pieces, whole blocks, background downloads (completing, failing or aborted at random moments),
 // asynchronous prepare() fetches, the persistent store (shared by two versions of the files: another mtime), the
 // offline copy, the prefetch and injected range request failures. FUZZ_SEEDS=n runs more seeds.
-globalThis.ORTHROS_READ_FAST = 1; // (the read memo is opt-in)
+// (the read fast path — memo of the last block — is on by default: http-backend.js readFast)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HttpBackend, BLOCK, CHUNK } from '../src/vfs/http-backend.js';

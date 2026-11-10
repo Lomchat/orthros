@@ -257,7 +257,7 @@ async function workerSession() {
   const cdp = await browser.newBrowserCDPSession();
   const { targetInfos } = await cdp.send('Target.getTargets');
   // (the emulator's worker — not the render worker, src/gfx/render-worker.js, also a worker of the page's)
-  const ti = targetInfos.find((x) => (x.type === 'worker' || x.type === 'shared_worker') && /\/host\/web\/worker\.js/.test(x.url));
+  const ti = targetInfos.find((x) => (x.type === 'worker' || x.type === 'shared_worker') && /\/src\/web\/worker\.js/.test(x.url));
   if (!ti) throw new Error('worker target not found');
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: ti.targetId, flatten: false });
   let nextId = 1; const pending = new Map();

@@ -9,6 +9,13 @@ import { decodePcm, PCM_MAGIC } from './pcm-codec.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
 /**
+ * The read fast path (on by default; ?dbg=ORTHROS_READ_FAST=0 turns it off, read at each read: in-session A/B): an
+ * HttpFile keeps the block of its last read in hand (no `path#index` key, cache lookup or LRU move for the reads inside
+ * it — a loader's small reads, 8 to 32 bytes each, 40 000 a second in a load of loose files), and ReadFile's bytes go
+ * straight into guest memory (kernel32-file.js). docs/api-layer.md "ReadFile straight into guest memory".
+ */
+export function readFast() { const v = globalThis.ORTHROS_READ_FAST; return v === undefined || v === '' || Number(v) !== 0; }
+/**
  * A random read that misses fetches only the 64 KiB pieces it covers (a round trip plus 64 KiB instead of a whole
  * block: ~10x less waiting over the Internet while the game waits); the whole block follows in the background.
  */
@@ -1464,7 +1471,9 @@ export class HttpBackend {
       if (m0 < 0) continue;
       // (a stream: the `extra` bytes past the read too, within the block, as readPieces does)
       if (extra > 0 && Math.min(end, b1) === end) { const last = Math.min(Math.floor((b1 - 1) / CHUNK), Math.floor((end - 1 + extra) / CHUNK)); while (m1 < last && !this.hasPiece(path, size, mtime, m1 + 1) && !this.flights.has(`${path}#${m1 + 1}`)) m1++; }
-      this.noteMiss(path, size, mtime, bi);
+      // (a read covering the whole block — a small file fetched whole, HttpFile.wholeFirst — brings every piece it misses:
+      // the block is assembled from them, no background request for it again)
+      if (!(pos <= b0 && end >= b1)) this.noteMiss(path, size, mtime, bi);
       const start = m0 * CHUNK, stop = Math.min(size, (m1 + 1) * CHUNK);
       jobs.push(this.fgFlight(path, start, stop, this.fetchForeground(path, start, stop).then((d) => {
         if (d && !this.cache.has(`${path}#${bi}`)) this.addPieces(path, m0, m1, d, { size, mtime });
@@ -1791,7 +1800,7 @@ class HttpFile {
   }
   /** The blocks of [off, end) are touched: the game's position in the learned prefetch list (see noteBlock). */
   note(off, end) {
-    this.b.lastReadAt = performance.now(); // (the game reads: see gameQuiet)
+    this.b.lastReadAt = acct.stamp(); // (the game reads: see gameQuiet — the accounting's last clock read, at most a slice old, for a quiet of seconds: no clock read per read)
     if (!this.b.learned) return;
     for (let bi = Math.floor(off / BLOCK), e = Math.floor((end - 1) / BLOCK); bi <= e; bi++) if (bi !== this.noted) { this.noted = bi; this.b.noteBlock(this.path, bi); }
   }
@@ -1813,6 +1822,8 @@ class HttpFile {
   prepareNow(off, len) {
     const end = Math.min(off + len, this.len);
     if (off >= end || typeof fetch !== 'function') return null;
+    // (inside the block of the last read, in hand: here — the read itself notes it)
+    if (this.memoBlock && off >= this.memoIndex * BLOCK && end <= this.memoIndex * BLOCK + this.memoBlock.length && readFast()) return null;
     this.note(off, end);
     // (on a link that is not fast a file read whole goes by pieces too, its next bytes fetched past the read by the
     // link's measure: whole blocks of 1-4 MiB would hold the game up for seconds)
@@ -1823,8 +1834,21 @@ class HttpFile {
       if (bulk) { missing = true; break; }
       for (let c = Math.floor(Math.max(off, bi * BLOCK) / CHUNK), e = Math.floor((Math.min(end, (bi + 1) * BLOCK) - 1) / CHUNK); c <= e; c++) if (!this.b.hasPiece(this.path, this.len, this.mtime, c)) { missing = true; break; }
     }
+    if (missing && this.wholeFirst()) return this.b.fetchAhead(this.path, this.len, this.mtime, 0, this.len, false, 0);
     const extra = !fast && sequential ? this.b.net.demandExtra(Math.min(this.run + (end - off), BLOCK)) : 0;
     return missing ? this.b.fetchAhead(this.path, this.len, this.mtime, off, end, bulk, extra) : null;
+  }
+  /**
+   * The first read of a small file that misses fetches the whole file: a loader that opens a file reads all of it (a
+   * W3D model its chunk table at the end first, then the chunks), each 64 KiB piece a round trip of its own the game
+   * waits for, and the background fetching the whole block again after the piece — two requests per file at least,
+   * ~900 files in Age of the Ring's Create-a-Hero load. Small: one block at most, and no more than the link carries in
+   * DEMAND_SECONDS (NetLink.demandExtra: on a thin link only files of a few pieces). ?dbg=ORTHROS_WHOLE_FIRST=0: off.
+   */
+  wholeFirst() {
+    if (this.lastEnd !== -1 || this.len > BLOCK || this.len <= CHUNK) return false;
+    const v = globalThis.ORTHROS_WHOLE_FIRST; if (v !== undefined && v !== '' && Number(v) === 0) return false;
+    return this.b.net.demandExtra(this.len) >= this.len;
   }
   /** `into`: where the bytes go when the caller owns a destination of `len` bytes (guest memory: no second copy) */
   read(off, len, into) {
@@ -1836,7 +1860,9 @@ class HttpFile {
     if (off >= end) return new Uint8Array(0);
     this.note(off, end);
     this.b.reads.bytes += end - off; if (this.video) this.b.reads.videoBytes += end - off;
-    this.b.onRead?.(this.path, off, end, this);
+    // (the read log keeps each 64 KiB piece's first read: a read inside the piece the last one reported is not reported
+    // again — most of a loader's small reads)
+    if (this.b.onRead) { const c0 = Math.floor(off / CHUNK), c1 = Math.floor((end - 1) / CHUNK); if (c0 !== this.readC0 || c1 !== c0) { this.readC0 = c1 === c0 ? c0 : -1; this.b.onRead(this.path, off, end, this); } }
     const out = into && into.length >= end - off ? into : new Uint8Array(end - off);
     const sequential = off === this.lastEnd;
     this.lastEnd = end;
@@ -1853,7 +1879,7 @@ class HttpFile {
     else if (!sequential && this.b.streams.size) this.b.streams.delete(this.path);
     const fast = this.b.net.fast(), bulk = sequential && this.run >= STREAM_BYTES;
     let pos = off;
-    const memoOn = !!globalThis.ORTHROS_READ_FAST;
+    const memoOn = readFast();
     while (pos < end) {
       const bi = Math.floor(pos / BLOCK), bo = pos - bi * BLOCK;
       // (the block of the last read still in hand — blocks never change —: no key built, no cache lookup, no LRU move
@@ -1892,5 +1918,5 @@ class HttpFile {
   }
   write() { return 0; }
   truncate() {}
-  close() { if (this.closed) return; this.closed = true; this.b.noteClose(this.path); }
+  close() { if (this.closed) return; this.closed = true; this.memoBlock = null; this.b.noteClose(this.path); }
 }
