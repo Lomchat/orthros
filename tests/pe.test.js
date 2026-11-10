@@ -265,6 +265,11 @@ test('input: a click shorter than a frame still shows the button down for one fr
   wm.pump();
   assert.equal(wm.keyState[1] & 0x80, 0, 'released after a frame');
   assert.equal(wm.cursor.x, 20);
+  // a press right after a move waits one frame too (the game's widgets learn they are hovered in their frame update)
+  host.inputQueue.push({ type: 'mousemove', x: 30, y: 30 }, { type: 'mousedown', button: 0, x: 30, y: 30 });
+  wm.pump(); assert.equal(wm.keyState[1] & 0x80, 0, 'move taken, press waits for a frame');
+  vm.d3dDevice.frames = 7; wm.pump(); assert.equal(wm.keyState[1] & 0x80, 0x80, 'pressed after a frame');
+  host.inputQueue.push({ type: 'mouseup', button: 0, x: 30, y: 30 }); vm.d3dDevice.frames = 8; wm.pump();
   // without a frame, the release goes after 250 ms
   host.inputQueue.push({ type: 'mousedown', button: 0, x: 1, y: 1 }, { type: 'mouseup', button: 0, x: 1, y: 1 });
   wm.pump(); assert.equal(wm.keyState[1] & 0x80, 0x80);

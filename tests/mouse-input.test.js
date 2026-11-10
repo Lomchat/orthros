@@ -257,5 +257,13 @@ test('key remap (manifest keys): W as the up arrow, its letter typed while the g
     assert.deepEqual(keys(up, down, ch, up), [[[0x101, 0x57], [0x100, 0x26], [0x101, 0x26]], []]);
     // Ctrl held: the game's shortcut (Ctrl+W), not the arrow
     assert.deepEqual(keys({ type: 'keydown', vk: 0xa2, scan: 0x1d }, down, up, { type: 'keyup', vk: 0xa2, scan: 0x1d })[0].map((m) => m[1]), [0xa2, 0x57, 0x57, 0xa2]);
+    // a text field with no Imm* call (Age of the Ring's captain name): its sign is the I-beam cursor the game sets over it;
+    // a click there keeps the letters as typed after the pointer left, a click elsewhere (or Enter) gives the arrows back
+    const arrow = wm.systemCursor(32512), beam = wm.systemCursor(32513);
+    wm.setCursorShape(beam);
+    assert.deepEqual(keys(down, ch, up)[0].map((m) => m[1]), [0x57, 0x57], 'over a text field');
+    env.input({ type: 'mousedown', button: 0, x: 5, y: 5 }); wm.pump(); wm.setCursorShape(arrow);
+    assert.deepEqual(keys(down, ch, up)[0].map((m) => m[1]), [0x57, 0x57], 'clicked into the field, pointer gone');
+    assert.deepEqual(keys({ type: 'keydown', vk: 0x0d, scan: 0x1c }, { type: 'keyup', vk: 0x0d, scan: 0x1c }, down, up)[0].map((m) => m[1]).slice(-2), [0x26, 0x26], 'Enter ends the edit');
   } finally { vm.current = cur; }
 });
