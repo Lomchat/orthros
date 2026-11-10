@@ -9,7 +9,7 @@ import { parseImage, parseImageInfo, toRgba, toRgbaRows, fromRgba, resizeRgba, a
 import { defineEffects } from './d3dx9-effect.js';
 import { assembleShader } from './d3dx9-asm.js';
 import { unshared } from './strings.js';
-import { resAlloc, resFree, outOfAddressSpace } from './res-mem.js';
+import { resAlloc, resFree, outOfAddressSpace, OutOfAddressSpace } from './res-mem.js';
 
 const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DXERR_INVALIDDATA = 0x88760b59, E_OUTOFMEMORY = 0x8007000e, E_NOTIMPL = 0x80004001;
 const D3DX_DEFAULT = 0xffffffff, D3DX_DEFAULT_NONPOW2 = 0xfffffffe, D3DX_FROM_FILE = 0xfffffffd;
@@ -37,7 +37,8 @@ export function registerD3DX9(api, vm) {
   /** a new ID3DXBuffer holding `bytes` (Uint8Array) or `n` zero bytes */
   const newBuffer = (c, bytes, n = bytes?.length ?? 0) => { const b = new DxBuffer(c.proc, n); if (bytes) mem.writeBytes(b.addr, bytes); return com.create(c.proc, 'ID3DXBuffer', b); };
   const textBuffer = (c, s) => newBuffer(c, Uint8Array.from(s + '\0', (ch) => ch.charCodeAt(0) & 0xff));
-  X.D3DXCreateBuffer = [2, (c) => { if (!c.arg(1)) return D3DERR_INVALIDCALL; mem.write32(c.arg(1), newBuffer(c, null, c.arg(0))); return D3D_OK; }];
+  // (no room left in the address space: the error Windows' D3DX returns, the process goes on)
+  X.D3DXCreateBuffer = [2, (c) => { if (!c.arg(1)) return D3DERR_INVALIDCALL; let b; try { b = newBuffer(c, null, c.arg(0)); } catch (e) { if (e instanceof OutOfAddressSpace) return E_OUTOFMEMORY; throw e; } mem.write32(c.arg(1), b); return D3D_OK; }];
   vm.d3dx = { newBuffer, textBuffer };
 
   // ---------------------------------------------------------------- calling device methods from D3DX
