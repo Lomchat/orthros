@@ -311,7 +311,7 @@ export function mountHome({ onPlay }) {
     const v = chosen(g), d = [...backdrops.children].find((b) => b.dataset.name === g.id);
     if (!v?.cover || !v.available) { d?.remove(); return; }
     const bd = d ?? backdrops.appendChild(h('div', { class: 'hm-bd', 'data-name': g.id }));
-    bd.dataset.src = `/api/cover/${encodeURIComponent(v.name)}`;
+    bd.dataset.src = `/api/cover/${encodeURIComponent(v.name)}${v.coverV ? `?v=${v.coverV}` : ''}`;
     if (bd.classList.contains('on')) bd.style.backgroundImage = `url("${bd.dataset.src}")`;
   }
   /** The hero button: resume the last game, or start the first one. */
@@ -372,7 +372,7 @@ export function mountHome({ onPlay }) {
       const v = chosen(g), ok = !!v?.available;
       el.classList.toggle('unavailable', !ok); el.tabIndex = ok ? 0 : -1;
       cover.classList.toggle('none', !v?.cover);
-      const src = v?.cover ? `/api/cover/${encodeURIComponent(v.name)}` : LOGO;
+      const src = v?.cover ? `/api/cover/${encodeURIComponent(v.name)}${v.coverV ? `?v=${v.coverV}` : ''}` : LOGO;
       if (src !== shown) { // (the new image fades in over the old one)
         shown = src;
         whenSeen(el, () => {

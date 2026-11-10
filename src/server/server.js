@@ -221,6 +221,8 @@ export function createServer(opts = {}) {
   /** A version's owners and the stores they may be in before (/api/manifest(s) `owners`, `ownerLegacy`). */
   const ownersOf = (id, m) => (manifestDir ? { owners: (m.underlayOwners ?? []).map((o) => o.manifest), ownerLegacy: {} } : versionOwners(manifests, id));
   const coverFile = (man) => man.coverPath ?? (man.cover && resolveGameFile(man, man.cover));
+  // (the cover's version, in its address: a changed image is fetched again though the browser keeps covers a day)
+  const coverStamp = (man) => { try { const f = coverFile(man); if (!f) return null; const st = fs.statSync(f); return `${Math.round(st.mtimeMs).toString(36)}${st.size.toString(36)}`; } catch { return null; } };
   const runtimeOf = (man) => man.runtime ?? 'win32';
   const headers = (extra = {}) => ({
     'Cross-Origin-Opener-Policy': 'same-origin',
@@ -1789,7 +1791,7 @@ export function createServer(opts = {}) {
             versionOrder: m.versionOrder ?? 0, languages: m.languages ?? [], ...portLanguages(m, name, memo, ok), runtime, exe: port ? null : m.exe,
             modes: runtime === 'goldsrc' ? goldsrcModes(m.goldsrc) : runtime === 'openmw' ? openmwModes(m.openmw) : runtime === 're3' ? re3Modes(m.re3) : null, launchUrl: port ? portLaunchUrl(name, m) : null,
             description: m.description ?? null, descriptionFr: m.descriptionFr ?? null,
-            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), bytes, owners: ownersOf(name, m).owners, launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
+            hidden: !!m.hidden, modified: !!m.modified, cover: !!coverFile(m), coverV: coverStamp(m), bytes, owners: ownersOf(name, m).owners, launch: bytes === null ? null : launchOf(name, m), saveKey: port ? m.saveKey ?? null : null, mmo: !!m.mmo,
             profileKey: m.profileKey ?? name, // (the player's profile: shared by the versions of the game — docs/profiles.md)
             available: bytes !== null && (runtime !== 'goldsrc' || goldsrcInstalled(m, enginesDir)) && (runtime !== 'openmw' || openmwOk(name, m, memo, ok)) && (runtime !== 're3' || re3Installed(m, enginesDir)) };
         });
@@ -1805,7 +1807,7 @@ export function createServer(opts = {}) {
         const engineUrls = runtimeOf(man) !== 'win32' ? { engineUrls: engineUrlsOf(man) } : {};
         // (a GoldSrc port: what its game server precaches at every map's load, its release says — announced with the map)
         const mapPrecache = runtimeOf(man) === 'goldsrc' ? { mapPrecache: goldsrcMapPrecache(man, enginesDir) } : {};
-        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, underlayOwners: undefined, ...ownersOf(m[1], man), overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, launchUrl, ...re3, ...engineUrls, ...mapPrecache, ...portLanguages(man, m[1]),
+        return send(res, 200, JSON.stringify({ ...man, folder: undefined, baseFolder: undefined, underlays: undefined, underlayOwners: undefined, ...ownersOf(m[1], man), overlays: undefined, dataMounts: undefined, saveDir: undefined, coverPath: undefined, coverV: coverStamp(man), launchUrl, ...re3, ...engineUrls, ...mapPrecache, ...portLanguages(man, m[1]),
           // (its profile's key, and the versions whose copies of before it takes once: profile-share.js)
           profileKey: man.profileKey ?? m[1], profileSources: profileSourcesOf(m[1], man) }), { 'Content-Type': 'application/json' });
       }

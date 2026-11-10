@@ -536,7 +536,7 @@ function makeShell(name, manifest, language) {
   const lan = document.createElement('div');
   lan.className = 'pill hidden'; lan.id = 'tbLan'; lan.innerHTML = '<span class="dot"></span>LAN <b>1</b>';
   shell = createShell({
-    title: state.title, version: manifest.version, gameLanguage: language, cover: manifest.cover || manifest.coverFile ? `/api/cover/${encodeURIComponent(name)}` : null,
+    title: state.title, version: manifest.version, gameLanguage: language, cover: manifest.cover || manifest.coverFile ? `/api/cover/${encodeURIComponent(name)}${manifest.coverV ? `?v=${manifest.coverV}` : ''}` : null,
     subtitle: TEXT.subtitle, steps: Object.entries(TEXT.steps).map(([k, label]) => ({ k, label })), tips: TEXT.tips, extras: [pre, lan],
     onPerf: () => $('perfPanel').classList.toggle('hidden'), onFullscreen: () => enterPlayMode(), onMouse: () => capturePointer(),
     onQuit: () => saveNow(), saves: () => cloud,

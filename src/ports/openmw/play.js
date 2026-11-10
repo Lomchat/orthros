@@ -176,7 +176,7 @@ try {
   const entry = (await lr.json()).find((m) => m.name === id);
   const language = man.contentLanguages?.[0] ?? man.languages?.[0] ?? null;
   shell = createShell({
-    title: man.name, version: man.version, gameLanguage: language, cover: `/api/cover/${encodeURIComponent(id)}`, subtitle: S.subtitle,
+    title: man.name, version: man.version, gameLanguage: language, cover: `/api/cover/${encodeURIComponent(id)}${man.coverV ? `?v=${man.coverV}` : ''}`, subtitle: S.subtitle,
     steps: Object.entries(S.steps).map(([k, label]) => ({ k, label })), tips: S.tips,
     onMouse: () => { frame.focus(); frame.contentWindow?.postMessage({ type: 'orthros-capture' }, location.origin); shell.toast(S.capture, 4000); },
     onQuit: () => flush(), onSignedIn: () => { if (pendingMulti) { pendingMulti = false; enter('multi'); } else if (session.state === 'ready') render(entry); },

@@ -609,7 +609,7 @@ try {
   if (config.runtime !== 're3') throw new Error('not an re3 installation');
   tree = await treeResponse.json(); files = treeFiles(tree);
   shell = createShell({
-    title: config.name, version: config.version, gameLanguage: gameLanguage(config), cover: `/api/cover/${encodeURIComponent(name)}`, subtitle: S.subtitle,
+    title: config.name, version: config.version, gameLanguage: gameLanguage(config), cover: `/api/cover/${encodeURIComponent(name)}${config.coverV ? `?v=${config.coverV}` : ''}`, subtitle: S.subtitle,
     steps: Object.entries(S.steps).map(([k, label]) => ({ k, label })), tips: S.tips,
     onQuit: quit, onFullscreen: fullscreen, onMouse: giveMouse, onSignedIn: lateSignIn, saves: () => cloud,
     onLoaderHidden: fit,
