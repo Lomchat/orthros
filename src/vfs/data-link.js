@@ -10,14 +10,16 @@
 //   it between slices, no event loop turn needed) and by message;
 // - synchronous (a read that cannot park: a nested wait, a program image): the emulator's thread waits on shared memory
 //   (Atomics.wait) for the data worker's answer.
-// ?dbg=ORTHROS_DATA_WORKER=0: the reader on the emulator's thread, as before (src/web/worker.js).
+// Off by default (measured 2026-11-11: no gain beyond noise on a local link nor at 50 ms / 10 Mbit/s, the first launch
+// on an 85 KB/s link far better — docs/slow-network.md "The data worker of the Windows games"); ?dbg=ORTHROS_DATA_WORKER=1:
+// on, else the reader on the emulator's thread (src/web/worker.js).
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { treeLookup, treeStat, treeReaddir, isVideoFile } from './game-tree.js';
 import { SharedBlocks, fileKeys, BLOCK, CHUNK } from './shared-blocks.js';
 import { NetLink } from './net-link.js';
 
-/** The data worker for the Windows games (on by default; ORTHROS_DATA_WORKER=0: off). */
-export function dataWorkerOn() { const v = globalThis.ORTHROS_DATA_WORKER; return typeof Worker !== 'undefined' && !!globalThis.crossOriginIsolated && (v === undefined || v === '' || Number(v) !== 0); }
+/** The data worker for the Windows games (off by default; ORTHROS_DATA_WORKER=1: on, read at the start). */
+export function dataWorkerOn() { const v = globalThis.ORTHROS_DATA_WORKER; return typeof Worker !== 'undefined' && !!globalThis.crossOriginIsolated && v !== undefined && v !== '' && Number(v) !== 0; }
 /** How long an asynchronous read waits for the data worker's first answer (ms: memory, the browser's store) before it parks. */
 const QUICK_MS = 2;
 /** A synchronous read fails once the data worker's heartbeat stopped this long (it died). */

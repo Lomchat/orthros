@@ -200,7 +200,7 @@ test('http backend (randomized): exact bytes on a thin and a mid link too (piece
 
 test('data worker (randomized): reads through the shared blocks return the old path\'s bytes — reads, seeks, parked reads, evictions', async () => {
   // (src/vfs/data-link.js: the emulator's side here, the data worker in a worker thread — tests/data-worker-shim.js —,
-  // two shared blocks for 50 MB of files: the slots change hands under the reads; each read compared with the reader on
+  // two shared blocks for 15 MB of files: the slots change hands under the reads; each read compared with the reader on
   // this thread — the old path — and with the files' bytes)
   const { Worker } = await import('node:worker_threads');
   const { DataLink } = await import('../src/vfs/data-link.js');

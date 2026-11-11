@@ -56,7 +56,7 @@ const fileStores = [];
  * game's and those of the versions it requires, each once)
  */
 let netLink = null, primaryFiles = null, dataParts = [], partsMounted = [];
-/** the reader in the data worker (data-link.js; null: on this thread, ?dbg=ORTHROS_DATA_WORKER=0): netLink, dataParts and primaryFiles are its views */
+/** the reader in the data worker (data-link.js, ?dbg=ORTHROS_DATA_WORKER=1; null: on this thread, the default): netLink, dataParts and primaryFiles are its views */
 let dataLink = null;
 /** the offline copy of each part (opt-in, HttpBackend.downloadAll progress), counted together */
 const offlineCopies = [];
@@ -254,11 +254,11 @@ async function start(m) {
   // learned prefetch and offline copy; the game reads each version through a PartsBackend (its whole tree, each file
   // read through the part that holds it), its reads reported under that version (ReadLog)
   const persistent = !m.opts.headless || m.opts.opfs;
-  let version = null; // (the version opened on this thread: ?dbg=ORTHROS_DATA_WORKER=0)
+  let version = null; // (the version opened on this thread: the default, without ORTHROS_DATA_WORKER=1)
   // (the reads of this session until its game looks playable: sent with the mark — not by a session restored from a
   // snapshot, which skips the reads of the start: readLogUnlearnedOnly)
   if (m.opts.session) { readLog = new ReadLog(); readBackends = new Map(); playableMeta = { session: m.opts.session, lang: m.opts.gameLanguage || null }; }
-  // (the reader in a data worker of its own — data-link.js, the engines' data worker —; ?dbg=ORTHROS_DATA_WORKER=0: on this thread, below)
+  // (the reader in a data worker of its own — data-link.js, the engines' data worker —, ?dbg=ORTHROS_DATA_WORKER=1; else on this thread, below)
   if (dataWorkerOn()) {
     const deps = [...new Set((manifest.extraMounts ?? []).map((d) => d.manifest).filter((n) => n && n !== manifestName))];
     dataLink = await DataLink.open({ name: manifestName, tree: m.tree, manifest, mounts: [manifestName, ...deps], session: m.opts.session ?? '', lang: m.opts.gameLanguage || null,
