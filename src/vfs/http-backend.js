@@ -441,7 +441,7 @@ export class HttpBackend {
     // was made for, see prefetch's relist)
     // (hist: the last TRACK_SPAN first touches, in the order or not; changed: since when the link's class differs from
     // fast, measured: the link's then)
-    const L = this.learned = { entries, rankOf, first, pos: -1, inFlight: 0, inBytes: 0, stop, tracked: false, steps: 0, misses: 0, hist: [], fast: this.net.fast(), measured: this.net.measured, changed: null };
+    const L = this.learned = { entries, rankOf, paths: new Set(entries.map((e) => e.path)), first, pos: -1, inFlight: 0, inBytes: 0, stop, tracked: false, steps: 0, misses: 0, hist: [], fast: this.net.fast(), measured: this.net.measured, changed: null };
     // (a list made again for the link's new class: what the game did with the one it replaces)
     const C = opts.carry;
     if (C) {

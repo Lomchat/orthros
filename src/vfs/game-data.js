@@ -317,6 +317,8 @@ export class PartsBackend {
       fetch: (path, end) => (partOf(this.version, this.name, path) ?? this.own).files.predict(path, 0, end),
       // (the learned order follows the game: it fetches the next reads already)
       tracked: () => this.parts.some((p) => p.files.learned?.tracked),
+      // (the order holds the file: its reads are known)
+      covered: (path) => this.parts.some((p) => p.files.learned?.paths.has(path)),
       peek: (path, size, fn) => (partOf(this.version, this.name, path) ?? this.own).files.memoryPieces(path, size, fn),
     });
     // (the bytes of its parts' files as they arrive: the names an opened file holds — open-predict.js noteBytes)

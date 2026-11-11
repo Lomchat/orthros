@@ -63,8 +63,26 @@ const ANCHORS = 4;
  * REF_PENDING references remembered at most).
  */
 const REF_FILE_MAX = 4 << 20, REF_STEM_FILES = 3, REF_MATURE_MS = 60000, REF_MIN = 12, REF_SHARE = 0.5, REF_PENDING = 8192;
-/** a name in a file's bytes: a stem of 2-64 name characters, a dot, an extension of 2-4 */
-const REF_RE = /([A-Za-z0-9_-]{2,64})\.([A-Za-z][A-Za-z0-9]{1,3})(?![A-Za-z0-9])/g;
+/** only the first REF_SCAN_MAX bytes of a file are scanned; these formats (images, sound, video, archives) hold no names */
+const REF_SCAN_MAX = 1 << 20;
+const REF_BINARY = new Set(['dds', 'tga', 'png', 'jpg', 'jpeg', 'bmp', 'gif', 'wav', 'mp3', 'ogg', 'bik', 'avi', 'mp4', 'webm', 'big', 'zip', 'rar', '7z', 'dll', 'exe', 'ttf', 'otf', 'pak', 'bsa', 'vpk', 'wad']);
+
+const isNameByte = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95 || c === 45;
+const isAlpha = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90);
+/**
+ * The names in `bytes`: a stem of 2-64 name characters [A-Za-z0-9_-], a dot, an extension of 2-4 alphanumerics starting
+ * with a letter and not followed by another. fn(stem, ext), both lower case. No string is built for the whole bytes.
+ */
+function scanNames(bytes, fn) {
+  const n = bytes.length;
+  for (let i = bytes.indexOf(46); i >= 0; i = bytes.indexOf(46, i + 1)) {
+    let j = i - 1; while (j >= 0 && i - 1 - j < 64 && isNameByte(bytes[j])) j--;
+    if (i - 1 - j < 2 || !isAlpha(bytes[i + 1] ?? 0)) continue;
+    let k = i + 2; while (k < n && k - i <= 5 && (isAlpha(bytes[k]) || (bytes[k] >= 48 && bytes[k] <= 57))) k++;
+    if (k - i - 1 < 2 || k - i - 1 > 4) continue;
+    fn(String.fromCharCode.apply(null, bytes.subarray(j + 1, i)).toLowerCase(), String.fromCharCode.apply(null, bytes.subarray(i + 1, k)).toLowerCase());
+  }
+}
 
 /** On unless ?dbg=ORTHROS_PREDICT_REFS=0 (read at each arrival). */
 export function predictRefsOn() { const v = globalThis.ORTHROS_PREDICT_REFS; return v === undefined || v === '' || Number(v) !== 0; }
@@ -214,19 +232,19 @@ export class OpenPredictor {
     const key = keyOf(path), size = this.sizes.get(key);
     if (size === undefined || size > REF_FILE_MAX || !bytes?.length) return;
     // (the learned order follows the game: nothing to guess — not even the names' cost, a scan of every file opened)
-    const tracked = this.io.tracked?.();
-    if (tracked) return;
+    // (nor a file the learned order holds: the order knows what is read after it, tracked or not for the moment — the
+    // position is lost and found again all along a load)
+    if (this.io.tracked?.() || this.io.covered?.(path)) return;
+    // (binary formats hold no names; only the head of a file is looked at)
+    if (start >= REF_SCAN_MAX || REF_BINARY.has(extOf(path))) return;
     if (!this.stems) this.indexStems();
     const now = this.now(), src = extOf(path);
     this.expire(now);
-    let text = '';
-    for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(bytes.length, i + 8192)));
     const budget = this.byteBudget(), R = this.refRun;
-    REF_RE.lastIndex = 0;
-    for (let m; (m = REF_RE.exec(text));) {
-      if (!this.exts.has(m[2].toLowerCase())) continue;
-      const targets = this.stems.get(m[1].toLowerCase());
-      if (!targets || targets.length > REF_STEM_FILES) continue;
+    scanNames(bytes, (stem, ext) => {
+      if (!this.exts.has(ext)) return;
+      const targets = this.stems.get(stem);
+      if (!targets || targets.length > REF_STEM_FILES) return;
       for (const t of targets) {
         const tk = keyOf(t.path);
         if (tk === key || this.sizes.has(tk) || this.refPending.has(tk)) continue;
@@ -245,7 +263,7 @@ export class OpenPredictor {
         this.issued.set(tk, { t: now, n: R.n, bytes: end, run: R }); R.out++; R.outBytes += end;
         this.stats.refFiles++; this.stats.refBytes += end;
       }
-    }
+    });
   }
 
   /** The game opened `path` (a tree path, a file of `size` bytes): its run noted, its next files fetched when it walks. */
@@ -258,7 +276,7 @@ export class OpenPredictor {
     this.opened.add(key); this.sizes.set(key, size);
     const ref = this.refPending.get(key); if (ref) { this.refPending.delete(key); ref.pair.hit++; }
     // (its bytes here already — a guess fetched them before it was opened —: the names they hold, now; see noteBytes)
-    if (size <= REF_FILE_MAX && this.io.peek && predictRefsOn() && !this.io.tracked?.()) this.io.peek(path, size, (start, bytes) => this.noteBytes(path, start, bytes));
+    if (size <= REF_FILE_MAX && this.io.peek && predictRefsOn() && !this.io.tracked?.() && !this.io.covered?.(path)) this.io.peek(path, size, (start, bytes) => this.noteBytes(path, start, bytes));
     // (a small file opened, not here: all of it on its way at once — the game reads it whole, piece after piece, each
     // piece a wait of its own otherwise; see openWhole)
     if (this.openWhole(size) && this.linkOk()) {
