@@ -11,7 +11,7 @@
 // - synchronous (a read that cannot park: a nested wait, a program image): the emulator's thread waits on shared memory
 //   (Atomics.wait) for the data worker's answer.
 // Off by default (measured 2026-11-11: no gain beyond noise on a local link nor at 50 ms / 10 Mbit/s, the first launch
-// on an 85 KB/s link far better — docs/slow-network.md "The data worker of the Windows games"); ?dbg=ORTHROS_DATA_WORKER=1:
+// on an 85 KB/s link better in a single 420 s run each way, to be confirmed — docs/slow-network.md "The data worker of the Windows games"); ?dbg=ORTHROS_DATA_WORKER=1:
 // on, else the reader on the emulator's thread (src/web/worker.js).
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { treeLookup, treeStat, treeReaddir, isVideoFile } from './game-tree.js';

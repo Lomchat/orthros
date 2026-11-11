@@ -59,15 +59,22 @@ export class TexJobs {
   wait(f) {
     if (!f || this.done(f)) return;
     const t0 = performance.now(), ap = acct.enter(ACCT.tex); // (frame accounting: waiting for a texture job)
+    // (the limit runs from the helper's last progress, not from the start of the wait: a helper with a long queue that
+    // keeps finishing jobs is not stuck)
+    let seen = Atomics.load(this.ctl, f.h), since = t0;
     try {
       for (;;) {
         const v = Atomics.load(this.ctl, f.h);
         if (v >= f.seq) break;
+        const now = performance.now();
+        if (v !== seen) { seen = v; since = now; }
         const limit = this.answered[f.h] ? this.timeouts.ms : this.timeouts.firstMs;
-        if (this.broken || performance.now() - t0 > limit) { this.takeOver(limit); return; }
+        if (this.broken || now - since > limit) { this.takeOver(limit); return; }
         Atomics.wait(this.ctl, f.h, v, 50);
       }
       this.answered[f.h] = true;
+      const q = this.pending[f.h], done = Atomics.load(this.ctl, f.h);
+      while (q.length && q[0].job.seq <= done) q.shift(); // (the done jobs' inputs released now, not at the next submit)
     } finally { this.stats.waits++; this.stats.waitMs += performance.now() - t0; acct.leave(ap); }
   }
   /** every job done (a snapshot, a device reset) */
@@ -123,6 +130,10 @@ export function texHelper(GuestMemory, report = null) {
       const mem = mems.get(m.memId);
       if (!mem) throw new Error(`no guest memory ${m.memId}`);
       runJob(mem, m);
-    } catch (e) { report?.({ error: `${m.kind}: ${e?.stack ?? e}` }); } finally { Atomics.store(ctl, index, m.seq); Atomics.notify(ctl, index); }
+    } catch (e) { report?.({ error: `${m.kind}: ${e?.stack ?? e}` }); } finally {
+      // (never lowers the word: after a takeover the game thread has set it to the last job's number)
+      for (let v = Atomics.load(ctl, index); v < m.seq; v = Atomics.load(ctl, index)) if (Atomics.compareExchange(ctl, index, v, m.seq) === v) break;
+      Atomics.notify(ctl, index);
+    }
   };
 }

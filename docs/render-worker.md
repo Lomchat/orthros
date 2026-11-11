@@ -1166,7 +1166,7 @@ the emulator's thread included, until the next period. The emulator gets ~25 % o
 **The 4-core model overstates the problem.** The same MY CAPTAINS load with the browser also pinned to 4 cores
 (`ORTHROS_BROWSER_CPUS=44-47`, quota unchanged — closer to a real 4-core PC, where nothing can run more than 4 threads
 at once): **50-51 s** (emulator thread 58 % of a core, GPU process 2.4 cores), against **188-209 s** with the quota
-alone (4 runs). Reuse on or off makes no difference there (50 s / 51 s): the loading frames are not static.
+alone (3 runs). Reuse on or off makes no difference there (50 s / 51 s): the loading frames are not static.
 
 ### 11.2 What was built: exact static-frame reuse (`src/gfx/static-frames.js`, `ORTHROS_STATIC_REUSE`)
 
@@ -1189,7 +1189,7 @@ In the render worker's replayer (render worker only: `onReuse`; not inline/compa
   and `SHOWN` advances. The first command that differs, an emulator waiting for the render worker (`EMU_WAIT`), or the
   switch turned off releases the held commands, replayed as usual before it. A render-scale change or a context
   restoration ends the streak.
-- Switch: `ORTHROS_STATIC_REUSE` (render worker debug global, `dbg:` works mid-session): unset/1 on, 0 off, 2 count only.
+- Switch: `ORTHROS_STATIC_REUSE` (render worker debug global, `dbg:` works mid-session): unset/0 off (the default), 1 on, 2 count only.
   The 10 s log line gives presented / plain / equal / reused / released counts and the reasons.
 - Test: `tests/static-frames.test.js` (equal frames reused after two, every kind of difference rendered — commands,
   vertex bytes, texture bytes, drawing over the previous image, a depth test on an uncleared buffer, a resource

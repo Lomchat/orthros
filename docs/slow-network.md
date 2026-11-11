@@ -2391,7 +2391,7 @@ no in-session A/B: the reader is chosen when the game data opens):
   data worker's answer (an answer buffer grown as needed); a dead data worker fails it after 30 s without heartbeat.
   OVERLAPPED / file pointer semantics are kernel32's, unchanged above the file interface.
 - **Memory**: the shared blocks hold what the emulator's cache held (256 MiB a mounted version); the data worker's own
-  reader keeps 64 blocks (`ORTHROS_DATA_OWN_BLOCKS`) plus its pieces (64 MiB at most, as before).
+  reader keeps `cacheBlocks` blocks by default, as before (256; `ORTHROS_DATA_OWN_BLOCKS` lowers it) plus its pieces (64 MiB at most, as before).
 - **The emulator's statistics** read the reader through views of the same shapes (`DataLink.views`: the NetLink
   snapshot, the parts' counters, the prefetch's and offline copy's progress — every 250 ms); the exit report adds a
   `[report] data worker:` line (reads answered from the shared blocks, sent to the data worker, parked, torn copies,
