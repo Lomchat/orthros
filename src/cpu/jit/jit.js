@@ -4,7 +4,7 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_FX_XFORM, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, FID_SURF_LOCK, FID_SURF_UNLOCK, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_FX_XFORM, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
@@ -112,7 +112,7 @@ export class Jit {
     this.boundaries = null; // extra region boundaries (tests)
     this.pageRegions = new Map(); // page -> Set(region)
     // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
-    this.refFast = null; this.refFastOff = false; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.xformOff = !globalThis.ORTHROS_XFORM_FILTER; this.xformPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0; this.fxDefer = null; this.fxDeferOff = false; // (xformOff: the SetTransform filter, off by default — docs/api-layer.md)
+    this.refFast = null; this.refFastOff = false; this.lockFast = null; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.xformOff = !globalThis.ORTHROS_XFORM_FILTER; this.xformPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0; this.fxDefer = null; this.fxDeferOff = false; // (xformOff: the SetTransform filter, off by default — docs/api-layer.md)
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
     this.clearTables();
   }
@@ -132,6 +132,8 @@ export class Jit {
     if (dx !== undefined || fid === FID_PARAM_DESC || fid === FID_SURF_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     // (an effect's technique calls queued: switchable on their own too, setFxDefer)
     if (fid === undefined && defer !== undefined && (defer & (DEFER_TECH | DEFER_BEGIN | DEFER_END))) { (this.fxDefer ??= []).push(idx); this.setFxDefer(!this.fxDeferOff); }
+    // (surface locks on the fast path: off unless ?dbg=ORTHROS_LOCK_FAST=1 — no load measured faster, docs/api-layer.md; setLockFast)
+    if (fid === FID_SURF_LOCK || fid === FID_SURF_UNLOCK) { (this.lockFast ??= []).push([idx, fid]); if (globalThis.ORTHROS_LOCK_FAST !== 1) this.mem.u8[FAST_TABLE + idx] = 0; }
     if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     // (the queued draws and the lights / material / FVF filter, switchable for measurement: setDrawOpt)
     if (defer !== undefined && DEFER_DRAWS.has(name)) { (this.drawFast ??= []).push(idx); if (this.drawOptOff) this.mem.u8[FAST_TABLE + idx] = 0; }
@@ -169,6 +171,12 @@ export class Jit {
     this.refFastOff = !on;
     for (const [idx, fid] of this.refFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0;
   }
+  /**
+   * (measurement, dbg:ORTHROS_LOCK_FAST) IDirect3DSurface8/9::LockRect / UnlockRect on the WASM fast path or in
+   * JavaScript: either way the lock state is the surfaces' lock entries (runtime.js FID_SURF_LOCK), so the switch may move
+   * at any time; JavaScript arms no surface while it is off (d3d8.js Surface.arm); off by default (ORTHROS_LOCK_FAST=1: on)
+   */
+  setLockFast(on) { for (const [idx, fid] of this.lockFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0; }
   /** (measurement, dbg:ORTHROS_D3DX_FAST_OFF / ORTHROS_API_OPT_OFF) D3DX math (fast-d3dx.js), effect parameter descriptions and raw values on the WASM fast path or in JavaScript */
   setD3dxFast(on) {
     this.d3dxFastOff = !on;

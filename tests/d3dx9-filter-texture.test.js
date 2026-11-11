@@ -2,16 +2,27 @@
 // memory): the levels written equal the base implementation's computation (tests/fixtures/d3dx9-image-base.js: the
 // source level decoded — or its RGBA kept by the load — then resized 2:1 and re-encoded level after level), for DXT and
 // 16 / 32-bit formats, a chain starting below level 0, a source level without memory (skipped, as before), and the
-// point filter (level by level).
-import { test } from 'node:test';
+// point filter (level by level). Each case twice: the pixel work on the calling thread, then by texture helpers
+// (d3dx9-tex-jobs.js: worker threads writing the shared guest memory, read here after their fences).
+import { test, after } from 'node:test';
+import { Worker } from 'node:worker_threads';
+import { TexJobs } from '../src/win32/d3dx9-tex-jobs.js';
 import assert from 'node:assert/strict';
 import { d3dEnv } from './d3d-random.js';
 import { registerD3DX9 } from '../src/win32/d3dx9.js';
 import * as base from './fixtures/d3dx9-image-base.js';
 import { FMT } from '../src/win32/d3d8.js';
 
-function env() {
-  const E = d3dEnv(null), { mem, ctx, com } = E;
+const helpers = [];
+after(async () => { for (const w of helpers) await w.terminate(); });
+/** texture helpers on worker threads (as the browser's workers: d3dx9-tex-helper.js) */
+function texJobs(n = 2) {
+  const url = new URL('../src/win32/d3dx9-tex-jobs.js', import.meta.url).href, memUrl = new URL('../src/cpu/memory.js', import.meta.url).href;
+  return new TexJobs(n, () => { const w = new Worker(`Promise.all([import('${url}'), import('${memUrl}')]).then(([{ texHelper }, { GuestMemory }]) => { const run = texHelper(GuestMemory); require('node:worker_threads').parentPort.on('message', run); });`, { eval: true }); helpers.push(w); return w; });
+}
+function env(async = false) {
+  const E = d3dEnv(null, async), { mem, ctx, com } = E;
+  if (async) E.vm.host.texJobs = texJobs();
   const X = {}; registerD3DX9({ define(dll, d) { Object.assign(X, d); } }, E.vm);
   const out = E.alloc(64), pp = E.alloc(64);
   [320, 240, 22, 1, 0, 0, 1, 0, 1, 1, 75, 0, 0, 0].forEach((v, i) => mem.write32(pp + 4 * i, v));
@@ -40,9 +51,11 @@ const rgbaImage = (w, h, seed) => { let s = seed; const px = new Uint8Array(w * 
 const expected = (t, l0, from, point = false) => { const out = []; let px = from; for (let i = l0 + 1; i < t.levels.length; i++) { const p = t.levels[i - 1], s = t.levels[i]; px = base.resizeRgba(px, p.width, p.height, s.width, s.height, point); out.push(base.fromRgba(s.fmt, px, s.width, s.height)); } return out; };
 const levelBytes = (mem, s) => Array.from(mem.bytes(s.mem, s.bytes));
 
+for (const ASYNC of [false, true]) {
+const tt = (name, fn) => test(`${name}${ASYNC ? ' (texture jobs)' : ''}`, fn);
 for (const fmt of [FMT.DXT1, FMT.DXT5, FMT.A1R5G5B5, FMT.R5G6B5, FMT.A8R8G8B8, FMT.L8]) {
-  test(`D3DXLoadSurfaceFromMemory then D3DXFilterTexture, format ${fmt}: the base's levels`, () => {
-    const { E, mem, call, texture, surface } = env();
+  tt(`D3DXLoadSurfaceFromMemory then D3DXFilterTexture, format ${fmt}: the base's levels`, () => {
+    const { E, mem, call, texture, surface } = env(ASYNC);
     for (const [w, h, point] of [[64, 64, false], [32, 8, false], [16, 16, true]]) {
       const tex = texture(w, h, fmt), src = E.alloc(w * h * 4), rect = E.alloc(16);
       const bgra = base.fromRgba(FMT.A8R8G8B8, rgbaImage(w, h, w + fmt), w, h); mem.writeBytes(src, bgra);
@@ -54,12 +67,13 @@ for (const fmt of [FMT.DXT1, FMT.DXT5, FMT.A1R5G5B5, FMT.R5G6B5, FMT.A8R8G8B8, F
       assert.equal(call('D3DXFilterTexture', tex.p, 0, 0xffffffff, point ? 2 : 5), 0);
       expected(tex.t, 0, from, point).forEach((want, i) => assert.deepEqual(levelBytes(mem, tex.t.levels[i + 1]), Array.from(want), `${w}x${h} level ${i + 1}`));
     }
+    if (ASYNC) assert.ok(E.vm.host.texJobs.stats.jobs >= (fmt === FMT.A8R8G8B8 ? 3 : 6), 'the loads (but a straight copy) and filters by a helper');
   });
 }
 
 /** D3DXCreateTextureFromFileInMemoryEx on each DDS case at `skew` bytes past an aligned address: the base's levels */
-function checkDds(cases, skew) {
-  const { E, mem, call, com, devPtr, out } = env();
+const checkDds = (cases, skew) => {
+  const { E, mem, call, com, devPtr, out } = env(ASYNC);
   for (const k of cases) {
     // (`skew`: the file at an address that is not a multiple of 4 — its levels are views of guest memory there)
     const f = dds(k.fmt, k.w, k.h, k.mips, k.w + k.mips), src = E.alloc(f.bytes.length + 8) + skew; mem.writeBytes(src, f.bytes);
@@ -84,7 +98,7 @@ function checkDds(cases, skew) {
   }
 }
 
-test('D3DXCreateTextureFromFileInMemoryEx from DDS files (read in place): levels as is, converted, generated, color key — the base\'s bytes', () => {
+tt('D3DXCreateTextureFromFileInMemoryEx from DDS files (read in place): levels as is, converted, generated, color key — the base\'s bytes', () => {
   checkDds([
     { fmt: FMT.DXT1, w: 64, h: 64, mips: 7, req: [0, 0], key: 0 }, // (every level as the file has it)
     { fmt: FMT.DXT5, w: 64, h: 32, mips: 7, req: [32, 16], key: 0 }, // (a smaller texture: each level converted from the file's)
@@ -97,7 +111,7 @@ test('D3DXCreateTextureFromFileInMemoryEx from DDS files (read in place): levels
 // DDS levels are views of the guest's buffer at the guest's address (no aligned copy): files at odd addresses, 16 and
 // 32-bit sources (unpacked / swizzled from the view), with the WebAssembly kernels and with the JavaScript code.
 for (const kernels of [true, false]) {
-  test(`DDS files at unaligned addresses, DXT / 16 / 32-bit, ${kernels ? 'WebAssembly kernels' : 'ORTHROS_DXT_WASM=0'}: the base's bytes`, () => {
+  tt(`DDS files at unaligned addresses, DXT / 16 / 32-bit, ${kernels ? 'WebAssembly kernels' : 'ORTHROS_DXT_WASM=0'}: the base's bytes`, () => {
     const cases = [
       { fmt: FMT.DXT1, w: 64, h: 64, mips: 7, req: [32, 32], key: 0 }, // (converted from the file's levels)
       { fmt: FMT.DXT5, w: 64, h: 64, mips: 1, req: [0, 0], key: 0 }, // (generated)
@@ -114,8 +128,8 @@ for (const kernels of [true, false]) {
   });
 }
 
-test('D3DXFilterTexture from level 1, and over a source level without memory (left alone, the chain starting below it)', () => {
-  const { E, mem, call, texture, surface } = env();
+tt('D3DXFilterTexture from level 1, and over a source level without memory (left alone, the chain starting below it)', () => {
+  const { E, mem, call, texture, surface } = env(ASYNC);
   const tex = texture(32, 32, FMT.A1R5G5B5), t = tex.t;
   // level 1 written by a lock, level 0 never touched (no memory): filtering from 0 skips 1, which has no source
   const l1 = t.levels[1], lr = E.alloc(8);
@@ -133,3 +147,4 @@ test('D3DXFilterTexture from level 1, and over a source level without memory (le
   assert.deepEqual(levelBytes(mem, t.levels[2]), l2);
   void surface;
 });
+}

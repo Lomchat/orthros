@@ -237,9 +237,24 @@ export const FID_TICKCOUNT = 28;
  * changes), copied to the caller's structure
  */
 export const FID_SURF_DESC = 29, SURF_DESC_BYTES = 32;
+/**
+ * IDirect3DSurface8/9::LockRect / UnlockRect on the fast path (FID_SURF_LOCK, FID_SURF_UNLOCK; docs/api-layer.md "Surface
+ * locks"): a surface's COM object keeps after its description a lock entry (SURF_LOCK_BYTES at +24 + SURF_DESC_BYTES,
+ * d3d8.js Surface.ptrOf) — the lock state the JavaScript handlers read and write too (Surface.locked):
+ * +0 state (LK_LOCKED, LK_ARMED: JavaScript found nothing a lock must do besides writing the pointer — memory allocated,
+ * no render worker copy, no D3DX cache, no diagnostics —, LK_PEND: an unlock queued), +4 the memory, +8 the pitch,
+ * +12 width, +16 height, +20 the bytes per texel (LK_BLOCKS | bytes per 4x4 block for DXT formats), +24 the lock's
+ * flags, +28 its rectangle (left, top, right, bottom; left -1: the whole surface), +44 the union of the rectangles
+ * unlocked since the queued unlock (LK_NONE: read-only locks only, -1: the whole surface).
+ * The fast LockRect takes an armed unlocked surface while the deferred queue holds nothing but such unlocks (DEFER_QUEUE
+ * +12: their bytes), a rectangle inside the surface; the fast UnlockRect queues one record — the UnlockRect call itself,
+ * replayed by JavaScript (Surface.unlock: LK_PEND set) where the dirty marks happen, in order with the queued calls.
+ */
+export const FID_SURF_LOCK = 30, FID_SURF_UNLOCK = 31, SURF_LOCK_BYTES = 64;
+export const LK_LOCKED = 1, LK_ARMED = 2, LK_PEND = 4, LK_BLOCKS = 0x100, LK_NONE = -2;
 export const DEFER_SPEC = JIT_SCRATCH_BASE + 0x20000;
 /** +0 bytes used, +4 nonzero when a queued record may change reference counts (DEFER_REFS), +8 nonzero when one may
- * change device states (DEFER_STATES), records from +16 */
+ * change device states (DEFER_STATES), +12 the bytes of queued surface unlocks (FID_SURF_UNLOCK), records from +16 */
 export const DEFER_QUEUE = JIT_SCRATCH_BASE + 0x60000;
 /** profiling runtime: calls handled by the fast path, u32 per fast API id; at +0x80 a count, at +0x100 a ring of the
  * last 1024 return addresses (the call sites) */
@@ -302,7 +317,8 @@ export const DEFER_DRAWS = new Set(['IDirect3DDevice9::DrawIndexedPrimitive', 'I
 export const FAST = Object.freeze({ GetLastError: 1, SetLastError: 2, TlsGetValue: 3, TlsSetValue: 4, EnterCriticalSection: 5, LeaveCriticalSection: 6, TryEnterCriticalSection: 7, InterlockedIncrement: 8, InterlockedDecrement: 9, InterlockedExchange: 10, InterlockedExchangeAdd: 11, InterlockedCompareExchange: 12, GetCurrentThreadId: 13, GetCurrentProcessId: 14, GetProcessHeap: 15, WaitForSingleObject: 17, ReleaseMutex: 18, timeGetTime: 19, QueryPerformanceCounter: 20 });
 export const FAST_NAMES = { 'kernel32.dll!GetLastError': 1, 'kernel32.dll!SetLastError': 2, 'kernel32.dll!TlsGetValue': 3, 'kernel32.dll!FlsGetValue': 3, 'kernel32.dll!TlsSetValue': 4, 'kernel32.dll!FlsSetValue': 4, 'kernel32.dll!EnterCriticalSection': 5, 'kernel32.dll!LeaveCriticalSection': 6, 'kernel32.dll!TryEnterCriticalSection': 7, 'kernel32.dll!InterlockedIncrement': 8, 'kernel32.dll!InterlockedDecrement': 9, 'kernel32.dll!InterlockedExchange': 10, 'kernel32.dll!InterlockedExchangeAdd': 11, 'kernel32.dll!InterlockedCompareExchange': 12, 'kernel32.dll!GetCurrentThreadId': 13, 'kernel32.dll!GetCurrentProcessId': 14, 'kernel32.dll!GetProcessHeap': 15, 'kernel32.dll!WaitForSingleObject': 17, 'kernel32.dll!ReleaseMutex': 18,
   'winmm.dll!timeGetTime': 19, 'kernel32.dll!GetTickCount': 28, 'kernel32.dll!QueryPerformanceCounter': 20, 'com.dll!ID3DXEffect::GetParameterDesc': 27,
-  'com.dll!IDirect3DSurface8::GetDesc': 29, 'com.dll!IDirect3DSurface9::GetDesc': 29 };
+  'com.dll!IDirect3DSurface8::GetDesc': 29, 'com.dll!IDirect3DSurface9::GetDesc': 29,
+  'com.dll!IDirect3DSurface8::LockRect': 30, 'com.dll!IDirect3DSurface9::LockRect': 30, 'com.dll!IDirect3DSurface8::UnlockRect': 31, 'com.dll!IDirect3DSurface9::UnlockRect': 31 };
 /** the tick count of timeGetTime/GetTickCount at the VM clock's origin (kernel32.js, misc-dlls.js: the same value) */
 export const TICK_BASE = 0x1000000;
 
@@ -485,7 +501,7 @@ export function buildRuntime(opts = {}) {
     const notHandled = c.block();
     // a call re-executed after a parked wait carries a recorded result for its JavaScript handler
     c.get(STATE).i32load(ST.RESUMING).br_if(notHandled);
-    const NF = Math.max(D3DX_FAST_LAST, FID_PARAM_DESC, FID_TICKCOUNT, FID_SURF_DESC) + 1;
+    const NF = Math.max(D3DX_FAST_LAST, FID_PARAM_DESC, FID_TICKCOUNT, FID_SURF_DESC, FID_SURF_LOCK, FID_SURF_UNLOCK) + 1;
     const labels = new Array(NF);
     for (let i = NF - 1; i >= 0; i--) labels[i] = c.block();
     c.get(FID).br_table(labels, notHandled);
@@ -845,6 +861,70 @@ export function buildRuntime(opts = {}) {
           c.get(A1).eqz().get(A1).i32(0x7fff0000 - SURF_DESC_BYTES).ge_u().or().br_if(notHandled); // (null: JavaScript's error)
           c.get(A1).get(FB).i32(SURF_DESC_BYTES).memcopy();
           c.get(STATE).i32(0); ret(2); break;
+        }
+        case FID_SURF_LOCK: case FID_SURF_UNLOCK: { // LockRect(this, locked, rect, flags) / UnlockRect(this): FB = the lock entry
+          c.get(A0).i32(0x7fff0000).ge_u().br_if(notHandled);
+          c.get(A0).i32load(4).i32(COM_MARKER).ne().br_if(notHandled); // (a live Orthros object)
+          c.get(A0).i32load(12).get(A0).i32(24).add().ne().br_if(notHandled); // (a surface's: its description right after it)
+          c.get(A0).i32(24 + SURF_DESC_BYTES).add().set(FB);
+          if (k === FID_SURF_LOCK) {
+            c.get(FB).i32load(0).i32(LK_LOCKED | LK_ARMED).and().i32(LK_ARMED).ne().br_if(notHandled); // (armed, not locked)
+            c.i32(DEFER_QUEUE).i32load(0).i32(DEFER_QUEUE).i32load(12).ne().br_if(notHandled); // (nothing queued but unlocks)
+            c.get(A1).eqz().get(A1).i32(0x7fff0000 - 8).ge_u().or().br_if(notHandled); // (null: JavaScript's error)
+            c.get(A2);
+            const rect = c.if_();
+            { // a rectangle inside the surface (others: JavaScript), FV = the offset of its first texel (block)
+              c.get(A2).i32(0x7fff0000 - 16).ge_u().br_if(notHandled);
+              c.get(A2).i32load(0).set(TM); c.get(A2).i32load(4).set(N); c.get(A2).i32load(8).set(P); c.get(A2).i32load(12).set(FE);
+              c.get(TM).i32(0).lt_s().get(N).i32(0).lt_s().or().get(P).get(TM).le_s().or().get(FE).get(N).le_s().or();
+              c.get(P).get(FB).i32load(12).gt_s().or().get(FE).get(FB).i32load(16).gt_s().or().br_if(notHandled);
+              c.get(FB).get(TM).i32store(28); c.get(FB).get(N).i32store(32); c.get(FB).get(P).i32store(36); c.get(FB).get(FE).i32store(40);
+              c.get(FB).i32load(20).tee(WD).i32(LK_BLOCKS).and();
+              const blocks = c.if_();
+              c.get(N).i32(2).shr_u().get(FB).i32load(8).mul().get(TM).i32(2).shr_u().get(WD).i32(0xff).and().mul().add().set(FV);
+              c.else_();
+              c.get(N).get(FB).i32load(8).mul().get(TM).get(WD).mul().add().set(FV);
+              c.end(); void blocks;
+            }
+            c.else_();
+            c.get(FB).i32(-1).i32store(28); c.i32(0).set(FV);
+            c.end(); void rect;
+            c.get(A1).get(FB).i32load(8).i32store(0);
+            c.get(A1).get(FB).i32load(4).get(FV).add().i32store(4);
+            c.get(FB).get(SP).i32load(16).i32store(24);
+            c.get(FB).get(FB).i32load(0).i32(LK_LOCKED).or().i32store(0);
+            c.get(STATE).i32(0); ret(4); break;
+          }
+          c.get(FB).i32load(0).tee(TM).i32(LK_LOCKED | LK_ARMED).and().i32(LK_LOCKED | LK_ARMED).ne().br_if(notHandled);
+          c.get(TM).i32(LK_PEND).and().eqz();
+          const queue = c.if_();
+          { // the first unlock since the queue ran: the call queued (its record: the thunk, 1 argument, this)
+            c.i32(DEFER_QUEUE).i32load(0).tee(N).i32(12).add().i32(DEFER_CAP).gt_u().br_if(notHandled); // (full: JavaScript drains)
+            c.get(N).i32(DEFER_QUEUE + 16).add().tee(P).get(IDX).i32store(0);
+            c.get(P).i32(1).i32store(4); c.get(P).get(A0).i32store(8);
+            c.i32(DEFER_QUEUE).get(N).i32(12).add().i32store(0);
+            c.i32(DEFER_QUEUE).i32(DEFER_QUEUE).i32load(12).i32(12).add().i32store(12);
+            c.get(FB).i32(LK_NONE).i32store(44);
+          }
+          c.end(); void queue;
+          c.get(FB).i32load(24).i32(0x10).and().eqz(); // (D3DLOCK_READONLY: nothing written)
+          const wrote = c.if_();
+          {
+            const merged = c.block();
+            c.get(FB).i32load(28).i32(-1).eq().get(FB).i32load(44).i32(-1).eq().or();
+            const whole = c.if_(); c.get(FB).i32(-1).i32store(44); c.br(merged); c.end(); void whole;
+            c.get(FB).i32load(44).i32(LK_NONE).eq();
+            const first = c.if_(); for (let o = 0; o < 16; o += 4) c.get(FB).get(FB).i32load(28 + o).i32store(44 + o); c.br(merged); c.end(); void first;
+            for (let o = 0; o < 16; o += 4) { // (the union: least left / top, greatest right / bottom)
+              c.get(FB).get(FB).i32load(28 + o).get(FB).i32load(44 + o).get(FB).i32load(28 + o).get(FB).i32load(44 + o);
+              if (o < 8) c.lt_s(); else c.gt_s();
+              c.select().i32store(44 + o);
+            }
+            c.end(); void merged;
+          }
+          c.end(); void wrote;
+          c.get(FB).get(TM).i32(~LK_LOCKED).and().i32(LK_PEND).or().i32store(0);
+          c.get(STATE).i32(0); ret(1); break;
         }
         default: // pure D3DX math (fast-d3dx.js)
           if (k >= D3DX_FAST_FIRST && k <= D3DX_FAST_LAST) emitD3dxFast(c, k, { STATE, SP, A0, A1, A2, T: [TM, N, P], F: VP + 1, notHandled, ret });

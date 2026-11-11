@@ -45,6 +45,33 @@ frame down, all generic (no game-specific code), and how to switch them off with
   (BFME2), with a `LockRect` / `UnlockRect` pair each. A null output, a released object (marker cleared) or an object
   without a description go to JavaScript. Switched with the D3DX fast paths (`ORTHROS_D3DX_FAST_OFF`). Test:
   `jit-surface-desc.test.js` (every kind of surface, D3D8 and D3D9, against the handler).
+- **Surface locks** (`FID_SURF_LOCK`, `FID_SURF_UNLOCK`, 2026-11-11): `IDirect3DSurface8/9::LockRect` / `UnlockRect`.
+  Age of the Ring's skirmish load writes its terrain textures in small rectangles — 133 k lock / unlock pairs of
+  `IDirect3DSurface9` (from `GetSurfaceLevel`), ~4 per surface between two other calls; MY CAPTAINS ~260 k. The lock
+  state moves into a lock entry after the surface's description (`SURF_LOCK_BYTES`, written by `Surface.ptrOf`;
+  `Surface.locked` reads it): +0 state (`LK_LOCKED`, `LK_ARMED`, `LK_PEND`), the memory, pitch, size, bytes per texel
+  (or per DXT block), the lock's flags and rectangle, and the union of the rectangles unlocked since the last drain.
+  JavaScript *arms* a surface at the end of each of its lock / unlock (`Surface.arm`) when a lock has nothing to do but
+  write the pointer: memory allocated, no render target / depth surface (readback), no resource the render worker's
+  recorder knows (its `beforeWrite` copy or wait — `newRec` disarms the levels, `Surface.recorded`), no GDI device
+  context, no D3DX texture job pending (below), no frame capture / `--watch-tex` / lock log. The fast `LockRect` takes an
+  armed unlocked surface, a null rectangle or one inside the surface, while the deferred queue holds nothing but surface
+  unlocks (`DEFER_QUEUE` +12 counts their bytes: a queued draw must not see the guest's writes before its turn); it
+  writes the pitch and pointer as the handler does, the flags and rectangle into the entry. The fast `UnlockRect` of a
+  locked armed surface clears the lock, merges the rectangle into the entry's union (read-only locks add none) and, the
+  first time since the last drain, queues one record — the `UnlockRect` call itself (`LK_PEND`); `Vm.drainDeferred`
+  replays it in order with the other queued calls and `Surface.unlockQueued` does what the JavaScript unlocks would have
+  done, once over the union (`markLocked` of the union marks what `markLocked` of each rectangle does: dirty flag, the
+  union of dirty rectangles, `levelsClean`, `surfaceDirty`), the D3DX RGBA cache dropped as `lock` drops it. Everything
+  else — a null output, an unlocked or locked surface, a rectangle outside, a full queue, an unarmed surface — goes to
+  JavaScript, which reads and writes the same entry (`Surface.setLock` / `loadLock`), so the two paths interleave freely.
+  The lock patterns of the phase report (`locks: whole / rect`) count only the locks JavaScript handles.
+  **Off by default**: no load measured faster (below, "Measured"). Switch: `ORTHROS_LOCK_FAST=1` on (`Jit.setLockFast`,
+  in-session through `dbg:`). Test: `jit-surface-lock.test.js`
+  (random locks / unlocks of DXT and plain levels — rectangles inside, across and outside, null outputs, double locks,
+  unlocks of unlocked surfaces, read-only locks, runs on one surface — through translated code with the fast path and
+  its queued records against the handlers alone: the same results, pointers, pitches, and at every JavaScript call the
+  same lock state, dirty flags and dirty rectangles).
 - **Bindings that change nothing** (`DEFER_F_TEX / STREAM / IB`): a Direct3D 9 `SetTexture`, `SetStreamSource` or
   `SetIndices` of what is bound already is dropped, as redundant render / stage / sampler states were (BFME2 play: ~17 k such
   calls/s reached JavaScript). The device keeps their shadow entries; an effect's commit list names the textures a
@@ -543,6 +570,78 @@ by 6 %) and 0.10 against 0.14-0.15 ms (A4R4G4B4). Within the noise of a loaded s
 the in-memory mip chains of 16-bit sources (A1R5G5B5 chain 0.35 -> 0.12 ms), and no game run shows a 16-bit decode on
 its own among the costly calls.
 
+## D3DX texture jobs (src/win32/d3dx9-tex-jobs.js, d3dx9-texwork.js; 2026-11-11)
+
+After the kernels above, D3DX's texture work was still on the game thread, ~6 % of Age of the Ring's skirmish load
+(`--api-times`, 8 cores: `D3DXCreateTextureFromFileInMemoryEx` 591 ms for 189 calls, `D3DXLoadSurfaceFromMemory` 529 ms
+for 1 225, `D3DXFilterTexture` 236 ms for 1 236, of a 22.6 s load) while other cores idled. The pixel work now goes to
+**texture helpers** (`d3dx9-tex-helper.js` workers, `min(2, cores - 3)`; `ORTHROS_TEX_HELPERS=N`), the call returning
+at once with its exact result:
+
+- **What stays on the game thread**: parsing the file (and decoding JPEG / PNG / TGA / BMP: a corrupt file still fails the
+  call), every check and error code (`encodable(fmt)`: whether the format can be written is decided before the job, as
+  its result would), the texture's creation, the levels' memory (allocated, the render worker's `beforeWrite` fence
+  passed) and their marks (`dirty`, `surfaceUpdated`, the D3DX RGBA cache dropped or kept). D3DX's straight copy
+  (`D3DXLoadSurfaceFromMemory` of the same format and size) stays here: a copy of rows.
+- **What a job does** (`runJob`): `image` — the levels of a 2D texture created from a file (`fillChainFromImage`: levels
+  the file has converted from it, the others generated from the level above); `blit` — a rectangle of RGBA written into
+  a level (`blitInto`), its source a copy of the guest bytes `sourceRgba` reads (`sourceSpan`: the game may reuse its
+  buffer at once; DDS levels parsed in place are copied too); `filter` — `D3DXFilterTexture`'s chain (`filterChain`).
+  These are the very functions the synchronous path calls (`d3dx9-texwork.js`, moved out of `d3dx9.js`): the same bytes
+  on any thread. The RGBA a whole DXT write keeps for the next `D3DXFilterTexture` is a shared array the job fills
+  (`keep`): the filter job of the same texture, on the same helper, reads it after it.
+- **Fences**: a texture's jobs go to one helper (`id % helpers`), in order; each level a job reads or writes carries its
+  fence (`Surface.texJob`), the texture its latest one. `Surface.mem` waits for the level's fence (`Atomics.wait` on the
+  helper's done counter): a lock, a copy (`UpdateTexture`, `UpdateSurface`, `StretchRect` on the CPU), a D3DX call reading
+  the level, its release (the memory freed after the job: a release waits rather than cancels), a device reset. A draw
+  binding the texture waits for the texture's fence (`Resource.settleJobs` in the recorder's `syncTexture` and the WebGL
+  backend's `glTexture`; a job's dirty mark on a bound texture makes the recorder look at every binding again,
+  `texHook = -1`). `GetDesc` / `GetLevelDesc` never wait (the description is exact at return). A snapshot settles every job
+  first (`captureVm`) and copies the kept RGBA out of shared memory. A level with a pending job is disarmed for the
+  fast lock path (above).
+- **Every guest memory of the page**: one set of helpers serves every machine (Age of the Ring's launcher and its game are
+  two processes, each its own guest memory): a job names its memory (`memId`), handed to the helpers the first time it
+  is used and dropped once collected (`FinalizationRegistry`). (The first version handed the helpers the first machine's
+  memory only: the game's textures came out black in the browser while the Node tests, one machine, passed — found with
+  `ORTHROS_TEX_VERIFY`; `d3dx9-tex-jobs.test.js` now runs its sessions, a memory each, on one set of helpers.)
+- **Debugging**: `ORTHROS_TEX_WAIT=1` waits for each job at once (a missing fence or a wrong result?);
+  `ORTHROS_TEX_VERIFY=1` waits, runs the job again on the game thread and logs the first bytes that differ; a job that
+  throws on a helper is reported back (`d3dx texture job failed on helper N`).
+- **A helper that stops answering** (`timeouts`: 15 s for the first job, 5 s later): the helpers are terminated and the
+  jobs not done run on the game thread, in order, from their kept inputs (`takeOver`, `stats.local`).
+- Guest memory must be shared (a render worker or the background translator: the default); otherwise, and with
+  `ORTHROS_TEX_ASYNC=0` (in-session through `dbg:`), the work runs here as before. Phase reports: `D3DX texture jobs N,
+  waits for them M (ms)`; the waits are frame accounting's `tex`.
+- Tests: `d3dx9-filter-texture.test.js` runs every case twice, the second time with helpers (worker threads on the
+  shared guest memory) against the base implementation's bytes; `d3dx9-tex-jobs.test.js` plays random sessions — loads
+  into levels (rectangles aligned or not, converted formats, color keys, filters), filters, textures from DDS files,
+  locks reading and writing a level, draws, releases, the game's buffers overwritten after each call — with and without
+  helpers (every lock, draw and the end see the same bytes), then with helpers that never answer.
+
+**Measured** (2026-11-11, browser harness, `--gl-discard`, 800 % CPU unless noted, the server shared and loaded — 1-minute
+load 15-55 —, base = the tree before this work, runs alternated, a fresh copy of the learned data per run; the load is the
+click to the first frame of play, `load` + `loadscreen` phases; MY CAPTAINS: the click to the Create-a-Hero screen):
+
+| Load | base (s) | texture jobs + fast locks (s) | texture jobs only | fast locks only |
+|---|---|---|---|---|
+| Age of the Ring skirmish | 22.0, 22.0 | 20.7, 22.3 | 20.9 | 22.1 |
+| Age of the Ring skirmish, 400 % | 27.1, 23.1 | 23.1, 23.1 | | |
+| Age of the Ring MY CAPTAINS | 39.2, 39.4 | 38.2, 39.3, 39.1 | 39.3, 39.3 | |
+| BFME II skirmish | 21.8, 22.1 | 20.9, 21.0 | | |
+| RotWK 2.02 skirmish | 21.1, 19.4, 21.0 | 21.2, 20.8 (a third, 25.6, on a contended machine: menu guest 6.0 against 3.2 ms per M instructions) | 17.9 (marks shifted), 20.7 | |
+
+Game-thread time (frame accounting, seconds over the load): `tex` 0.3-0.5 -> 0-0.1 everywhere (the jobs' waits: 7-13
+per load, 20-100 ms in all); `api` AotR skirmish 3.0 / 3.3 -> 2.4 / 2.7, BFME II 2.5 / 2.6 -> 2.1 / 2.0, MY CAPTAINS
+6.3 / 6.4 -> 5.9-6.2 (6.6 / 6.4 with the locks in JavaScript). With `--api-times` (AotR skirmish): `D3DXLoadSurfaceFromMemory`
+529 ms, `D3DXCreateTextureFromFileInMemoryEx` 591 ms and `D3DXFilterTexture` 236 ms of game thread before; the locks
+133 k `LockRect` + 133 k `UnlockRect` in JavaScript (~320 ms estimated) -> 6 k (the others answered in WASM, their
+unlocks replayed one per surface and drain).
+Reading: the texture jobs win beyond the spread on BFME II (both runs below both bases) and on two of three AotR skirmish
+runs, and lose nowhere — **on by default**. The fast locks take ~0.3-0.4 s of `api` off a load but no wall clock time
+comes out of it on any load (AotR skirmish 22.1 with them alone, MY CAPTAINS the same with and without, RotWK 20.7 without /
+20.8 with): **off by default**, kept behind `ORTHROS_LOCK_FAST=1`. No thin-link run: neither change touches the game data's
+path (the files, their reads and their order are the same).
+
 ## Measuring within a session
 
 Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of the above off (`=` back on) except
@@ -561,6 +660,8 @@ BeginPass, commits, End — over 6 effects with array-selected shaders, preshade
 guest code through the JIT and the deferred queue; `--base <tree>`; best read as instructions under `perf stat -e
 instructions:u`, insensitive to the server's load). Test of the effect binding: `d3dx9-effect-bind.test.js` (random
 sessions against the reference path, registers bit for bit).
+`dbg:ORTHROS_LOCK_FAST=1` puts surface locks on the fast path (`=`: off again, the default); `dbg:ORTHROS_TEX_ASYNC=0` keeps D3DX's
+texture work on the game thread (jobs already handed out still finish on their helper).
 `dbg:ORTHROS_DRAW_OPT_OFF=1` handles the draws at their call again and switches the lights / material / FVF filter off
 (`=`: back on, the filter once the queue has run): `Jit.setDrawOpt`. (The fix of the clobbered spec, section 1, has no
 switch.)

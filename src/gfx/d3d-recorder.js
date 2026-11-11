@@ -144,7 +144,8 @@ export class RenderLink {
   }
   // ---------------------------------------------------------------- resources: ids, fences, memory
   slot() { return this.freeSlots.length ? this.freeSlots.pop() : this.nextSlot < ACK_SLOTS ? this.nextSlot++ : -1; }
-  newRec(r, slotted) { const gen = ++this.gen; return (r.rec = { id: r.id, slot: slotted ? this.slot() : -1, gen, gen0: gen, lastRef: 0, binds: 0, destroyed: false, eager: false }); }
+  // (recorded: the resource's surfaces leave the JIT's fast lock path, d3d8.js Surface.arm — a write must now go through beforeWrite)
+  newRec(r, slotted) { const gen = ++this.gen; r.rec = { id: r.id, slot: slotted ? this.slot() : -1, gen, gen0: gen, lastRef: 0, binds: 0, destroyed: false, eager: false }; r.recorded?.(); return r.rec; }
   /** latest ring position of a command that may read the resource's guest memory */
   lastRefOf(rr) { return rr.binds > 0 && this.lastWorkEnd > rr.lastRef ? this.lastWorkEnd : rr.lastRef; }
   /** may a command not yet replayed still read the resource's guest memory? */
@@ -363,6 +364,7 @@ export class Recorder {
   constTouched(k, lo, hi) { const s = this.s; if (lo < s.cLo[k]) s.cLo[k] = lo; if (hi > s.cHi[k]) s.cHi[k] = hi; }
   surfaceDirty(sf, rect) {
     const rr = recOf(sf); if (!rr || rr.destroyed || this.link.failed) return;
+    if (sf.texJob) this.texHook = -1; // (a D3DX texture job writes it: the next draw's bindings wait for the job, syncTexture)
     const gen = rr.gen = ++this.link.gen;
     if (rect) { const p = this.w.begin(OP.SURF_DIRTY, 7), I = this.w.I; I[p] = sf.id; I[p + 1] = gen; I[p + 2] = 4; I[p + 3] = rect[0]; I[p + 4] = rect[1]; I[p + 5] = rect[2]; I[p + 6] = rect[3]; }
     else this.w.put(OP.SURF_DIRTY, sf.id, gen, NO_RECT);
@@ -563,7 +565,9 @@ export class Recorder {
   }
   syncTexture(i) {
     const d = this.dev, s = this.s, L = this.link, ptr = d.textures[i];
-    const r = ptr ? d.com.implAt(ptr) : null, old = s.texRes[i], nres = r ? (this.ensureRes(r), r.rec) : null;
+    const r = ptr ? d.com.implAt(ptr) : null, old = s.texRes[i];
+    if (r?.texJob) r.settleJobs(); // (D3DX texture jobs on its levels, d3dx9-tex-jobs.js: done before a draw may read them)
+    const nres = r ? (this.ensureRes(r), r.rec) : null;
     s.tex[i] = ptr;
     if (nres === old && ptr) return;
     L.unbind(old); L.bind(nres); s.texRes[i] = nres;
