@@ -289,6 +289,7 @@ export class WebGLDevice {
   }
   /** GL texture for a texture resource, uploading dirty levels. */
   glTexture(t) {
+    if (t.texJob) t.settleJobs(); // (D3DX texture jobs on its levels, d3dx9-tex-jobs.js: done before a draw reads them)
     // (a texture whose levels are all uploaded and clean, bound before by this backend: its record kept on the resource —
     // no lookup by id at each bind. glOwner / glGen: this backend, and no context loss or restore since)
     if (t.levelsClean === true && t.glOwner === this && t.glGen === this.texGen && !this.noStateCache) { if (apiOpt.glCheck) this.checkTexClean(t, t.glRec); return t.glRec; }

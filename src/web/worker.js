@@ -2,6 +2,7 @@
 // to OPFS), the browser host and the VM, then pumps the VM cooperatively so the canvases are
 // presented and input/audio flow while the guest runs.
 import { DxtPool } from '../win32/dxt-pool.js';
+import { TexJobs } from '../win32/d3dx9-tex-jobs.js';
 import { setDxtEncoder } from '../win32/d3dx9-image.js';
 import { Vm, GuestCrash } from '../core/vm.js';
 import { RealClock } from '../core/clock.js';
@@ -374,6 +375,12 @@ async function start(m) {
       setDxtEncoder((fmt, rgba, w, h) => pool.encode(fmt, rgba, w, h));
       host.dxtPool = pool;
     } catch (e) { log('warn', `parallel DXT encoding unavailable: ${e.message}`); }
+  }
+  // D3DX's texture pixel work handed to texture helper workers while the game goes on (d3dx9-tex-jobs.js; they write into
+  // the guest's memory, which must be shared); ?dbg=ORTHROS_TEX_ASYNC=0: on this thread, ORTHROS_TEX_HELPERS=N their number
+  const texHelpers = globalThis.ORTHROS_TEX_HELPERS ?? Math.max(0, Math.min(2, (navigator.hardwareConcurrency || 2) - 3));
+  if (texHelpers > 0 && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated && vm.mem.memory.buffer instanceof SharedArrayBuffer) {
+    try { host.texJobs = new TexJobs(texHelpers, () => { const w = new Worker(new URL('../win32/d3dx9-tex-helper.js', import.meta.url), { type: 'module' }); w.onerror = (e) => log('warn', `texture helper: ${e.message ?? e}`); return w; }, vm.mem, (t) => log('warn', t)); } catch (e) { log('warn', `D3DX texture helpers unavailable: ${e.message}`); }
   }
   // slow-frame diagnostics: what happened during a frame longer than 33 ms (deltas since the previous frame)
   host.frameProbe = () => ({ t: performance.now(), api: vm.apiCalls, slices: vm.slices, translateMs: vm.jit?.stats.translateMs ?? 0, regions: vm.jit?.stats.regions ?? 0, consolidations: vm.jit?.stats.consolidations ?? 0, fallbacks: vm.jit?.stats.fallbackSteps ?? 0, uploads: host.gfx?.device?.stats?.uploads ?? 0, uploadKB: Math.round((host.gfx?.device?.stats?.uploadBytes ?? 0) / 1024), texMs: Math.round(host.gfx?.device?.stats?.texMs ?? 0), draws: vm.d3dDevice?.draws ?? 0, audioMs: host.audioMs ?? 0, threads: vm.proc.threads.length, ioReq: netStat('requests'), ioMs: Math.round(netStat('ms')), ioKB: Math.round(netStat('bytes') / 1024), idleMs: Math.round(pumpIdleMs + (host.waitMs ?? 0)), idleParts: takeIdleParts(), heldMs: Math.round(vm.wm?.heldMs ?? 0), programMs: Math.round(host.gfx?.device?.stats?.programMs ?? 0), apiMs: Math.round(vm.apiTimeTotal ?? 0), topApis: vm.apiTimes ? takeTopApis() : '', mainWaits: vm.mainWaits ? takeMainWaits() : '', gpuWaitMs: Math.round(host.gfx?.link?.stats.gpuWaitMs ?? 0) });
@@ -1057,6 +1064,7 @@ self.onmessage = (e) => {
     const ls = vm?.d3dDevice?.lockStats ?? {}, lp = markPrev?.locks ?? {}, dl = (k) => (ls[k] ?? 0) - (lp[k] ?? 0);
     const top = vm?.apiTimesPhase ? [...vm.apiTimesPhase].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', ') : '(--api-times off)';
     log('gfx', `mark ${m.label}: texture levels uploaded ${d('texLevels')} (${d('reuploads')} again), ${(d('uploadBytes') / 1048576).toFixed(1)} MiB as RGBA8, ${d('texMs').toFixed(0)} ms (conversion ${d('texConvMs').toFixed(0)}, placeholder check ${d('texCheckMs').toFixed(0)}), ${d('texPartial')} of them partial; locks: ${dl('whole')} whole, ${dl('rect')} rect (${(100 * dl('rectPx') / Math.max(1, dl('rectOfPx'))).toFixed(0)}% of their surfaces), ${dl('readOnly')} read-only; API ms: ${top}`);
+    if (host?.texJobs) { const ts = host.texJobs.stats, tp = markPrev?.texJobs ?? { jobs: 0, waits: 0, waitMs: 0, local: 0 }; log('gfx', `mark ${m.label}: D3DX texture jobs ${ts.jobs - tp.jobs}, waits for them ${ts.waits - tp.waits} (${(ts.waitMs - tp.waitMs).toFixed(0)} ms)${host.texJobs.broken ? ' (helpers off, ' + (ts.local - tp.local) + ' run here)' : ''}`); }
     if (host?.dxtPool) { const ps = host.dxtPool.stats, pp = markPrev?.pool ?? { jobs: 0, waitMs: 0 }; log('gfx', `mark ${m.label}: parallel DXT encodes ${ps.jobs - pp.jobs}, waiting for the helpers ${(ps.waitMs - pp.waitMs).toFixed(0)} ms${host.dxtPool.broken ? ' (pool off)' : ''}`); }
     if (vm?.d3dxProf?.size) { log('gfx', `mark ${m.label}: D3DX image work (ms, count): ${[...vm.d3dxProf].sort((a, b) => b[1].ms - a[1].ms).slice(0, 14).map(([k, e]) => `${k}: ${e.ms.toFixed(0)}/${e.n}`).join('; ')}`); vm.d3dxProf.clear(); }
     const hist = vm?.apiHist(), hp = markPrev?.hist;
@@ -1072,7 +1080,7 @@ self.onmessage = (e) => {
     // (PeekMessage polling of the phase, user32.js peekIdle: waits, those up to the expected end, bouts of polling)
     const pk = { parks: 0, longParks: 0, ends: 0, cut: 0 }; for (const t of vm?.proc?.threads ?? []) if (t.peekIdle) for (const k in pk) pk[k] += t.peekIdle[k];
     if (markPrev?.pk && pk.parks > markPrev.pk.parks) log('gfx', `mark ${m.label}: PeekMessage polling: ${pk.parks - markPrev.pk.parks} waits (${pk.longParks - markPrev.pk.longParks} up to the expected end), ${pk.ends - markPrev.pk.ends} bouts of polling ended (${pk.cut - markPrev.pk.cut} right after a wait)`);
-    markPrev = { ...st, pk, guestInsns: vm?.guestInsns ?? 0, picks: vm?.sched?.picks ?? 0, slices: vm?.slices ?? 0, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast, same, rsc: st.rscale ? { ...st.rscale } : null }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
+    markPrev = { ...st, pk, guestInsns: vm?.guestInsns ?? 0, picks: vm?.sched?.picks ?? 0, slices: vm?.slices ?? 0, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, texJobs: host?.texJobs ? { ...host.texJobs.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast, same, rsc: st.rscale ? { ...st.rscale } : null }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });
   else if (m.type === 'profile-dump') post({ type: 'profile', files: profileDump() });

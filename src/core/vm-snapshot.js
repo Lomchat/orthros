@@ -235,6 +235,8 @@ export function captureVm(vm, meta = {}, problems = null) {
   const vms = g ? g.vms : [vm];
   // (COM calls the JIT queued run at the next API call, by whichever thread makes it: now, by the last one that ran)
   for (const v of vms) if (v.mem.u32[DEFER_QUEUE >>> 2] && v.lastThread && !v.depth) v.drainDeferred(v.lastThread);
+  // (D3DX texture jobs, d3dx9-tex-jobs.js: their bytes in guest memory before it is captured — their fences, transient, are skipped)
+  for (const v of vms) { v.host?.texJobs?.settleAll(); v.d3dx?.unshareRgba?.(); }
   const why = notQuiet(vm);
   if (why) throw new SnapshotError(`not a quiet point: ${why}`);
   const t0 = performance.now(), graph = encodeGraph(vm, g ? groupSnapRegistry(g) : vm.snap, problems), t1 = performance.now(), pages = capturePages(vm.mem);

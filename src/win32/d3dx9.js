@@ -5,7 +5,8 @@ import { snapClass } from '../core/snapshot.js';
 import { FMT, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
-import { parseImage, parseImageInfo, toRgba, toRgbaRows, fromRgba, resizeRgba, applyColorKey, isDxt, mipChain, mipChainReady, isDdsFile } from './d3dx9-image.js';
+import { parseImage, parseImageInfo, toRgba, fromRgba, resizeRgba, applyColorKey, isDxt, isDdsFile } from './d3dx9-image.js';
+import { FILTER_POINT, encodable, levelData, fillChainFromImage, blitInto, blitKeepsRgba, sourceRgba, sourceSpan, filterChain, filledFrom } from './d3dx9-texwork.js';
 import { defineEffects } from './d3dx9-effect.js';
 import { assembleShader } from './d3dx9-asm.js';
 import { unshared } from './strings.js';
@@ -13,8 +14,6 @@ import { resAlloc, resFree, outOfAddressSpace, OutOfAddressSpace } from './res-m
 
 const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c, D3DXERR_INVALIDDATA = 0x88760b59, E_OUTOFMEMORY = 0x8007000e, E_NOTIMPL = 0x80004001;
 const D3DX_DEFAULT = 0xffffffff, D3DX_DEFAULT_NONPOW2 = 0xfffffffe, D3DX_FROM_FILE = 0xfffffffd;
-/** D3DX_FILTER: low byte = filter kind (1 NONE, 2 POINT, 3 LINEAR, 4 TRIANGLE, 5 BOX) */
-const FILTER_POINT = 2;
 
 /**
  * @param {import('./api.js').ApiRegistry} api
@@ -105,28 +104,23 @@ export function registerD3DX9(api, vm) {
     return f;
   };
   const fullChain = (...dims) => { let n = 1, s = Math.max(...dims); while (s > 1) { s >>= 1; n++; } return n; };
-  /** level `i` of `im` (face f) converted to `fmt` at w x h x d (null when impossible) */
-  const levelData = (im, f, i, fmt, w, h, d, filter, colorKey) => {
-    const src = im.images[f][Math.min(i, im.mips - 1)];
-    const sw = Math.max(1, im.width >> Math.min(i, im.mips - 1)), sh = Math.max(1, im.height >> Math.min(i, im.mips - 1)), sd = Math.max(1, im.depth >> Math.min(i, im.mips - 1));
-    if (i < im.mips && sw === w && sh === h && sd === d && fmt === im.fmt && !colorKey) return src;
-    // (a 2D level with the box filter: decoded, resized and encoded in the kernels' memory — the loop's bytes)
-    if (d === 1 && sd === 1 && !colorKey && (filter & 0xff) !== FILTER_POINT && mipChainReady(fmt)) { const r = mipChain(fmt, src, sw, sh, [[w, h]], im.fmt); if (r) return r[0]; }
-    // through RGBA8 (slice by slice for volumes)
-    const out = new Uint8Array(surfaceBytes(fmt, w, h) * d);
-    for (let z = 0; z < d; z++) {
-      const sz = Math.min(sd - 1, Math.floor(z * sd / d)), sliceBytes = surfaceBytes(im.fmt, sw, sh);
-      let rgba = toRgba(im.fmt, src.subarray(sz * sliceBytes, (sz + 1) * sliceBytes), sw, sh);
-      if (colorKey) rgba = applyColorKey(rgba.slice(), colorKey);
-      rgba = resizeRgba(rgba, sw, sh, w, h, (filter & 0xff) === FILTER_POINT);
-      const enc = fromRgba(fmt, rgba, w, h);
-      if (!enc) return null;
-      out.set(enc, z * surfaceBytes(fmt, w, h));
-    }
-    return out;
-  };
   /** write level data into a Direct3D surface / volume level of a created resource and tell the backend */
   const fillSurface = (c, s, data) => { s.rgbaCache = null; const a = s.ensureMem(c.proc, data.length >= s.bytes); mem.writeBytes(a, data.subarray(0, Math.min(data.length, s.bytes))); s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
+  // ---- D3DX's pixel work on a texture helper (d3dx9-tex-jobs.js, docs/api-layer.md "D3DX texture jobs")
+  /** the texture helpers, when they take D3DX's pixel work (?dbg=ORTHROS_TEX_ASYNC=0: never) */
+  const texJobs = () => { const j = vm.host?.texJobs; return j && !j.broken && globalThis.ORTHROS_TEX_ASYNC !== 0 ? j : null; };
+  /** a texture level a job may write: no render target, no depth surface */
+  const jobLevel = (s) => !!s.owner && !(s.usage & 3);
+  /** a level as a job sees it */
+  const levelInfo = (s) => ({ mem: s._mem, bytes: s.bytes, fmt: s.fmt, width: s.width, height: s.height, pitch: s.pitch });
+  /** the memory of a level a job writes, as ensureMem — without waiting for a job of the texture's that only reads it */
+  const jobMem = (c, s) => { s.dev.gfx?.beforeWrite?.(s); if (!s._mem) s.ensureMem(c.proc); };
+  /** a written level, as fillSurface leaves it (its bytes to come) */
+  const markFilled = (s) => { s.rgbaCache = null; s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
+  /** hand a job to the texture's helper: the levels it reads or writes wait for it (Surface.mem), the texture too */
+  const handOut = (J, owner, levels, job) => { const f = J.submit(J.helperOf(owner.id), job); for (const l of levels) { l.texJob = f; l.disarm?.(); } owner.texJob = f; return f; };
+  /** an image's bytes a job takes: a copy when they are guest memory (a DDS file parsed in place) */
+  const ownBytes = (b) => (b.buffer instanceof SharedArrayBuffer || b.buffer === mem.buffer ? b.slice() : b);
   const fillVolume = (c, t, i, data) => { const l = t.levels[i]; const a = l.ensureMem(c.proc); mem.writeBytes(a, data.subarray(0, Math.min(data.length, l.bytes))); l.updated(); };
   /** a volume level's contents as RGBA8, slice after slice */
   const volumeRgba = (l) => { const n = l.width * l.height * 4, out = new Uint8Array(n * l.depth); for (let z = 0; z < l.depth; z++) out.set(toRgba(l.fmt, mem.bytes(l.mem + z * l.slice, l.slice), l.width, l.height), z * n); return out; };
@@ -175,33 +169,27 @@ export function registerD3DX9(api, vm) {
     else r = callMethod(c, dev, 'CreateVolumeTexture', [w, h, d, levels, o.usage, fmt, o.pool, pp, 0]);
     if (r) return [r, 0];
     const ptr = mem.read32(pp), t = com.implAt(ptr);
-    const faces = kind === 'cube' ? 6 : 1;
+    const faces = kind === 'cube' ? 6 : 1, o2 = { filter: o.filter, mipFilter: o.mipFilter, colorKey: o.colorKey }, tp = profOn() ? performance.now() : 0;
+    const J = kind === 'tex' ? texJobs() : null;
+    if (J && encodable(fmt)) { // (every level written: allocated and marked now, their bytes from the helper)
+      const lv = t.levels;
+      for (const l of lv) jobMem(c, l);
+      const im0 = { width: im.width, height: im.height, depth: im.depth, mips: im.mips, fmt: im.fmt, images: [im.images[0].slice(0, im.mips).map(ownBytes)] };
+      handOut(J, t, lv, { kind: 'image', im: im0, fmt, levels: lv.map(levelInfo), w, h, o: o2 });
+      for (const l of lv) markFilled(l);
+      if (tp) prof(`CreateTexture levels handed out fmt ${im.fmt} -> ${fmt}`, tp);
+      return [D3D_OK, ptr];
+    }
     for (let f = 0; f < faces; f++) {
       const srcFace = Math.min(f, im.images.length - 1);
-      const n = kind === 'cube' ? t.faces[f].length : t.levels.length;
-      for (let i = 0; i < n; i++) {
+      if (kind !== 'volume') { const lv = kind === 'cube' ? t.faces[f] : t.levels; fillChainFromImage(mem, im, srcFace, fmt, lv, w, h, o2, (i, data) => fillSurface(c, lv[i], data)); continue; }
+      for (let i = 0; i < t.levels.length; i++) {
         const lw = Math.max(1, w >> i), lh = Math.max(1, h >> i), ld = Math.max(1, d >> i);
-        // levels past the file's are generated from the previous level (D3DX's mip filter), others from the file
-        const tp = profOn() ? performance.now() : 0;
-        let data = i < im.mips ? levelData(im, srcFace, i, fmt, lw, lh, ld, o.filter, o.colorKey) : null;
-        if (tp && data) prof(`CreateTexture level from file fmt ${im.fmt} -> ${fmt}${data === im.images[srcFace][i] ? ' (as is)' : ''}`, tp);
-        if (!data) {
-          const tg = tp ? performance.now() : 0;
-          const prevW = Math.max(1, w >> (i - 1)), prevH = Math.max(1, h >> (i - 1));
-          const prev = kind === 'volume' ? null : kind === 'cube' ? t.faces[f][i - 1] : t.levels[i - 1];
-          if (prev && prev.mem) {
-            // (from the previous level's data as written: decoded, resized, encoded — in the kernels' memory for a box filter)
-            const kernels = (o.mipFilter & 0xff) !== FILTER_POINT && mipChainReady(fmt) ? mipChain(fmt, mem.bytes(prev.mem, prev.bytes), prevW, prevH, [[lw, lh]], fmt) : null;
-            data = kernels ? kernels[0] : fromRgba(fmt, resizeRgba(toRgba(fmt, mem.bytes(prev.mem, prev.bytes), prevW, prevH), prevW, prevH, lw, lh, (o.mipFilter & 0xff) === FILTER_POINT), lw, lh);
-          }
-          else data = levelData(im, srcFace, Math.min(i, im.mips - 1), fmt, lw, lh, ld, o.filter, o.colorKey);
-          if (tg) prof(`CreateTexture level generated fmt ${fmt}`, tg);
-        }
-        if (!data) continue;
-        if (kind === 'volume') fillVolume(c, t, i, data);
-        else fillSurface(c, kind === 'cube' ? t.faces[f][i] : t.levels[i], data);
+        const data = levelData(im, srcFace, Math.min(i, im.mips - 1), fmt, lw, lh, ld, o.filter, o.colorKey);
+        if (data) fillVolume(c, t, i, data);
       }
     }
+    if (tp) prof(`CreateTexture levels fmt ${im.fmt} -> ${fmt}`, tp);
     return [D3D_OK, ptr];
   };
   const fromMemoryEx = (kind) => (c) => {
@@ -280,38 +268,31 @@ export function registerD3DX9(api, vm) {
   const prof = (key, t0) => { const m = vm.d3dxProf ?? (vm.d3dxProf = new Map()), e = m.get(key) ?? { n: 0, ms: 0 }; e.n++; e.ms += performance.now() - t0; m.set(key, e); };
   const profOn = () => !!vm.apiTimes;
   const rectOf = (p, w, h) => (p ? { l: mem.readS32(p), t: mem.readS32(p + 4), r: mem.readS32(p + 8), b: mem.readS32(p + 12) } : { l: 0, t: 0, r: w, b: h });
-  /** RGBA8 pixels (rw x rh) into `dst` at rectangle dr (resized to it), converted to its format */
-  const blitRgba = (c, dst, dr, rgba, rw, rh, filter, colorKey) => {
-    if (colorKey) rgba = applyColorKey(rgba.slice(), colorKey);
+  /**
+   * RGBA8 pixels (rw x rh) into `dst` at rectangle dr (resized to it), converted to its format (d3dx9-texwork.js
+   * blitInto) — by a texture helper for a texture level (`src`: the pixels' source for the job, { rgba } or a copy of the
+   * guest bytes sourceRgba reads), else here (`rgba`: the pixels, or null to read them from `src` here)
+   */
+  const blitRgba = (c, dst, dr, rgba, rw, rh, filter, colorKey, src = null) => {
     const dw = dr.r - dr.l, dh = dr.b - dr.t;
     if (dw <= 0 || dh <= 0) return D3DERR_INVALIDCALL;
-    const tr = profOn() ? performance.now() : 0;
-    const px = resizeRgba(rgba, rw, rh, dw, dh, (filter & 0xff) === FILTER_POINT || (filter & 0xff) === 1);
-    if (tr && px !== rgba) prof(`blit resize ${rw}x${rh} -> ${dw}x${dh}`, tr);
-    const base = dst.ensureMem(c.proc);
-    const full = dr.l === 0 && dr.t === 0 && dw === dst.width && dh === dst.height;
-    // a rectangle of the surface: only its texels written (uncompressed), or its blocks when it covers whole 4x4 blocks
-    // (the other texels untouched: decoding and re-encoding the whole surface per tile made terrain loads quadratic)
-    const dxt = isDxt(dst.fmt), aligned = !dxt || ((dr.l | dr.t) % 4 === 0 && (dw % 4 === 0 || dr.r === dst.width) && (dh % 4 === 0 || dr.b === dst.height));
-    const tp = profOn() ? performance.now() : 0, pk = tp ? `blit ${full ? 'whole' : aligned ? 'rect' : 'unaligned rect'} ${dw}x${dh} into fmt ${dst.fmt} ${dst.width}x${dst.height}` : '';
-    if (!full && aligned) {
-      const enc = fromRgba(dst.fmt, px, dw, dh);
-      if (tp) prof(pk, tp);
-      if (enc) {
-        const blk = dxt ? 4 : 1, rows = Math.ceil(dh / blk), rowBytes = dxt ? Math.ceil(dw / 4) * (dst.fmt === FMT.DXT1 ? 8 : 16) : surfacePitch(dst.fmt, dw);
-        const unitX = dxt ? (dst.fmt === FMT.DXT1 ? 8 : 16) / 4 : surfacePitch(dst.fmt, 1); // (bytes per texel column: a DXT block row covers 4 texels)
-        for (let y = 0; y < rows; y++) mem.writeBytes(base + (dr.t / blk + y) * dst.pitch + dr.l * unitX, enc.subarray(y * rowBytes, (y + 1) * rowBytes));
-        dst.rgbaCache = null; dst.dirty = true; dst.dev.gfx?.surfaceUpdated?.(dst);
-        return D3D_OK;
-      }
+    const tp = profOn() ? performance.now() : 0, pk = tp ? `blit ${dw}x${dh} into fmt ${dst.fmt} ${dst.width}x${dst.height}` : '';
+    const J = jobLevel(dst) ? texJobs() : null;
+    if (J && encodable(dst.fmt)) {
+      jobMem(c, dst);
+      const keep = blitKeepsRgba(dst, dr) ? new Uint8Array(new SharedArrayBuffer(dst.width * dst.height * 4)) : null;
+      handOut(J, dst.owner, [dst], { kind: 'blit', dst: levelInfo(dst), dr, src: src ?? { rgba, sw: rw, sh: rh }, filter, colorKey, keep });
+      markFilled(dst);
+      if (keep) rememberRgba(dst, keep); // (filled by the job: read after its fence, Surface.mem)
+      if (tp) prof(pk + ' (handed out)', tp);
+      return D3D_OK;
     }
-    const cur = full ? null : toRgba(dst.fmt, mem.bytes(base, dst.bytes), dst.width, dst.height);
-    let all = px;
-    if (!full) { for (let y = 0; y < dh; y++) cur.set(px.subarray(y * dw * 4, (y + 1) * dw * 4), ((dr.t + y) * dst.width + dr.l) * 4); all = cur; }
-    const enc = fromRgba(dst.fmt, all, dst.width, dst.height);
-    if (!enc) { vm.log('gfx', `d3dx: surface format ${dst.fmt} not writable`); return D3DERR_INVALIDCALL; }
-    fillSurface(c, dst, enc);
-    if (isDxt(dst.fmt)) rememberRgba(dst, all); // (D3DXFilterTexture, typically next, builds the mips from it)
+    if (!rgba) rgba = sourceRgba({ bytes: (a, n) => src.bytes.subarray(a, a + n) }, src.fmt, -src.start, src.sr, src.pitch, src.sw, src.sh);
+    dst.ensureMem(c.proc);
+    const r = blitInto(mem, dst, dr, rgba, rw, rh, filter, colorKey);
+    if (!r) { vm.log('gfx', `d3dx: surface format ${dst.fmt} not writable`); return D3DERR_INVALIDCALL; }
+    markFilled(dst);
+    if (r.rgba) rememberRgba(dst, r.rgba); // (D3DXFilterTexture, typically next, builds the mips from it)
     if (tp) prof(pk, tp);
     return D3D_OK;
   };
@@ -322,6 +303,8 @@ export function registerD3DX9(api, vm) {
    */
   // snapshot: cache (decoded surfaces)
   const recentRgba = [];
+  // (a snapshot, after the jobs are done: the RGBA a job kept, in shared memory, copied into the heap — snapshots refuse shared buffers)
+  vm.d3dx.unshareRgba = () => { for (const s of recentRgba) if (s.rgbaCache?.buffer instanceof SharedArrayBuffer) s.rgbaCache = s.rgbaCache.slice(); };
   const rememberRgba = (s, rgba) => { s.rgbaCache = rgba; recentRgba.push(s); if (recentRgba.length > 4) { const old = recentRgba.shift(); if (!recentRgba.includes(old)) old.rgbaCache = null; } };
   X.D3DXLoadSurfaceFromFileInMemory = [9, (c) => { // (dst, dstPal, dstRect, src, size, srcRect, filter, key, info)
     const dst = surfaceOf(c.arg(0)), im = imageAt(c, c.arg(3), c.arg(4));
@@ -347,17 +330,13 @@ export function registerD3DX9(api, vm) {
       for (let y = 0; y < rows; y++) mem.copy(base + ((dr.t / blk | 0) + y) * dst.pitch + (dr.l / blk | 0) * unit, c.arg(3) + ((sr.t / blk | 0) + y) * pitch + (sr.l / blk | 0) * unit, rowBytes);
       dst.dirty = true; dst.dev.gfx?.surfaceUpdated?.(dst); return D3D_OK;
     }
+    // (by a texture helper: the source's bytes copied — the guest may reuse its buffer at once —, decoded where the job runs)
+    if (jobLevel(dst) && texJobs() && encodable(dst.fmt)) { const [start, n] = sourceSpan(fmt, sr, pitch, sw, sh); return blitRgba(c, dst, dr, null, sw, sh, c.arg(8), c.arg(9), { fmt, bytes: mem.bytes(c.arg(3) + start, n).slice(), start, pitch, sr, sw, sh }); }
     const tp = profOn() ? performance.now() : 0;
-    const rgba = sourceRgba(fmt, c.arg(3), sr, pitch, sw, sh);
+    const rgba = sourceRgba(mem, fmt, c.arg(3), sr, pitch, sw, sh);
     if (tp) prof(`LoadSurfaceFromMemory source fmt ${fmt} ${sw}x${sh}`, tp);
     return blitRgba(c, dst, dr, rgba, sw, sh, c.arg(8), c.arg(9));
   }];
-  /** RGBA8 of the rectangle `sr` of an image in guest memory (`fmt`, rows `pitch` bytes apart), read in place */
-  const sourceRgba = (fmt, addr, sr, pitch, sw, sh) => {
-    if (isDxt(fmt)) { const bw = Math.ceil(sw / 4), bh = Math.ceil(sh / 4), unit = fmt === FMT.DXT1 ? 8 : 16, raw = new Uint8Array(bw * bh * unit); for (let y = 0; y < bh; y++) raw.set(mem.bytes(addr + ((sr.t >> 2) + y) * pitch + (sr.l >> 2) * unit, bw * unit), y * bw * unit); return toRgba(fmt, raw, sw, sh); }
-    const bpp = surfacePitch(fmt, 1);
-    return toRgbaRows(fmt, mem.bytes(addr + sr.t * pitch + sr.l * bpp, (sh - 1) * pitch + sw * bpp), sw, sh, pitch);
-  };
   X.D3DXLoadSurfaceFromSurface = [8, (c) => { // (dst, dstPal, dstRect, src, srcPal, srcRect, filter, key)
     const dst = surfaceOf(c.arg(0)), src = surfaceOf(c.arg(3)); if (!dst || !src) return D3DERR_INVALIDCALL;
     if (src.usage & 1 && src.dev?.gfx?.readbackSurface) src.dev.gfx.readbackSurface(src); // (a render target: its GPU contents)
@@ -439,38 +418,27 @@ export function registerD3DX9(api, vm) {
     }
     const chains = t.faces ?? (t.levels ? [t.levels] : null);
     if (!chains) return D3D_OK;
+    const J = texJobs();
     for (const lv of chains) {
-      // the whole chain below the first level holding data at once (d3dx9-image.js mipChain: the same levels as the
-      // loop below computes one by one), for a box filter and a format with kernels
-      let first = src + 1;
-      while (first < lv.length && !lv[first - 1].mem) first++;
-      if (!point && first < lv.length && lv.slice(first - 1).every((s) => s.fmt === lv[first].fmt)) {
-        const p = lv[first - 1], tp = profOn() ? performance.now() : 0, sizes = lv.slice(first).map((s) => [s.width, s.height]);
-        // (the source level's RGBA: kept by the load, else its data unpacked by the kernels, else decoded here)
-        const encs = !mipChainReady(p.fmt) ? null : p.rgbaCache ? mipChain(p.fmt, p.rgbaCache, p.width, p.height, sizes)
-          : isDxt(p.fmt) ? mipChain(p.fmt, toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height), p.width, p.height, sizes)
-            : mipChain(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height, sizes, p.fmt);
-        if (encs) {
-          for (let i = 0; i < encs.length; i++) fillSurface(c, lv[first + i], encs[i]);
-          if (tp) prof(`FilterTexture chain fmt ${p.fmt} from ${p.width}x${p.height} (${p.rgbaCache ? 'cached' : 'decoded'})`, tp);
-          continue;
-        }
+      // (d3dx9-texwork.js filterChain: it writes lv[first..], from lv[first - 1] — by the texture's helper when every one
+      // of their formats is writable, else here)
+      const first = filledFrom(lv, src);
+      if (first >= lv.length) continue;
+      const tp = profOn() ? performance.now() : 0, from = lv[first - 1];
+      // (a source RGBA a job keeps: that job's helper reads it, even with ORTHROS_TEX_ASYNC=0 — then waited for at once)
+      const jobs = J ?? (from.rgbaCache?.buffer instanceof SharedArrayBuffer ? vm.host?.texJobs ?? null : null);
+      if (jobs && jobLevel(from) && lv.slice(first).every((l) => jobLevel(l) && encodable(l.fmt))) {
+        for (const l of lv.slice(first)) jobMem(c, l);
+        const levels = lv.map((l, i) => ({ ...levelInfo(l), cache: i === first - 1 ? l.rgbaCache ?? null : null }));
+        const f = handOut(jobs, t, lv.slice(first - 1), { kind: 'filter', levels, src, point });
+        for (const l of lv.slice(first)) markFilled(l);
+        if (!J) jobs.wait(f);
+        if (tp) prof(`FilterTexture chain fmt ${from.fmt} from ${from.width}x${from.height} (handed out)`, tp);
+        continue;
       }
-      let rgba = null; // (the level just filtered, as RGBA: the next one comes from it rather than from its re-encoded form)
-      for (let i = src + 1; i < lv.length; i++) {
-        const p = lv[i - 1], s = lv[i];
-        if (!p.mem) { rgba = null; continue; }
-        const tp = profOn() ? performance.now() : 0;
-        const from = rgba ?? (p.rgbaCache ? p.rgbaCache : toRgba(p.fmt, mem.bytes(p.mem, p.bytes), p.width, p.height));
-        if (tp) prof(`FilterTexture decode fmt ${p.fmt} (${rgba ? 'kept' : p.rgbaCache ? 'cached' : 'decoded'})`, tp);
-        const tr = tp ? performance.now() : 0;
-        rgba = resizeRgba(from, p.width, p.height, s.width, s.height, point);
-        if (tp) prof('FilterTexture resize', tr);
-        const te = tp ? performance.now() : 0;
-        const enc = fromRgba(s.fmt, rgba, s.width, s.height);
-        if (tp) prof(`FilterTexture encode fmt ${s.fmt}`, te);
-        if (enc) fillSurface(c, s, enc); else rgba = null;
-      }
+      // (Surface.mem first: a kept RGBA a job fills is read once the job is done)
+      filterChain(mem, lv, src, point, (l) => (l.mem, l.rgbaCache ?? null), (l, data) => fillSurface(c, l, data));
+      if (tp) prof(`FilterTexture chain fmt ${from.fmt} from ${from.width}x${from.height}`, tp);
     }
     return D3D_OK;
   }];

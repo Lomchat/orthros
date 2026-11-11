@@ -159,7 +159,7 @@ export function d3dCore(vm) {
   // ---------------------------------------------------------------- resources
   const resIds = snapKnown(vm, 'd3d8.resIds', { next: 1 }); // (resource ids)
   class Resource {
-    constructor(dev, type, pool, usage, fmt) { this.dev = dev; this.type = type; this.pool = pool; this.usage = usage; this.fmt = fmt; this.id = resIds.next++; this.priority = 0; this.privateData = new Map(); this.iids = [IID_IDirect3DResource8]; }
+    constructor(dev, type, pool, usage, fmt) { this.dev = dev; this.type = type; this.pool = pool; this.usage = usage; this.fmt = fmt; this.id = resIds.next++; this.priority = 0; this.privateData = new Map(); this.iids = [IID_IDirect3DResource8]; this.texJob = null; }
     GetDevice(c) { c.out32(1, this.dev.ptr); com.addRef(com.objectAt(this.dev.ptr)); return D3D_OK; }
     SetPrivateData(c) { const g = readGuid(mem, c.arg(1)), p = c.arg(2), n = c.arg(3), flags = c.arg(4); this.privateData.set(g, flags & 1 ? { iunknown: mem.read32(p) } : { data: mem.bytes(p, n).slice() }); return D3D_OK; }
     GetPrivateData(c) { const g = readGuid(mem, c.arg(1)), p = c.arg(2), ps = c.arg(3); const d = this.privateData.get(g); if (!d) return D3DERR_NOTFOUND; const bytes = d.data ?? new Uint8Array(4); const size = mem.read32(ps); mem.write32(ps, bytes.length); if (size < bytes.length) return D3DERR_MOREDATA; if (d.data) mem.writeBytes(p, d.data); else mem.write32(p, d.iunknown); return D3D_OK; }
@@ -168,6 +168,11 @@ export function d3dCore(vm) {
     GetPriority() { return this.priority; }
     PreLoad() { return D3D_OK; }
     GetType() { return this.type; }
+    /**
+     * Wait for the D3DX texture jobs on the texture's levels (d3dx9-tex-jobs.js: its latest job's fence — one helper runs
+     * a texture's jobs in order): a backend binding the texture for a draw, a copy (Surface.mem waits for one level)
+     */
+    settleJobs() { const f = this.texJob; if (f) { this.texJob = null; vm.host?.texJobs?.wait(f); } }
     /** the render worker's recorder met the resource (d3d-recorder.js newRec): its levels' locks go through JavaScript */
     recorded() { for (const l of this.levels ?? []) l.disarm?.(); for (const f of this.faces ?? []) for (const l of f) l.disarm?.(); }
     destroy() {
@@ -182,7 +187,7 @@ export function d3dCore(vm) {
     constructor(dev, owner, fmt, w, h, usage, pool, level = 0, face = 0) {
       this.dev = dev; this.owner = owner; this.fmt = fmt; this.width = w; this.height = h; this.usage = usage; this.pool = pool; this.level = level; this.face = face;
       this.pitch = surfacePitch(fmt, w); this.bytes = surfaceBytes(fmt, w, h);
-      this._mem = 0; this.lk = 0; this._locked = false; this._dirty = false; this.dirtyRect = null; this.lockRect = null; this.id = resIds.next++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
+      this._mem = 0; this.texJob = null; this.lk = 0; this._locked = false; this._dirty = false; this.dirtyRect = null; this.lockRect = null; this.id = resIds.next++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
       this.iids = [IID_IDirect3DSurface8];
     }
     /**
@@ -194,7 +199,9 @@ export function d3dCore(vm) {
     // (owner.levelsClean: the backend skips a texture whose levels it has all uploaded since none became dirty)
     set dirty(v) { this._dirty = v; this.dirtyRect = null; if (v) { if (this.owner) this.owner.levelsClean = false; this.dev.gfx?.surfaceDirty?.(this, null); } }
     /** guest address of the contents (0 until first needed); a render worker's mirror is told of every change */
-    get mem() { return this._mem; }
+    // (texJob: a D3DX texture job reads or writes the contents — d3dx9-tex-jobs.js —, waited for before anything else does)
+    get mem() { if (this.texJob) this.settleJob(); return this._mem; }
+    settleJob() { const f = this.texJob; this.texJob = null; vm.host?.texJobs?.wait(f); }
     set mem(v) { this._mem = v; if (this.lk) { mem.write32(this.lk + 4, v); if (!v) this.disarm(); } this.dev.gfx?.surfaceMem?.(this); }
     /**
      * Locked (LockRect, GetDC): kept in the lock entry after the COM object (runtime.js FID_SURF_LOCK) once the surface
@@ -928,7 +935,7 @@ export function d3dCore(vm) {
   // (the fields a backend keeps on resources — the WebGL backend's GL texture record, the recorder's mirror record — are
   // its own: a restored resource is one no backend has seen, which they create and upload whole at its first use)
   // snapshot: constant
-  const resourceSnap = { skip: ['rec', 'glOwner', 'glRec', 'glGen'] };
+  const resourceSnap = { skip: ['rec', 'glOwner', 'glRec', 'glGen', 'texJob'] }; // (texJob: settled before a snapshot, vm-snapshot.js)
   vm.d3dCore = { deviceSnap, resourceSnap, Resource, Surface, Texture, CubeTexture, Volume, VolumeTexture, Buffer, Device, writeCaps, displayMode, writeMode, modes, RS_DEFAULTS, TSS_DEFAULTS, MAX_STAGES, MAX_STREAMS, allocResId: () => resIds.next++ };
   return vm.d3dCore;
 }
