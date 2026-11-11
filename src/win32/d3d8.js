@@ -232,13 +232,14 @@ export function d3dCore(vm) {
     /**
      * Arm the fast path's next lock (runtime.js FID_SURF_LOCK): when a lock has nothing to do but write the pointer — the
      * memory there, no render worker that may read it (a resource it knows: Device.beforeWrite's copy or wait), no
-     * readback, no GDI device context, no D3DX job or cache, no diagnostics — and ?dbg=ORTHROS_LOCK_FAST=0 is not set.
+     * readback, no GDI device context, no D3DX job or cache, no diagnostics — and the fast path is on (?dbg=ORTHROS_LOCK_FAST=1;
+     * off by default: no load measured faster, docs/api-layer.md).
      * Disarmed again when one of these changes (the memory, the recorder meeting the resource: recorded).
      */
     arm() {
       if (!this.lk) return;
       const rr = (this.owner ?? this).rec;
-      const ok = globalThis.ORTHROS_LOCK_FAST !== 0 && this._mem && !(this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && !this.gdiDC && !(rr && !rr.destroyed)
+      const ok = globalThis.ORTHROS_LOCK_FAST === 1 && this._mem && !(this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && !this.gdiDC && !(rr && !rr.destroyed)
         && !this.texJob && !tracingResources() && !globalThis.ORTHROS_WATCH_TEX && !globalThis.ORTHROS_LOCK_LOG;
       const st = mem.read32(this.lk); mem.write32(this.lk, ok ? st | LK_ARMED : st & ~LK_ARMED);
     }

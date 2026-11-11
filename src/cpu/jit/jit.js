@@ -132,8 +132,8 @@ export class Jit {
     if (dx !== undefined || fid === FID_PARAM_DESC || fid === FID_SURF_DESC || (defer !== undefined && (defer & DEFER_RAW))) { (this.optFast ??= []).push([idx, this.mem.u8[FAST_TABLE + idx]]); if (this.d3dxFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     // (an effect's technique calls queued: switchable on their own too, setFxDefer)
     if (fid === undefined && defer !== undefined && (defer & (DEFER_TECH | DEFER_BEGIN | DEFER_END))) { (this.fxDefer ??= []).push(idx); this.setFxDefer(!this.fxDeferOff); }
-    // (surface locks on the fast path: ?dbg=ORTHROS_LOCK_FAST=0 off, setLockFast)
-    if (fid === FID_SURF_LOCK || fid === FID_SURF_UNLOCK) { (this.lockFast ??= []).push([idx, fid]); if (globalThis.ORTHROS_LOCK_FAST === 0) this.mem.u8[FAST_TABLE + idx] = 0; }
+    // (surface locks on the fast path: off unless ?dbg=ORTHROS_LOCK_FAST=1 — no load measured faster, docs/api-layer.md; setLockFast)
+    if (fid === FID_SURF_LOCK || fid === FID_SURF_UNLOCK) { (this.lockFast ??= []).push([idx, fid]); if (globalThis.ORTHROS_LOCK_FAST !== 1) this.mem.u8[FAST_TABLE + idx] = 0; }
     if (fid === FID_ADDREF || fid === FID_RELEASE) { (this.refFast ??= []).push([idx, fid]); if (this.refFastOff) this.mem.u8[FAST_TABLE + idx] = 0; }
     // (the queued draws and the lights / material / FVF filter, switchable for measurement: setDrawOpt)
     if (defer !== undefined && DEFER_DRAWS.has(name)) { (this.drawFast ??= []).push(idx); if (this.drawOptOff) this.mem.u8[FAST_TABLE + idx] = 0; }
@@ -174,7 +174,7 @@ export class Jit {
   /**
    * (measurement, dbg:ORTHROS_LOCK_FAST) IDirect3DSurface8/9::LockRect / UnlockRect on the WASM fast path or in
    * JavaScript: either way the lock state is the surfaces' lock entries (runtime.js FID_SURF_LOCK), so the switch may move
-   * at any time; JavaScript arms no surface while it is off (d3d8.js Surface.arm)
+   * at any time; JavaScript arms no surface while it is off (d3d8.js Surface.arm); off by default (ORTHROS_LOCK_FAST=1: on)
    */
   setLockFast(on) { for (const [idx, fid] of this.lockFast ?? []) this.mem.u8[FAST_TABLE + idx] = on ? fid : 0; }
   /** (measurement, dbg:ORTHROS_D3DX_FAST_OFF / ORTHROS_API_OPT_OFF) D3DX math (fast-d3dx.js), effect parameter descriptions and raw values on the WASM fast path or in JavaScript */

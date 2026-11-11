@@ -66,7 +66,8 @@ frame down, all generic (no game-specific code), and how to switch them off with
   else — a null output, an unlocked or locked surface, a rectangle outside, a full queue, an unarmed surface — goes to
   JavaScript, which reads and writes the same entry (`Surface.setLock` / `loadLock`), so the two paths interleave freely.
   The lock patterns of the phase report (`locks: whole / rect`) count only the locks JavaScript handles.
-  Switch: `ORTHROS_LOCK_FAST=0` (`Jit.setLockFast`, in-session through `dbg:`). Test: `jit-surface-lock.test.js`
+  **Off by default**: no load measured faster (below, "Measured"). Switch: `ORTHROS_LOCK_FAST=1` on (`Jit.setLockFast`,
+  in-session through `dbg:`). Test: `jit-surface-lock.test.js`
   (random locks / unlocks of DXT and plain levels — rectangles inside, across and outside, null outputs, double locks,
   unlocks of unlocked surfaces, read-only locks, runs on one surface — through translated code with the fast path and
   its queued records against the handlers alone: the same results, pointers, pitches, and at every JavaScript call the
@@ -617,7 +618,29 @@ at once with its exact result:
   locks reading and writing a level, draws, releases, the game's buffers overwritten after each call — with and without
   helpers (every lock, draw and the end see the same bytes), then with helpers that never answer.
 
-MEASUREMENTS_PLACEHOLDER
+**Measured** (2026-11-11, browser harness, `--gl-discard`, 800 % CPU unless noted, the server shared and loaded — 1-minute
+load 15-55 —, base = the tree before this work, runs alternated, a fresh copy of the learned data per run; the load is the
+click to the first frame of play, `load` + `loadscreen` phases; MY CAPTAINS: the click to the Create-a-Hero screen):
+
+| Load | base (s) | texture jobs + fast locks (s) | texture jobs only | fast locks only |
+|---|---|---|---|---|
+| Age of the Ring skirmish | 22.0, 22.0 | 20.7, 22.3 | 20.9 | 22.1 |
+| Age of the Ring skirmish, 400 % | 27.1, 23.1 | 23.1, 23.1 | | |
+| Age of the Ring MY CAPTAINS | 39.2, 39.4 | 38.2, 39.3, 39.1 | 39.3, 39.3 | |
+| BFME II skirmish | 21.8, 22.1 | 20.9, 21.0 | | |
+| RotWK 2.02 skirmish | 21.1, 19.4, 21.0 | 21.2, 20.8 (a third, 25.6, on a contended machine: menu guest 6.0 against 3.2 ms per M instructions) | 17.9 (marks shifted), 20.7 | |
+
+Game-thread time (frame accounting, seconds over the load): `tex` 0.3-0.5 -> 0-0.1 everywhere (the jobs' waits: 7-13
+per load, 20-100 ms in all); `api` AotR skirmish 3.0 / 3.3 -> 2.4 / 2.7, BFME II 2.5 / 2.6 -> 2.1 / 2.0, MY CAPTAINS
+6.3 / 6.4 -> 5.9-6.2 (6.6 / 6.4 with the locks in JavaScript). With `--api-times` (AotR skirmish): `D3DXLoadSurfaceFromMemory`
+529 ms, `D3DXCreateTextureFromFileInMemoryEx` 591 ms and `D3DXFilterTexture` 236 ms of game thread before; the locks
+133 k `LockRect` + 133 k `UnlockRect` in JavaScript (~320 ms estimated) -> 6 k (the others answered in WASM, their
+unlocks replayed one per surface and drain).
+Reading: the texture jobs win beyond the spread on BFME II (both runs below both bases) and on two of three AotR skirmish
+runs, and lose nowhere — **on by default**. The fast locks take ~0.3-0.4 s of `api` off a load but no wall clock time
+comes out of it on any load (AotR skirmish 22.1 with them alone, MY CAPTAINS the same with and without, RotWK 20.7 without /
+20.8 with): **off by default**, kept behind `ORTHROS_LOCK_FAST=1`. No thin-link run: neither change touches the game data's
+path (the files, their reads and their order are the same).
 
 ## Measuring within a session
 
@@ -637,7 +660,7 @@ BeginPass, commits, End — over 6 effects with array-selected shaders, preshade
 guest code through the JIT and the deferred queue; `--base <tree>`; best read as instructions under `perf stat -e
 instructions:u`, insensitive to the server's load). Test of the effect binding: `d3dx9-effect-bind.test.js` (random
 sessions against the reference path, registers bit for bit).
-`dbg:ORTHROS_LOCK_FAST=0` takes surface locks off the fast path (`=`: back on); `dbg:ORTHROS_TEX_ASYNC=0` keeps D3DX's
+`dbg:ORTHROS_LOCK_FAST=1` puts surface locks on the fast path (`=`: off again, the default); `dbg:ORTHROS_TEX_ASYNC=0` keeps D3DX's
 texture work on the game thread (jobs already handed out still finish on their helper).
 `dbg:ORTHROS_DRAW_OPT_OFF=1` handles the draws at their call again and switches the lights / material / FVF filter off
 (`=`: back on, the filter once the queue has run): `Jit.setDrawOpt`. (The fix of the clobbered spec, section 1, has no

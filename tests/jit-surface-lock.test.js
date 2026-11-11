@@ -38,6 +38,7 @@ function setup() {
 }
 
 test('surface locks: the fast path does what the JavaScript handlers do', () => {
+  globalThis.ORTHROS_LOCK_FAST = 1; // (off by default)
   for (let seed = 1; seed <= depth(24, 4); seed++) {
     let s = seed; const rnd = (n) => { s = (Math.imul(s ^ (s >>> 15), 0x2c1b3c6d) + 0x9e3779b9) | 0; return (s >>> 0) % n; };
     const A = setup(), B = setup(); // (A: JavaScript alone; B: translated code with the fast path)
