@@ -225,8 +225,11 @@ class RemoteFile {
   }
   /** `into`: where the bytes go when the caller owns a destination of `len` bytes (guest memory: no second copy) */
   read(off, len, into) {
-    const ap = acct.enter(ACCT.io); // (frame accounting: a game file read — its network part is `net`)
-    try { return this.readNow(off, len, into); } finally { acct.leave(ap); }
+    // (frame accounting: a game file read — its network part is `net`; from guest code only a sample is timed, as HttpFile)
+    const kind = acct.ioTimed();
+    if (!kind) return this.readNow(off, len, into);
+    const ap = acct.enter(ACCT.io), a0 = acct.acc[ACCT.io];
+    try { return this.readNow(off, len, into); } finally { acct.ioEnd(ap, a0, kind); }
   }
   readNow(off, len, into) {
     const end = Math.min(off + len, this.len);
