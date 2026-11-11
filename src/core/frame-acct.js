@@ -118,8 +118,9 @@ export class FrameAccount {
     this.acc = new Float64Array(N_CATS); this.base = new Float64Array(N_CATS);
     this.out = new Float64Array(N_CATS); // the last closed frame (estimates applied)
     this.cur = C.host; this.at = now(); this.on = true;
+    this.gap = { cat: -1, planned: 0, at: 0, acc0: 0, task0: 0, early: false }; // (gapBegin / gapEnd)
     this.rng = 0x2545f491; this.apiLeft = 1; this.interpLeft = 1;
-    this.alwaysFrame = new Uint16Array(256); this.capLeft = new Uint16Array(256); this.capN = new Float64Array(256); this.capMs = new Float64Array(256); this.capDrawMs = new Float64Array(256); this.capUntimed = new Float64Array(256); this.capSumN = new Float64Array(256); this.capSumMs = new Float64Array(256); this.capSumDraw = new Float64Array(256); this.capList = [];
+    this.alwaysFrame = new Uint32Array(256); this.capLeft = new Uint16Array(256); this.capN = new Float64Array(256); this.capMs = new Float64Array(256); this.capDrawMs = new Float64Array(256); this.capUntimed = new Float64Array(256); this.capSumN = new Float64Array(256); this.capSumMs = new Float64Array(256); this.capSumDraw = new Float64Array(256); this.capList = [];
     this.always = new Uint16Array(256); // per API index: timed on every call while non-zero (short calls left before sampling again)
     // per frame: sampled (randomly timed) API calls, their exclusive time, and the calls not timed; same for the interpreter
     this.apiSampledN = 0; this.apiSampledMs = 0; this.drawSampledMs = 0; this.apiUntimedN = 0;
@@ -181,7 +182,7 @@ export class FrameAccount {
     this.nestApi += ms; this.nestDraw += draw;
     if (idx >= this.idxMs.length) { const m = new Float64Array(Math.max(idx + 1, this.idxMs.length * 2)), n = new Float64Array(m.length); m.set(this.idxMs); n.set(this.idxN); this.idxMs = m; this.idxN = n; }
     this.idxMs[idx] += ms + draw; this.idxN[idx]++;
-    if (idx >= this.always.length) { const a = new Uint16Array(Math.max(idx + 1, this.always.length * 2)); a.set(this.always); this.always = a; for (const k of ['alwaysFrame', 'capLeft']) { const u = new Uint16Array(a.length); u.set(this[k]); this[k] = u; } for (const k of ['capN', 'capMs', 'capDrawMs', 'capUntimed', 'capSumN', 'capSumMs', 'capSumDraw']) { const f = new Float64Array(a.length); f.set(this[k]); this[k] = f; } }
+    if (idx >= this.always.length) { const a = new Uint16Array(Math.max(idx + 1, this.always.length * 2)); a.set(this.always); this.always = a; for (const k of ['alwaysFrame', 'capLeft']) { const u = new this[k].constructor(a.length); u.set(this[k]); this[k] = u; } for (const k of ['capN', 'capMs', 'capDrawMs', 'capUntimed', 'capSumN', 'capSumMs', 'capSumDraw']) { const f = new Float64Array(a.length); f.set(this[k]); this[k] = f; } }
     const al = this.always[idx];
     if (ms >= HEAVY_MS) { if (!al) this.heavyApis++; this.always[idx] = ALWAYS_CALLS; }
     else if (al && ms < SHORT_MS) this.always[idx] = al - 1;
@@ -225,6 +226,24 @@ export class FrameAccount {
    */
   taskStart() { const c = this.cur; return c === C.late || c === C.ioWait || c === C.sleep ? this.enter(C.task) : -1; }
   taskEnd(p) { if (p >= 0) this.leave(p); }
+  /**
+   * The worker waits between two pumps: charge the gap to `cat` (sleep / ioWait / late). `planned` ms of it are the
+   * planned wait (Infinity: open-ended, a wait for a file read); the time beyond it, event-loop tasks excepted, becomes
+   * `late` at gapEnd, unless `early` (a pacing loop's earlier wait: waking late does not lengthen the frame).
+   */
+  gapBegin(cat, planned, early) {
+    this.enter(cat);
+    const g = this.gap; g.cat = cat; g.planned = planned; g.at = this.at; g.acc0 = this.acc[cat]; g.task0 = this.acc[C.task]; g.early = early;
+  }
+  /** The next pump starts: the time is the host's again, lateness moved out of the gap's category. */
+  gapEnd() {
+    this.enter(C.host);
+    const g = this.gap;
+    if (g.cat < 0) return;
+    const over = this.at - g.at - g.planned - (this.acc[C.task] - g.task0);
+    if (over > 0 && g.cat !== C.late && !g.early) this.move(g.cat, C.late, Math.min(over, this.acc[g.cat] - g.acc0));
+    g.cat = -1;
+  }
   /** An interpreter fallback: true when this one is timed (then enter(C.interp) / interpEnd(prev, acc[interp]) bracket it). */
   interpTimed() {
     if (--this.interpLeft > 0) { if (this.cur !== C.interp) this.interpUntimedN++; return false; }

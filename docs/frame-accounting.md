@@ -60,12 +60,16 @@ report prints the accounting's own clock reads per frame.
   first 48 calls of a frame, the rest sampled and estimated from that API's own decayed mean (a stratum of its own: one
   heavy sample among ~120 would otherwise be scaled by ~2000 calls). `ORTHROS_ACCT_SAMPLE=0` (dbg:, applied at the next
   frame) is the exact reference: every read timed, no cap, interval 16.
-- **Gaps** (`gapBegin` / `gapEnd`, worker.js). After a pump the worker is in a category until the next one: `sleep` (guests
+- **Gaps** (`gapBegin` / `gapEnd`: FrameAccount, the classification in worker.js). After a pump the worker is in a category until the next one: `sleep` (guests
   wait for a timer), `ioWait` (a read is in flight and nothing is due soon, or no thread is ready after a read-slice
   return), else `late`. Changes: a slice that ended on the 2 ms read-slice bound while the last runnable thread blocked
-  on the read is `ioWait` (it was `late`); a wake-up past the plan is not `late` when the wait ended before the frame
-  limiter's deadline (`earlyPacingWait`, as for host waits in a slice: it does not lengthen the frame); the event-loop
-  tasks measured in the gap (`task`) are taken out of the lateness. `ORTHROS_ACCT_GAPS=0` is the earlier classification.
+  on the read is `ioWait` (it was `late`), open-ended (no planned end, so none of it is moved back to `late` — the first
+  version planned 0 ms and moved all of it back: the rule had no effect, fixed in the integration); a wake-up past the
+  plan is not `late` when the wait ended before the frame limiter's deadline (`earlyPacingWait`, as for host waits in a
+  slice: it does not lengthen the frame), the margin being the larger of the Atomics.wait and worker-timer overshoot
+  estimates (the gap ends on a timer or a message, not on Atomics.wait); the event-loop tasks measured in the gap
+  (`task`) are taken out of the lateness. The measurements below predate the first fix (their `late` / `ioWait` split
+  after a read-slice return is the earlier one). `ORTHROS_ACCT_GAPS=0` is the earlier classification.
 
 ## Where it shows
 

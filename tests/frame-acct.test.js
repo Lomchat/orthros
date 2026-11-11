@@ -239,3 +239,14 @@ test('a very frequent API kept in exact timing by rare heavy calls is capped per
   assert.ok(Math.abs(tot - truth) / truth < 0.12, `api ${tot} vs ${truth}`);
   assert.ok(a.lastReads < 800, `clock reads in the last frame: ${a.lastReads}`);
 });
+
+test('a gap: its overshoot is late, except an open-ended read wait, an early pacing wait and the tasks inside it', () => {
+  const clk = fakeClock(), a = new FrameAccount(clk.now);
+  a.gapBegin(C.sleep, 5, false); clk.t = 8; a.gapEnd(); // planned 5, 3 late
+  a.gapBegin(C.ioWait, Infinity, false); clk.t = 20; a.gapEnd(); // a wait for a read: no lateness
+  a.gapBegin(C.sleep, 2, true); clk.t = 25; a.gapEnd(); // an early pacing wait: no lateness
+  a.gapBegin(C.sleep, 1, false); clk.t = 26; const p = a.taskStart(); clk.t = 30; a.taskEnd(p); clk.t = 31; a.gapEnd(); // 4 ms task, 1 ms late
+  const f = a.frame();
+  assert.equal(f[C.late], 3 + 1); assert.equal(f[C.ioWait], 12); assert.equal(f[C.sleep], 5 + 5 + 1); assert.equal(f[C.task], 4);
+  assert.equal(sum(f), 31);
+});

@@ -591,7 +591,6 @@ let pumpIdleMs = 0, pumpEndAt = 0, pumpGaps = 0, pumpGapMax = 0, lastPumpReturn 
  * threads asked for (`sleep`, the game's pacing — or `ioWait` when what they wait for is a file read on the network);
  * coming back later than planned is `late` (timer clamping, garbage collection, the event loop's other tasks).
  */
-const gap = { cat: -1, planned: 0, at: 0, acc0: 0, task0: 0, early: false };
 /** the JIT's cold tier (Jit.runCold) with a background translator */
 const COLD_TIER_DEFAULT = true;
 /** a guest thread (of any process) is ready to run */
@@ -607,22 +606,16 @@ function gapBegin(r) {
     // the threads wait for the read)
     cat = vm.frameThreadWaitsForRead() || (vm.readsInFlight > 0 && (r.state === 'idle' || planned > 50)) ? ACCT.ioWait : ACCT.sleep;
     // (a wait that ends before the frame's pacing deadline: waking late does not lengthen the frame — host-wait.js earlyPacingWait)
-    early = honest && r.state === 'sleep' && cat === ACCT.sleep && hostWaiter.earlyPacingWait(r.until);
+    early = honest && r.state === 'sleep' && cat === ACCT.sleep && hostWaiter.earlyPacingWait(r.until, Math.max(hostWaiter.est.value, hostWaiter.timerEst.value));
   } else if (honest && vm.readsInFlight > 0 && !anyRunnable()) {
     // (the slice ended on the read-slice bound as the last runnable thread blocked: nothing runs until the read completes)
-    cat = ACCT.ioWait;
+    // (no planned end: the gap lasts until the read completes, none of it is lateness — except the event-loop tasks,
+    // which are their own category)
+    cat = ACCT.ioWait; planned = Infinity;
   }
-  acct.enter(cat);
-  gap.cat = cat; gap.planned = planned; gap.at = acct.at; gap.acc0 = acct.acc[cat]; gap.task0 = acct.acc[ACCT.task]; gap.early = early;
+  acct.gapBegin(cat, planned, early);
 }
-function gapEnd() {
-  acct.enter(ACCT.host);
-  if (gap.cat < 0) return;
-  // (the event-loop tasks measured inside the gap — acct.taskStart — are not lateness)
-  const over = acct.at - gap.at - gap.planned - (acct.acc[ACCT.task] - gap.task0);
-  if (over > 0 && gap.cat !== ACCT.late && !gap.early) acct.move(gap.cat, ACCT.late, Math.min(over, acct.acc[gap.cat] - gap.acc0));
-  gap.cat = -1;
-}
+function gapEnd() { acct.gapEnd(); }
 /**
  * The visit flags harvested for the server's heat (Jit.harvestVisitsStep), in steps of about `budgetMs`: a harvest
  * pass every 10 s cut into steps, then its blocks mapped to module + offset and posted in pieces (the server merges
