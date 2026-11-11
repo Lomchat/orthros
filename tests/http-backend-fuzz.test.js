@@ -197,3 +197,53 @@ test('http backend (randomized): exact bytes on a thin and a mid link too (piece
   const seeds = process.env.FUZZ_SEEDS ? +process.env.FUZZ_SEEDS : depth(20, 2);
   for (let s = 1; s <= seeds; s++) { await run(s * 104729, 85000); await run(s * 15485863, 1000000); }
 });
+
+test('data worker (randomized): reads through the shared blocks return the old path\'s bytes — reads, seeks, parked reads, evictions', async () => {
+  // (src/vfs/data-link.js: the emulator's side here, the data worker in a worker thread — tests/data-worker-shim.js —,
+  // two shared blocks for 50 MB of files: the slots change hands under the reads; each read compared with the reader on
+  // this thread — the old path — and with the files' bytes)
+  const { Worker } = await import('node:worker_threads');
+  const { DataLink } = await import('../src/vfs/data-link.js');
+  const sizes = { 'Data/a.big': 3 * BLOCK + 12345, 'Data/b.big': BLOCK - 1000, 'Data/c.big': 2 * BLOCK, 'Data/d.big': 5 * CHUNK + 7, 'Data/e.big': 0, 'Data/f.big': 1, 'Data/h.big': 9 * BLOCK + 3 };
+  const byteOf = (name, i) => ((i * 2654435761) ^ (name.length * 40503) ^ (i >>> 11)) & 0xff;
+  const names = Object.keys(sizes), tree = { dirs: { Data: { dirs: {}, files: Object.fromEntries(names.map((n) => [n.slice(5), { size: sizes[n], mtime: 1 }])) } }, files: {} };
+  const realXhr = globalThis.XMLHttpRequest, realFetch = globalThis.fetch;
+  globalThis.XMLHttpRequest = class {
+    open(m, url) { this.url = url; } setRequestHeader(k, v) { this.range = v; }
+    send() { const [, a, b] = /bytes=(\d+)-(\d+)/.exec(this.range), n = decodeURIComponent(/\/game\/g\/(.*)$/.exec(this.url)[1]); this.status = 206; this.response = Uint8Array.from({ length: Math.min(+b, sizes[n] - 1) - +a + 1 }, (_, i) => byteOf(n, +a + i)).buffer; }
+  };
+  delete globalThis.fetch;
+  const w = new Worker(new URL('./data-worker-shim.js', import.meta.url), { workerData: { sizes } });
+  const port = { postMessage: (m) => w.postMessage(m), set onmessage(fn) { w.on('message', (d) => fn({ data: d })); }, set onerror(fn) { w.on('error', fn); } };
+  try {
+    const link = await DataLink.open({ name: 'g', tree, manifest: {}, mounts: ['g'], cacheBlocks: 2, stores: 'none' }, () => {}, port);
+    const remote = link.backend('g'), old = new HttpBackend('/game/g/', tree, { cacheBlocks: 2 });
+    const R = rng(4242), ri = (n) => Math.floor(R() * n);
+    const handles = [];
+    const openOne = () => { const n = names[ri(names.length)]; handles.push({ n, r: remote.open(n), o: old.open(n), pos: 0 }); };
+    for (let i = 0; i < 4; i++) openOne();
+    const check = (h, off, len, got, want, how) => {
+      const end = Math.min(off + len, sizes[h.n]), n = Math.max(0, end - off);
+      assert.equal(got.length, want.length, `${how} ${h.n} @${off} +${len}: ${got.length} bytes, the old path ${want.length}`);
+      assert.equal(got.length, n, `${how} ${h.n} @${off} +${len}`);
+      for (let i = 0; i < n; i++) if (got[i] !== byteOf(h.n, off + i)) assert.fail(`${how} ${h.n} @${off} +${len}: byte ${i} wrong`);
+    };
+    const steps = depth(500, 150);
+    for (let step = 0; step < steps; step++) {
+      const h = handles[ri(handles.length)], size = sizes[h.n], k = R();
+      const len = R() < 0.6 ? 1 + ri(4096) : R() < 0.8 ? 1 + ri(3 * CHUNK) : 1 + ri(2 * BLOCK);
+      if (k < 0.15) h.pos = R() < 0.05 ? size + ri(10) : ri(size + 1); // (a seek)
+      else if (k < 0.6) { // a read at the file pointer (synchronous), into a destination of its own or not
+        const into = R() < 0.5 ? new Uint8Array(len).fill(0xa5) : undefined, got = h.r.read(h.pos, len, into), want = h.o.read(h.pos, len);
+        check(h, h.pos, len, got, want, 'read'); h.pos += got.length;
+      } else if (k < 0.9) { // an overlapped read at its own offset: parked until its bytes are here, then read
+        const off = ri(size + 1), p = h.r.prepare(off, len, true);
+        if (p) { assert.equal(typeof p.ready, 'function'); await Promise.race([p, new Promise((r) => setTimeout(r, 5000))]); assert.ok(p.ready(), 'its completion shows in shared memory'); }
+        check(h, off, len, h.r.read(off, len), h.o.read(off, len), 'parked read');
+      } else if (k < 0.95) { if (handles.length > 1) { const [g] = handles.splice(ri(handles.length), 1); g.r.close(); g.o.close(); } }
+      else openOne();
+    }
+    assert.ok(link.blocks.stats.hits > 0 && link.blocks.stats.misses > 0, `both paths taken: ${JSON.stringify(link.blocks.stats)}`);
+    link.stop();
+  } finally { await w.terminate(); globalThis.XMLHttpRequest = realXhr; if (realFetch) globalThis.fetch = realFetch; }
+});

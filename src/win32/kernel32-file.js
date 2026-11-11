@@ -151,7 +151,15 @@ export function registerKernel32File(api, vm, k) {
       // wakes and reads synchronously, instead of holding up the nested waiter — which may be waiting for it)
       // (readsInFlight: the worker's frame accounting tells a wait for a read from the game's own pacing)
       if (p && globalThis.ORTHROS_READ_DEST_CHECK) c.thread.parkedRead = { buf: c.arg(1) >>> 0, n, snap: mem.bytes(c.arg(1), Math.min(n, 0x10000)).slice(), path: f.path }; // (debugging: what happens to the destination while parked)
-      if (p) { let done = false; vm.readsInFlight = (vm.readsInFlight ?? 0) + 1; const end = () => { done = true; vm.readsInFlight--; vm.host?.wake?.(); }; p.then(end, end); vm.sched.block(c.thread, () => done || vm.sched.nestedWaits > 0, 60000, 'file read'); }
+      // (a read whose completion shows in shared memory — the data worker's, `p.ready`: data-link.js — is seen between two
+      // slices without the event loop: readsPolled, the slices stay long)
+      if (p) {
+        let done = false; const polled = typeof p.ready === 'function';
+        vm.readsInFlight = (vm.readsInFlight ?? 0) + 1; if (polled) vm.readsPolled = (vm.readsPolled ?? 0) + 1;
+        const end = () => { if (done) return; done = true; vm.readsInFlight--; if (polled) vm.readsPolled--; vm.host?.wake?.(); };
+        p.then(end, end);
+        vm.sched.block(c.thread, () => done || (polled && p.ready() && (end(), true)) || vm.sched.nestedWaits > 0, 60000, 'file read');
+      }
     } else if (c.thread.wakeResult !== undefined) vm.sched.block(c.thread, () => true, 0, 'file read'); // (the recorded outcome of the wait)
     if (vm.logKinds.has('fileio')) vm.log('fileio', `read ${f.path ?? '?'} @${pos} ${n} into ${(c.arg(1) >>> 0).toString(16)} (${(() => { const q = c.proc.vmem.query(c.arg(1)); const r = c.proc.vmem.regions.get(q.allocBase); return `${r?.tag ?? 'unallocated'} ${(q.allocBase >>> 0).toString(16)}+${((r?.size ?? 0) >>> 0).toString(16)}`; })()}) [t${c.thread.id}] esp ${(c.thread.cpu.esp >>> 0).toString(16)}`); // (the destination before the read: its allocation)
     // (the destination handed to the reader — HttpFile, NodeFile, MemFile fill it themselves — when it lies in guest memory:

@@ -2158,15 +2158,24 @@ class HttpFile {
     const ap = acct.enter(ACCT.io); // (frame accounting: a game file read — its network part is `net`)
     try { return this.readNow(off, len, into); } finally { acct.leave(ap); }
   }
-  readNow(off, len, into) {
-    const end = Math.min(off + len, this.len);
-    if (off >= end) return new Uint8Array(0);
+  /**
+   * A read of [off, end) answered elsewhere — the emulator's copy of the blocks in shared memory (data-link.js, the
+   * data worker replays it: data-worker.js w32Drain) —: its bookkeeping as readNow's, without the bytes: the learned
+   * order's position, the read counters and log, the sequence and stream detection, the read-ahead it starts.
+   */
+  seen(off, end) {
+    end = Math.min(end, this.len);
+    if (off >= end) return;
+    const sequential = this.track(off, end);
+    if (sequential && (this.run >= STREAM_BYTES || (!this.b.net.fast() && this.run >= CHUNK))) this.b.readAhead(this.path, this.len, this.mtime, end, this.run / Math.max(0.25, (performance.now() - this.runT0) / 1000), this.runReads, end - this.runFrom);
+  }
+  /** readNow's bookkeeping of a read of [off, end) (see seen): whether it follows the previous one. */
+  track(off, end) {
     this.note(off, end);
     this.b.reads.bytes += end - off; if (this.video) this.b.reads.videoBytes += end - off;
     // (the read log keeps each 64 KiB piece's first read: a read inside the piece the last one reported is not reported
     // again — most of a loader's small reads)
     if (this.b.onRead) { const c0 = Math.floor(off / CHUNK), c1 = Math.floor((end - 1) / CHUNK); if (c0 !== this.readC0 || c1 !== c0) { this.readC0 = c1 === c0 ? c0 : -1; this.b.onRead(this.path, off, end, this); } }
-    const out = into && into.length >= end - off ? into : new Uint8Array(end - off);
     const sequential = off === this.lastEnd;
     this.lastEnd = end;
     // bytes read in sequence so far: a bulk read (loading a file whole) fetches whole blocks ahead synchronously; a
@@ -2180,6 +2189,13 @@ class HttpFile {
     const rd = this.b.reader; if (rd.path !== this.path || !sequential) rd.runs++; rd.path = this.path; rd.end = end;
     if (this.run >= STREAM_SKIP && this.runReads >= STREAM_READS) this.b.streams.add(this.path);
     else if (!sequential && this.b.streams.size) this.b.streams.delete(this.path);
+    return sequential;
+  }
+  readNow(off, len, into) {
+    const end = Math.min(off + len, this.len);
+    if (off >= end) return new Uint8Array(0);
+    const sequential = this.track(off, end);
+    const out = into && into.length >= end - off ? into : new Uint8Array(end - off);
     const fast = this.b.net.fast(), bulk = sequential && this.run >= STREAM_BYTES;
     let pos = off;
     const memoOn = readFast();

@@ -25,8 +25,11 @@
 // the engine read come last, in the background (HttpBackend.upgrade).
 // The page knows the files by the version it opened (its parts' names); a file that version takes from one it requires
 // is read, kept and learned-ahead through that version's part (game-data.js partOf, learnedOrders): its store, its URLs.
-import { openVersion, openStore, openLegacyStore, learnedOrders, partOf } from './game-data.js';
+// The Windows games' emulator (src/web/worker.js, through data-link.js) has the same worker: `w32` below — its reads
+// answered from shared memory (shared-blocks.js), their misses here.
+import { openVersion, openStore, openLegacyStore, learnedOrders, partOf, PartsBackend, UnderStore } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
+import { SharedBlocks, fileKeys } from './shared-blocks.js';
 import { BLOCK, CHUNK } from './http-backend.js';
 import { LIGHT_DIR, isLightContent, treeFiles } from './game-tree.js';
 import { flagged, launchFirst, launchSet, lightLaunch, setBytes, WIRE_RATIO } from './launch-set.js';
@@ -69,6 +72,7 @@ export function createDataWorker(post) {
     reloads: false,
   };
   return (m) => {
+    if (m.w32) { W.ready = w32Init(m.w32).catch((err) => { postMessage({ failed: String(err?.message ?? err) }); throw err; }); return; }
     if (m.init) {
       // (alive from now on — the page's waits watch it — though the version takes a moment to open: the rest waits for it)
       W.ctrl = new Int32Array(m.init.ctrl); Atomics.add(W.ctrl, 3, 1); W.timers.push(setInterval(() => Atomics.add(W.ctrl, 3, 1), 100));
@@ -84,6 +88,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
 }
 
 function dispatch(m) {
+  if (W.w32 && w32Dispatch(m)) return;
   if (m.used) used(m.used);
   if (m.source) { W.sources.set(m.source.id, { ...m.source }); return; }
   if (m.legacy) { for (const r of m.legacy) W.legacy.set(r.name + '\n' + r.path.toLowerCase(), r); return; }
@@ -474,10 +479,11 @@ async function prefetchAll() {
   W.prefetching = true;
   const lists = await order(), runs = [];
   W.version.parts.forEach((p, i) => {
-    if (!lists[i].length) return;
-    const progress = { bytes: 0, blocks: 0, done: false };
+    // (a part without a store: a Windows game's run without the browser's copy — a harness's —, as before the data worker)
+    if (!lists[i].length || !p.store) return;
     // (its launch set first: a player waiting in the menu gets what the way to playable still needs first — launchFirst)
     const list = launchFirst(p.files, lists[i], W.version.net.fast());
+    const progress = { bytes: 0, blocks: 0, done: false, total: list.length };
     // (made again when the link's class changes: the rate this page started with was another page's — relist)
     runs.push({ p, progress, job: p.files.prefetch(list, progress, () => W.stop, { first: list.first, relist: (fast) => launchFirst(p.files, lists[i], fast) }).catch(() => {}) });
   });
@@ -639,4 +645,188 @@ function migrate(list) {
     part.files.keep(f.path, f.len, f.mtime, at, bytes);
   }
   postMessage({ migrated: list.length });
+}
+
+// ---------------------------------------------------------------- a Windows game's data (data-link.js)
+
+/** How often the replayed reads are taken from the ring (ms), the counters told to the emulator, the stores synced. */
+const W32_DRAIN_MS = 4, W32_STATS_MS = 250, W32_FLUSH_MS = 2000;
+
+/**
+ * A Windows game's version opened for its emulator (data-link.js DataLink.open: o — name, tree, manifest, mounts,
+ * session, lang, bw, cacheBlocks, encoded, stores 'opfs' | 'none', memPrefetch, prefetch, offline, netLog): the parts'
+ * stores as the emulator opened them before (the browser's copy for a page or a harness's persistent profile; a memory
+ * one for a harness's --memprefetch; none otherwise), each mounted version a PartsBackend (its prediction of opens),
+ * the shared blocks (one block cache for the parts, cacheBlocks a mounted version as their memory budget was), every
+ * network arrival put there; the learned order and the offline copy as the engines' (prefetchAll, wholeDownload).
+ */
+async function w32Init(o) {
+  W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.t0 = performance.now();
+  const X = W.w32 = { handles: new Map(), dead: new Set(), mounts: new Map(), keys: new Map(), blocks: null, answer: null, unlearnedOnly: false, reads: [] };
+  const log = (msg, kind = 'file') => postMessage({ log: msg, kind });
+  const persistent = o.stores === 'opfs';
+  const storeOf = async (name, primary, shared) => {
+    let store = persistent ? await openStore(name) : null;
+    if (!store && o.memPrefetch) store = new MemBlockStore((primary || shared ? 1536 : 1024) * 1048576); // (harness: prefetch measured without a persistent profile)
+    const tag = primary ? '' : ` (${name})`;
+    if (store) {
+      log(`block store${tag}: ${store.map.size} blocks (${Math.round((store.end ?? store.bytes ?? 0) / 1048576)} MiB) from earlier runs${store.resetReason ? ` (emptied: ${store.resetReason})` : ''}`);
+      store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log(`block store${tag}: a stored block did not read back as written, fetched again: ${key}`, 'warn'); };
+    }
+    return store;
+  };
+  // (the emulator's memory cache is the shared blocks: the reader here keeps a smaller one of its own — its planning's
+  // look-ups, the blocks it assembles —, the stores answer the rest)
+  const cacheBlocks = Math.max(1, o.cacheBlocks ?? 256), own = Math.min(cacheBlocks, Number(globalThis.ORTHROS_DATA_OWN_BLOCKS) || 64);
+  W.version = await openVersion(o.name, { tree: o.tree, manifest: o.manifest, bw: o.bw, store: storeOf, legacy: persistent ? openLegacyStore : null,
+    cacheBlocks: own, encoded: !!o.encoded, session: W.session,
+    // (a session restored from a snapshot reports only the reads the server did not learn from its requests — those
+    // without a session, and those served by bytes an announced or predicted request brought: HttpBackend.takeUnlearned;
+    // the emulator reports every other session's reads itself)
+    onRead: (p, a, b, f) => {
+      const un = f?.b?.takeUnlearned?.(p, a, b);
+      if (!X.unlearnedOnly) return;
+      const name = f?.readName ?? o.name, path = f?.readPath ?? p, t = performance.now();
+      if (!f?.b?.session) X.reads.push([name, path, a, b, t]); else if (un) for (const [x, y] of un) X.reads.push([name, path, x, y, t]);
+    },
+    onFetch: o.netLog ? (f) => log(`t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${f.url} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms`, 'net') : null,
+    onRetry: (r) => log(`game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`, 'warn') });
+  const v = W.version;
+  for (const p of v.parts) W.parts.set(p.name, p);
+  for (const p of v.parts) if (p.store instanceof UnderStore) log(`block store (${p.name}): its files, kept before in ${p.store.below.length} other store(s), moved there as read`);
+  // (the shared blocks: as many as the parts' memory caches had — a mounted version's budget each, game-data.js openVersion)
+  const units = Math.max(1, v.parts.filter((p) => !p.name.endsWith('@base')).length);
+  X.blocks = new SharedBlocks(SharedBlocks.create(cacheBlocks * units), true);
+  const mounts = [];
+  (o.mounts ?? [o.name]).forEach((name, i) => {
+    const b = new PartsBackend(v, name), keys = fileKeys(b.tree, i);
+    X.mounts.set(name, b);
+    // (a file's keys by the part that reads it and that part's path: a network arrival put under each)
+    for (const [path, key] of keys) {
+      const part = partOf(v, name, path) ?? b.own, r = part.files.lookup(path); if (!r?.file) continue;
+      let m = X.keys.get(part.files); if (!m) X.keys.set(part.files, m = new Map());
+      let l = m.get(r.path); if (!l) m.set(r.path, l = []);
+      l.push(key);
+    }
+    mounts.push({ name, tree: b.tree, parts: b.parts.map((p) => p.name) });
+  });
+  for (const p of v.parts) p.files.arrivals.add((path, start, bytes) => w32Arrived(p.files, path, start, bytes));
+  W.timers.push(setInterval(w32Drain, W32_DRAIN_MS), setInterval(w32Stats, W32_STATS_MS), setInterval(() => w32Flush(false), W32_FLUSH_MS), setInterval(() => X.blocks.beat(), 100));
+  if (o.prefetch) prefetchAll();
+  if (o.offline) wholeDownload();
+  postMessage({ w32ready: { sab: X.blocks.sab, mounts, manifest: v.manifest, parts: v.parts.map((p) => p.name) } });
+}
+
+/** A Windows game's message (true: taken). */
+function w32Dispatch(m) {
+  const X = W.w32;
+  if (m.w32open) { const [h, name, path] = m.w32open, f = X.mounts.get(name)?.open(path); if (f) X.handles.set(h, f); else X.dead.add(h); return true; }
+  if (m.w32close !== undefined) { w32Drain(); X.handles.get(m.w32close)?.close(); X.handles.delete(m.w32close); X.dead.add(m.w32close); return true; }
+  if (m.w32prep) { w32Prepare(m.w32prep); return true; }
+  if (m.w32sync) { w32Sync(m.w32sync); return true; }
+  if (m.w32flush !== undefined) { w32Flush(!!m.w32flush); return true; }
+  if (m.w32unlearned) { X.unlearnedOnly = true; return true; }
+  if (m.w32stop) { W.stop = true; if (W.whole) W.whole.stop = true; w32Drain(); w32Stats(); w32Flush(true); for (const p of W.version.parts) try { p.files?.stopFill?.(); } catch { /* closed */ } return true; }
+  return false;
+}
+
+/** The reads the emulator answered from the shared blocks, replayed in order through their handles (HttpFile.seen). */
+function w32Drain() {
+  const X = W.w32;
+  X.blocks.drain((h, off, end) => {
+    const f = X.handles.get(h);
+    if (!f) return X.dead.has(h); // (its open's message not here yet: later)
+    f.seen(off, end);
+    return true;
+  });
+}
+
+/** Bytes that arrived from the network for `files`' file `path` from `start`, put in the shared blocks under its keys. */
+function w32Arrived(files, path, start, bytes) {
+  const keys = W.w32.keys.get(files)?.get(path); if (!keys) return;
+  const len = files.lookup(path)?.file?.size; if (!(len > 0)) return;
+  for (const key of keys) w32Put(key, len, start, bytes);
+}
+/** Bytes of a file of `len` bytes from `start` (piece-aligned) into the shared blocks, block by block. */
+function w32Put(key, len, start, bytes) {
+  const B = W.w32.blocks, end = Math.min(len, start + bytes.length);
+  for (let pos = start; pos < end;) {
+    const bi = Math.floor(pos / BLOCK), b0 = bi * BLOCK, stop = Math.min(end, b0 + BLOCK);
+    B.publish(key, bi, pos - b0, bytes.subarray(pos - start, stop - start), Math.min(BLOCK, len - b0));
+    pos = stop;
+  }
+}
+/** What the reader here has of [off, end) of handle `f` (memory, store; no network) put in the shared blocks. */
+function w32Publish(f, off, end) {
+  const B = W.w32.blocks, b = f.b, keys = W.w32.keys.get(b)?.get(f.path); if (!keys) return;
+  end = Math.min(end, f.len);
+  for (let bi = Math.floor(off / BLOCK); bi * BLOCK < end; bi++) {
+    const b0 = bi * BLOCK, blockLen = Math.min(BLOCK, f.len - b0), full = (1 << Math.ceil(blockLen / CHUNK)) - 1;
+    if (keys.every((key) => B.maskOf(key, bi) === full)) continue;
+    const blk = b.peekBlock(f.path, f.len, bi, f.mtime);
+    if (blk) { for (const key of keys) B.publish(key, bi, 0, blk, blockLen); continue; }
+    for (let c = Math.floor(Math.max(off, b0) / CHUNK), e = Math.floor((Math.min(end, b0 + BLOCK) - 1) / CHUNK); c <= e; c++) {
+      if (!b.hasPiece(f.path, f.len, f.mtime, c)) continue;
+      const piece = b.chunks.get(`${f.path}#${c}`); if (!piece) continue;
+      for (const key of keys) B.publish(key, bi, c * CHUNK - b0, piece, blockLen);
+    }
+  }
+}
+
+/**
+ * An asynchronous read the shared blocks did not hold (data-link.js prepare): HttpFile.prepare here (`held`: the guest
+ * thread is parked on it), the emulator told at once when it needs the network (acked: its thread parks), then its
+ * bytes put in the shared blocks and the read finished (shared memory, then a message: the emulator's event loop wakes).
+ */
+async function w32Prepare({ seq, h, off, len, held }) {
+  w32Drain();
+  const f = W.w32.handles.get(h), B = W.w32.blocks;
+  if (f) {
+    let p = null;
+    try { p = f.prepare(off, len, held); } catch { /* the read fetches it and reports */ }
+    if (p) { B.acked(seq); try { await p; } catch { /* likewise */ } }
+    try { w32Publish(f, off, off + len); } catch { /* the read asks again */ }
+  }
+  B.finished(seq);
+  postMessage({ w32done: seq });
+}
+
+/**
+ * A synchronous read (data-link.js syncRead: the emulator's thread waits): [off, end) read here — this reader's state
+ * follows it, as every read —, its bytes from `from` in the answer buffer.
+ */
+async function w32Sync({ gen, h, off, end, from, buf }) {
+  const X = W.w32, B = X.blocks;
+  if (buf) X.answer = new Uint8Array(buf);
+  w32Drain();
+  try {
+    const f = X.handles.get(h); if (!f) throw new Error('file not open');
+    const p = f.prepare(off, end - off, true);
+    if (p) await p;
+    const bytes = f.read(off, end - off);
+    try { w32Publish(f, off, end); } catch { /* answered all the same */ }
+    const k = Math.max(0, Math.min(bytes.length - (from - off), X.answer.length));
+    if (k) X.answer.set(bytes.subarray(from - off, from - off + k));
+    B.answer(gen, k);
+  } catch (err) {
+    postMessage({ log: `game file read failed: ${err?.message ?? err}`, kind: 'warn' });
+    B.answer(gen, -1);
+  }
+}
+
+/** The parts' stores synced (their index: a sync point every 2 s, at once when forced). */
+function w32Flush(force) { for (const p of W.version?.parts ?? []) try { p.store?.flush?.(force); } catch { /* closed */ } }
+
+/** The counters the emulator shows and reports (data-link.js state): the link, the parts' readers and stores, the background. */
+function w32Stats() {
+  const X = W.w32, v = W.version, net = v.net;
+  if (X.reads.length) postMessage({ w32reads: X.reads.splice(0), t0: performance.timeOrigin });
+  const pf = new Map((W.runs ?? []).map((r) => [r.p, r.progress]));
+  postMessage({ w32stats: {
+    net: net.snapshot(), ratio: net.ratio(), fast: net.fast(), thin: net.thin(),
+    parts: v.parts.map((p) => ({ name: p.name, stats: { ...p.files.stats }, store: p.store ? { ...p.store.stats } : null, step: p.files.stepEstimate()?.bytes ?? null, prefetch: pf.has(p) ? { ...pf.get(p) } : null })),
+    whole: W.whole ? { bytes: W.whole.bytes, total: W.whole.total, done: W.whole.done } : null,
+    predicted: [...X.mounts.values()].map((b) => b.predictor?.stats ?? {}),
+    blocks: { ...X.blocks.stats, drops: X.blocks.drops },
+  } });
 }

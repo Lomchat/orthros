@@ -12,6 +12,7 @@ import { openVersion, openStore, openLegacyStore, learnedOrders, PartsBackend, U
 import { launchFirst } from '../vfs/launch-set.js';
 import { NetLink } from '../vfs/net-link.js';
 import { MemBlockStore } from '../vfs/opfs-store.js';
+import { DataLink, dataWorkerOn } from '../vfs/data-link.js';
 import { Registry } from '../win32/registry.js';
 import { keyRemap } from '../win32/vk-scan.js';
 import { BrowserHost, CTL, IN_RING, AUDIO_RING_FRAMES } from './browser-host.js';
@@ -55,6 +56,8 @@ const fileStores = [];
  * game's and those of the versions it requires, each once)
  */
 let netLink = null, primaryFiles = null, dataParts = [], partsMounted = [];
+/** the reader in the data worker (data-link.js; null: on this thread, ?dbg=ORTHROS_DATA_WORKER=0): netLink, dataParts and primaryFiles are its views */
+let dataLink = null;
 /** the offline copy of each part (opt-in, HttpBackend.downloadAll progress), counted together */
 const offlineCopies = [];
 /** the learned prefetch of each part the game folder reads (HttpBackend.prefetch progress), counted together */
@@ -250,11 +253,29 @@ async function start(m) {
   // is kept in its persistent OPFS block store (pages; headless runs with a persistent profile, --opfs), with its own
   // learned prefetch and offline copy; the game reads each version through a PartsBackend (its whole tree, each file
   // read through the part that holds it), its reads reported under that version (ReadLog)
-  netLink = new NetLink({ bw: Number(m.opts.netBw) || undefined }); // (the rate this browser measured last time, until measured)
   const persistent = !m.opts.headless || m.opts.opfs;
+  let version = null; // (the version opened on this thread: ?dbg=ORTHROS_DATA_WORKER=0)
   // (the reads of this session until its game looks playable: sent with the mark — not by a session restored from a
   // snapshot, which skips the reads of the start: readLogUnlearnedOnly)
   if (m.opts.session) { readLog = new ReadLog(); readBackends = new Map(); playableMeta = { session: m.opts.session, lang: m.opts.gameLanguage || null }; }
+  // (the reader in a data worker of its own — data-link.js, the engines' data worker —; ?dbg=ORTHROS_DATA_WORKER=0: on this thread, below)
+  if (dataWorkerOn()) {
+    const deps = [...new Set((manifest.extraMounts ?? []).map((d) => d.manifest).filter((n) => n && n !== manifestName))];
+    dataLink = await DataLink.open({ name: manifestName, tree: m.tree, manifest, mounts: [manifestName, ...deps], session: m.opts.session ?? '', lang: m.opts.gameLanguage || null,
+      bw: Number(m.opts.netBw) || undefined, cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, stores: persistent ? 'opfs' : 'none', memPrefetch: !!m.opts.memPrefetch,
+      prefetch: !!m.opts.prefetch && !m.opts.offline, offline: !!m.opts.offline, netLog: !!m.opts.netLog }, log);
+    log('file', `game files: read through the data worker (shared blocks ${Math.round(dataLink.blocks.slots)} MiB)`);
+    if (readLog) {
+      dataLink.onRead = (p, a, b, f) => { if (!readLogUnlearnedOnly) readLog?.add(f.readName, f.readPath, a, b, performance.now()); };
+      dataLink.onReads = (name, path, a, b, t) => readLog?.add(name, path, a, b, t);
+    }
+    const views = dataLink.views(manifestName);
+    netLink = views.net; dataParts = views.parts; primaryFiles = views.primary; partsMounted = [primaryFiles];
+    fileStores.push(views.store);
+    if (m.opts.prefetch && !m.opts.offline) prefetches.push(views.prefetch);
+    if (m.opts.offline) offlineCopies.push(views.offline);
+  } else {
+  netLink = new NetLink({ bw: Number(m.opts.netBw) || undefined }); // (the rate this browser measured last time, until measured)
   const storeOf = async (name, primary, shared) => {
     let store = persistent ? await openStore(name) : null;
     if (!store && m.opts.memPrefetch) store = new MemBlockStore((primary || shared ? 1536 : 1024) * 1048576); // (harness: prefetch measured without a persistent profile)
@@ -265,7 +286,7 @@ async function start(m) {
     return store;
   };
   const rank = new Map(); // (?netlog: a block's rank in its part's learned list)
-  const version = await openVersion(manifestName, { tree: m.tree, manifest, net: netLink, store: storeOf, legacy: persistent ? openLegacyStore : null,
+  version = await openVersion(manifestName, { tree: m.tree, manifest, net: netLink, store: storeOf, legacy: persistent ? openLegacyStore : null,
     cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '',
     // (a session restored from a snapshot reports only the reads the server did not learn from its requests: those
     // without a session, and those served by bytes an announced or predicted request brought — HttpBackend.takeUnlearned)
@@ -280,6 +301,7 @@ async function start(m) {
   for (const p of dataParts) if (p.store instanceof UnderStore) { fileStores.push(p.store); log('file', `block store (${p.name}): its files, kept before in ${p.store.below.length} other store(s), moved there as read`); }
   primaryFiles = new PartsBackend(version, manifestName);
   partsMounted = [primaryFiles];
+  }
   readBackends?.set(manifestName, primaryFiles);
   // (a language's view of the game folder: files read under another name — languageFileAliases — and the files of the
   // other languages left out — languageFiles: a patch's files for one language only, which its launcher would not install)
@@ -291,14 +313,14 @@ async function start(m) {
   mountGameCdrom(vfs, manifest, gameFiles);
   for (const dependency of manifest.extraMounts ?? []) {
     root.mkdir(dependency.mount.replace(/^C:\\/, ''));
-    const dep = new PartsBackend(version, dependency.manifest);
+    const dep = dataLink ? dataLink.backend(dependency.manifest) : new PartsBackend(version, dependency.manifest);
     partsMounted.push(dep);
     vfs.mount(dependency.mount, dep);
     readBackends?.set(dependency.manifest, dep);
   }
   // learned prefetch: the blocks earlier sessions read, in the order they needed them, downloaded in the background —
   // each part its own (learnedOrders: a version's entries of files another part holds go to that part), side by side
-  if (m.opts.prefetch && !m.opts.offline) {
+  if (version && m.opts.prefetch && !m.opts.offline) {
     learnedOrders(version, m.opts.gameLanguage || null).then((lists) => Promise.all(dataParts.map((p, i) => {
       if (!p.store) return null;
       // (its launch set first once sessions marked it playable, as the engines that run in the page take it: a player
@@ -312,7 +334,7 @@ async function start(m) {
     }))).catch(() => {});
   }
   // offline copy (opt-in): every part into its block store, in the background while the game runs
-  if (m.opts.offline) for (const p of dataParts) {
+  if (version && m.opts.offline) for (const p of dataParts) {
     if (!p.store) continue;
     const progress = { bytes: 0, total: 0, done: false }, tag = p.name === manifestName ? '' : ` (${p.name})`;
     offlineCopies.push(progress);
@@ -423,7 +445,7 @@ async function start(m) {
   // (refined at each later settled stretch until the player acts — a restored session too: snapshot-watch.js)
   if (m.opts.snapshotAuto) snapshotWatch = new SnapshotWatch({ opens: vm.vfs.opens });
   snapshotPublish = !!m.opts.snapshotPublish;
-  if (restored && readLog) { readLog = new ReadLog(); readLogUnlearnedOnly = true; }
+  if (restored && readLog) { readLog = new ReadLog(); readLogUnlearnedOnly = true; dataLink?.unlearnedOnly(); }
   else if (readLog) playableWatch = new PlayableWatch();
   if (!restored) try {
     vm.createProcess({ exePath, args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, patches: manifest.patches, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
@@ -760,7 +782,7 @@ function pump() {
     // (a file read on the network: short slices, so the read's completion — several event-loop tasks for one fetch —
     // is not held behind a 12 ms slice at each step; --dbg ORTHROS_READ_SLICE_MS=12 is the earlier behaviour)
     vm.readSliceMs = globalThis.ORTHROS_READ_SLICE_MS ?? 2;
-    r = rootVm.runFor(tRun + (vm.readsInFlight > 0 ? vm.readSliceMs : 12));
+    r = rootVm.runFor(tRun + (vm.readsInFlight > (vm.readsPolled ?? 0) ? vm.readSliceMs : 12));
     if (rootVm.group && rootVm.group.foreground !== vm && !rootVm.group.foreground.proc.exited) adoptForeground(rootVm.group.foreground); // (several processes: docs/processes.md)
     acct.enter(ACCT.host);
     if (vm.jit?.coldQueue.length) vm.jit.flushCold(); // (the cold tier's entries to the background translator)
@@ -851,7 +873,7 @@ function pump() {
   host.gfx?.afterSlice?.();
   acct.enter(ACCT.host);
   pumpEndAt = performance.now(); lastPumpReturn = r.state === 'sleep' ? `sleep ${Math.round(r.until - pumpEndAt)}ms` : r.state;
-  if (r.state === 'exited') { running = false; post({ type: 'exit', code: r.code, report: rootVm.exitReport ?? vm.exitReport ?? null }); flushProfile(true); if (readLog) reportReads(performance.now(), null, true); return; }
+  if (r.state === 'exited') { running = false; dataLink?.stop(); post({ type: 'exit', code: r.code, report: rootVm.exitReport ?? vm.exitReport ?? null }); flushProfile(true); if (readLog) reportReads(performance.now(), null, true); return; }
   if (r.state === 'sleep') {
     if (r.until - pumpEndAt >= 3) { acct.enter(ACCT.ahead); prewarmRegions(Math.min(8, r.until - pumpEndAt - 1)); acct.enter(ACCT.host); } // (the wait, used to translate ahead)
     heatSlack(r.until - performance.now());
@@ -1002,7 +1024,7 @@ function renderInThread(recorders, threadBackend) {
   log('gfx', `render: ${recorders.length} device(s) moved to the in-thread backend`);
 }
 
-function stop(reason) { stopped = true; running = false; flushProfile(true); if (readLog) reportReads(performance.now(), null, true); post({ type: 'exit', code: -1, reason }); }
+function stop(reason) { stopped = true; running = false; dataLink?.stop(); flushProfile(true); if (readLog) reportReads(performance.now(), null, true); post({ type: 'exit', code: -1, reason }); }
 
 self.onmessage = (e) => {
   const m = e.data;
@@ -1079,7 +1101,7 @@ self.onmessage = (e) => {
   else if (m.type === 'frames') { const f = host?.frameStats(m.fromMs ?? 0); post({ type: 'frames', text: f ? `frames from t=${((m.fromMs ?? 0) / 1000).toFixed(0)}s: ${f.frames} frames in ${f.seconds.toFixed(0)}s = ${f.fps.toFixed(1)} fps; frame time p50 ${f.p50.toFixed(1)} p90 ${f.p90.toFixed(1)} p99 ${f.p99.toFixed(1)} max ${f.max.toFixed(0)} ms; >33ms ${f.over33} (${(100 * f.over33 / f.frames).toFixed(2)}%), >50ms ${f.over50}` : 'no frames' }); }
   else if (m.type === 'report') {
     const hist = vm?.apiHist();
-    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (vm?.jit ? `[report] JIT: ${vm.jit.stats.regions} regions translated in ${(vm.jit.stats.translateMs / 1000).toFixed(1)} s (emit ${(vm.jit.stats.tEmit / 1000).toFixed(1)}, build ${(vm.jit.stats.tBuild / 1000).toFixed(1)}, compile ${(vm.jit.stats.tModule / 1000).toFixed(1)}, instantiate ${(vm.jit.stats.tInstance / 1000).toFixed(1)}, consolidate ${(vm.jit.stats.tConsolidate / 1000).toFixed(1)} s), ${(vm.jit.stats.bytes / 1048576).toFixed(0)} MiB of WASM, ${vm.jit.stats.blocks} blocks for ${vm.jit.blockMap.size} distinct block addresses, ${vm.jit.stats.fpuVersions ?? 0} FPU-mode versions, ${vm.jit.stats.fpuModeMisses ?? 0} mode misses, ${vm.jit.stats.misses} translated at a miss${vm.jit.stats.coldEntries ? `; cold tier: ${vm.jit.stats.coldEntries} entries interpreted (${vm.jit.stats.coldSteps ?? 0} instructions), ${vm.jit.stats.coldRequests ?? 0} asked of the background worker, ${vm.jit.stats.coldHot ?? 0} translated here when hot` : ''}${vm.jit.stats.prewarmed ? `; ${vm.jit.stats.prewarmed} translated ahead (learned) in ${(vm.jit.stats.prewarmMs / 1000).toFixed(1)} s, ${regionPos} of ${regionQueue?.length ?? 0} entries looked at` : ''}\n` : '') + (netLink ? `[report] connection: ${(() => { const n = netLink.snapshot(); return `${n.bw ? `${Math.round(n.bw / 1024)} KB/s measured` : 'not measured'}, round trip ${n.rtt ?? '-'} ms; game reads ${n.demandRequests} requests ${(n.demandBytes / 1048576).toFixed(1)} MB (waited ${Math.round(n.demandMs / 1000)} s), background ${n.bgRequests} requests ${(n.bgBytes / 1048576).toFixed(1)} MB, ${n.abortedRequests} aborted`; })()}\n` : '') + (primaryFiles ? (() => { const parts = primaryFiles.parts, st = (k) => netStat(k, parts); return `[report] game files over HTTP: ${st('requests')} requests, ${(st('bytes') / 1048576).toFixed(0)} MiB, ${st('ms').toFixed(0)} ms${parts.some((p) => p.store) ? `; block store: ${storeStat('hits')} hits, ${storeStat('puts')} blocks added, writes ${Math.round(storeStat('putMs'))} ms (${storeStat('flushes')} index flushes, ${Math.round(storeStat('flushMs'))} ms)` : ''}${st('aheadRequests') ? `; ${st('aheadRequests')} learned piece requests ahead of the game (${(st('aheadBytes') / 1048576).toFixed(0)} MiB)` : ''}${parts.length > 1 ? ` (${parts.map((p) => p.name).join(' + ')})` : ''}\n`; })() : '') + (host?.gfx?.device?.stats ? `[report] GL programs built at a draw: ${host.gfx.device.stats.programs} in ${(host.gfx.device.stats.programMs ?? 0).toFixed(0)} ms (slowest ${(host.gfx.device.stats.programMaxMs ?? 0).toFixed(1)} ms); ${host.gfx.device.stats.programsShared ?? 0} keys given a program of the same sources\n` : '') + (host?.gfx?.programCache?.started ? `[report] GL programs compiled ahead: ${host.gfx.programCache.started}, ${host.gfx.programCache.resolved ?? 0} resolved ahead when the GPU process had caught up (${host.gfx.programCache.caughtUp ?? 0} times; ${(host.gfx.programCache.resolveMs ?? 0).toFixed(0)} ms, slowest ${(host.gfx.programCache.resolveMaxMs ?? 0).toFixed(1)}; ${host.gfx.programCache.polls ?? 0} completion checks in ${(host.gfx.programCache.pollMs ?? 0).toFixed(0)} ms; starts ${(host.gfx.programCache.startMs ?? 0).toFixed(0)} ms), ${host.gfx.programCache.hits} used (${host.gfx.programCache.resolvedHits ?? 0} of them resolved; ${(host.gfx.device?.stats?.prewarmTakeMs ?? 0).toFixed(0)} ms waiting for the others at draws)\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? `[report] texture level uploads: ${[...host.gfx.device.stats.uploadsBy.values()].reduce((a, b) => a + b, 0)} (${((host.gfx.device.stats.uploadBytes ?? 0) / 1048576).toFixed(0)} MiB as RGBA8) in ${(host.gfx.device.stats.texMs ?? 0).toFixed(0)} ms\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
+    const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (vm?.jit ? `[report] JIT: ${vm.jit.stats.regions} regions translated in ${(vm.jit.stats.translateMs / 1000).toFixed(1)} s (emit ${(vm.jit.stats.tEmit / 1000).toFixed(1)}, build ${(vm.jit.stats.tBuild / 1000).toFixed(1)}, compile ${(vm.jit.stats.tModule / 1000).toFixed(1)}, instantiate ${(vm.jit.stats.tInstance / 1000).toFixed(1)}, consolidate ${(vm.jit.stats.tConsolidate / 1000).toFixed(1)} s), ${(vm.jit.stats.bytes / 1048576).toFixed(0)} MiB of WASM, ${vm.jit.stats.blocks} blocks for ${vm.jit.blockMap.size} distinct block addresses, ${vm.jit.stats.fpuVersions ?? 0} FPU-mode versions, ${vm.jit.stats.fpuModeMisses ?? 0} mode misses, ${vm.jit.stats.misses} translated at a miss${vm.jit.stats.coldEntries ? `; cold tier: ${vm.jit.stats.coldEntries} entries interpreted (${vm.jit.stats.coldSteps ?? 0} instructions), ${vm.jit.stats.coldRequests ?? 0} asked of the background worker, ${vm.jit.stats.coldHot ?? 0} translated here when hot` : ''}${vm.jit.stats.prewarmed ? `; ${vm.jit.stats.prewarmed} translated ahead (learned) in ${(vm.jit.stats.prewarmMs / 1000).toFixed(1)} s, ${regionPos} of ${regionQueue?.length ?? 0} entries looked at` : ''}\n` : '') + (netLink ? `[report] connection: ${(() => { const n = netLink.snapshot(); return `${n.bw ? `${Math.round(n.bw / 1024)} KB/s measured` : 'not measured'}, round trip ${n.rtt ?? '-'} ms; game reads ${n.demandRequests} requests ${(n.demandBytes / 1048576).toFixed(1)} MB (waited ${Math.round(n.demandMs / 1000)} s), background ${n.bgRequests} requests ${(n.bgBytes / 1048576).toFixed(1)} MB, ${n.abortedRequests} aborted`; })()}\n` : '') + (primaryFiles ? (() => { const parts = primaryFiles.parts, st = (k) => netStat(k, parts); return `[report] game files over HTTP: ${st('requests')} requests, ${(st('bytes') / 1048576).toFixed(0)} MiB, ${st('ms').toFixed(0)} ms${parts.some((p) => p.store) ? `; block store: ${storeStat('hits')} hits, ${storeStat('puts')} blocks added, writes ${Math.round(storeStat('putMs'))} ms (${storeStat('flushes')} index flushes, ${Math.round(storeStat('flushMs'))} ms)` : ''}${st('aheadRequests') ? `; ${st('aheadRequests')} learned piece requests ahead of the game (${(st('aheadBytes') / 1048576).toFixed(0)} MiB)` : ''}${parts.length > 1 ? ` (${parts.map((p) => p.name).join(' + ')})` : ''}\n`; })() : '') + (dataLink ? `[report] data worker: ${dataLink.report()}\n` : '') +(host?.gfx?.device?.stats ? `[report] GL programs built at a draw: ${host.gfx.device.stats.programs} in ${(host.gfx.device.stats.programMs ?? 0).toFixed(0)} ms (slowest ${(host.gfx.device.stats.programMaxMs ?? 0).toFixed(1)} ms); ${host.gfx.device.stats.programsShared ?? 0} keys given a program of the same sources\n` : '') + (host?.gfx?.programCache?.started ? `[report] GL programs compiled ahead: ${host.gfx.programCache.started}, ${host.gfx.programCache.resolved ?? 0} resolved ahead when the GPU process had caught up (${host.gfx.programCache.caughtUp ?? 0} times; ${(host.gfx.programCache.resolveMs ?? 0).toFixed(0)} ms, slowest ${(host.gfx.programCache.resolveMaxMs ?? 0).toFixed(1)}; ${host.gfx.programCache.polls ?? 0} completion checks in ${(host.gfx.programCache.pollMs ?? 0).toFixed(0)} ms; starts ${(host.gfx.programCache.startMs ?? 0).toFixed(0)} ms), ${host.gfx.programCache.hits} used (${host.gfx.programCache.resolvedHits ?? 0} of them resolved; ${(host.gfx.device?.stats?.prewarmTakeMs ?? 0).toFixed(0)} ms waiting for the others at draws)\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? `[report] texture level uploads: ${[...host.gfx.device.stats.uploadsBy.values()].reduce((a, b) => a + b, 0)} (${((host.gfx.device.stats.uploadBytes ?? 0) / 1048576).toFixed(0)} MiB as RGBA8) in ${(host.gfx.device.stats.texMs ?? 0).toFixed(0)} ms\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
     post({ type: 'report', text: vm ? apis + vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
   }
 };

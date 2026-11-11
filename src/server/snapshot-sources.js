@@ -22,7 +22,7 @@ import crypto from 'node:crypto';
 export const SNAPSHOT_SOURCE_ROOTS = Object.freeze(['src/core/vm.js', 'src/web/worker.js']);
 /** The game data's host side (see above): not followed. */
 export const DATA_TRANSPORT = Object.freeze(['src/vfs/game-data.js', 'src/vfs/http-backend.js', 'src/vfs/launch-set.js', 'src/vfs/net-link.js',
-  'src/vfs/opfs-store.js', 'src/vfs/playable-watch.js', 'src/web/snapshot-watch.js']);
+  'src/vfs/opfs-store.js', 'src/vfs/playable-watch.js', 'src/web/snapshot-watch.js', 'src/vfs/data-link.js', 'src/vfs/shared-blocks.js']);
 /** Modules kept in the closure though reached only through the data transport: the game tree's helpers (game-tree.js). */
 export const KEPT = Object.freeze(['src/vfs/game-tree.js']);
 /**
