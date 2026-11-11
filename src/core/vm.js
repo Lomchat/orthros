@@ -606,7 +606,7 @@ export class Vm {
     const m = this.mem;
     const n = m.read32(DEFER_QUEUE);
     if (!n) return;
-    m.write32(DEFER_QUEUE, 0); m.write32(DEFER_QUEUE + 4, 0); m.write32(DEFER_QUEUE + 8, 0);
+    m.write32(DEFER_QUEUE, 0); m.write32(DEFER_QUEUE + 4, 0); m.write32(DEFER_QUEUE + 8, 0); m.write32(DEFER_QUEUE + 12, 0);
     const ctx = this.ctx, u32 = m.u32, hist = this.apiHistCounts, thunks = this.api.thunks, cpu = thread.cpu, proc = this.proc, com = this.com;
     let calls = 0;
     for (let p = DEFER_QUEUE + 16, end = p + n; p < end; calls++) {

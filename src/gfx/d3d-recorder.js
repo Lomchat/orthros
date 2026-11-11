@@ -144,7 +144,8 @@ export class RenderLink {
   }
   // ---------------------------------------------------------------- resources: ids, fences, memory
   slot() { return this.freeSlots.length ? this.freeSlots.pop() : this.nextSlot < ACK_SLOTS ? this.nextSlot++ : -1; }
-  newRec(r, slotted) { const gen = ++this.gen; return (r.rec = { id: r.id, slot: slotted ? this.slot() : -1, gen, gen0: gen, lastRef: 0, binds: 0, destroyed: false, eager: false }); }
+  // (recorded: the resource's surfaces leave the JIT's fast lock path, d3d8.js Surface.arm — a write must now go through beforeWrite)
+  newRec(r, slotted) { const gen = ++this.gen; r.rec = { id: r.id, slot: slotted ? this.slot() : -1, gen, gen0: gen, lastRef: 0, binds: 0, destroyed: false, eager: false }; r.recorded?.(); return r.rec; }
   /** latest ring position of a command that may read the resource's guest memory */
   lastRefOf(rr) { return rr.binds > 0 && this.lastWorkEnd > rr.lastRef ? this.lastWorkEnd : rr.lastRef; }
   /** may a command not yet replayed still read the resource's guest memory? */

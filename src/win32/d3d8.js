@@ -13,7 +13,7 @@ import { StateTable } from './state-table.js';
 import { displayModes } from './display-modes.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { PARK } from '../core/sched.js';
-import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SHADOW_FVF, SHADOW_LIGHTON, SHADOW_LIGHT, SHADOW_MATERIAL, SHADOW_XFORM, XFORM_WORDS, xformSlot, SHADOW_LIGHTS, LIGHT_WORDS, MATERIAL_WORDS, SURF_DESC_BYTES, SHADOW_OWNER } from '../cpu/jit/runtime.js';
+import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SHADOW_FVF, SHADOW_LIGHTON, SHADOW_LIGHT, SHADOW_MATERIAL, SHADOW_XFORM, XFORM_WORDS, xformSlot, SHADOW_LIGHTS, LIGHT_WORDS, MATERIAL_WORDS, SURF_DESC_BYTES, SHADOW_OWNER, SURF_LOCK_BYTES, LK_LOCKED, LK_ARMED, LK_PEND, LK_BLOCKS, LK_NONE } from '../cpu/jit/runtime.js';
 import { resAlloc, resFree, outOfAddressSpace, OutOfAddressSpace } from './res-mem.js';
 
 const NEVER = () => false; // (Present's pacing wait: its timeout alone wakes it)
@@ -168,6 +168,8 @@ export function d3dCore(vm) {
     GetPriority() { return this.priority; }
     PreLoad() { return D3D_OK; }
     GetType() { return this.type; }
+    /** the render worker's recorder met the resource (d3d-recorder.js newRec): its levels' locks go through JavaScript */
+    recorded() { for (const l of this.levels ?? []) l.disarm?.(); for (const f of this.faces ?? []) for (const l of f) l.disarm?.(); }
     destroy() {
       this.gone = true;
       this.dev.gfx?.destroyResource?.(this); this.free?.();
@@ -180,7 +182,7 @@ export function d3dCore(vm) {
     constructor(dev, owner, fmt, w, h, usage, pool, level = 0, face = 0) {
       this.dev = dev; this.owner = owner; this.fmt = fmt; this.width = w; this.height = h; this.usage = usage; this.pool = pool; this.level = level; this.face = face;
       this.pitch = surfacePitch(fmt, w); this.bytes = surfaceBytes(fmt, w, h);
-      this._mem = 0; this.locked = false; this._dirty = false; this.dirtyRect = null; this.lockRect = null; this.id = resIds.next++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
+      this._mem = 0; this.lk = 0; this._locked = false; this._dirty = false; this.dirtyRect = null; this.lockRect = null; this.id = resIds.next++; this.privateData = new Map(); this.type = RTYPE.SURFACE;
       this.iids = [IID_IDirect3DSurface8];
     }
     /**
@@ -193,7 +195,49 @@ export function d3dCore(vm) {
     set dirty(v) { this._dirty = v; this.dirtyRect = null; if (v) { if (this.owner) this.owner.levelsClean = false; this.dev.gfx?.surfaceDirty?.(this, null); } }
     /** guest address of the contents (0 until first needed); a render worker's mirror is told of every change */
     get mem() { return this._mem; }
-    set mem(v) { this._mem = v; this.dev.gfx?.surfaceMem?.(this); }
+    set mem(v) { this._mem = v; if (this.lk) { mem.write32(this.lk + 4, v); if (!v) this.disarm(); } this.dev.gfx?.surfaceMem?.(this); }
+    /**
+     * Locked (LockRect, GetDC): kept in the lock entry after the COM object (runtime.js FID_SURF_LOCK) once the surface
+     * has one — the JIT's fast path locks and unlocks there — with the lock's flags and rectangle (lockFlags, lockRect:
+     * loadLock reads them back)
+     */
+    get locked() { return this.lk ? (mem.read32(this.lk) & LK_LOCKED) !== 0 : this._locked; }
+    set locked(v) { this._locked = v; if (this.lk) { const st = mem.read32(this.lk); mem.write32(this.lk, v ? st | LK_LOCKED : st & ~LK_LOCKED); } }
+    /** a lock begun: its flags and rectangle (null: the whole surface), in the entry too */
+    setLock(flags, rect) {
+      this.lockFlags = flags; this.lockRect = rect;
+      if (!this.lk) { this._locked = true; return; }
+      const e = this.lk;
+      mem.write32(e + 4, this._mem); mem.write32(e + 8, this.pitch); mem.write32(e + 12, this.width); mem.write32(e + 16, this.height);
+      const dxt = this.fmt === FMT.DXT1 || this.fmt === FMT.DXT2 || this.fmt === FMT.DXT3 || this.fmt === FMT.DXT4 || this.fmt === FMT.DXT5;
+      mem.write32(e + 20, dxt ? LK_BLOCKS | (this.fmt === FMT.DXT1 ? 8 : 16) : this.pitch / Math.max(1, this.width));
+      mem.write32(e + 24, flags);
+      if (rect) for (let i = 0; i < 4; i++) mem.write32(e + 28 + 4 * i, rect[i]); else mem.write32(e + 28, -1);
+      this.locked = true;
+    }
+    /** the current lock's flags and rectangle from the entry (the fast path's lock writes only there) */
+    loadLock() {
+      if (!this.lk) return;
+      const e = this.lk;
+      this.lockFlags = mem.read32(e + 24);
+      this.lockRect = mem.readS32(e + 28) === -1 ? null : [mem.readS32(e + 28), mem.readS32(e + 32), mem.readS32(e + 36), mem.readS32(e + 40)];
+    }
+    /**
+     * Arm the fast path's next lock (runtime.js FID_SURF_LOCK): when a lock has nothing to do but write the pointer — the
+     * memory there, no render worker that may read it (a resource it knows: Device.beforeWrite's copy or wait), no
+     * readback, no GDI device context, no D3DX job or cache, no diagnostics — and ?dbg=ORTHROS_LOCK_FAST=0 is not set.
+     * Disarmed again when one of these changes (the memory, the recorder meeting the resource: recorded).
+     */
+    arm() {
+      if (!this.lk) return;
+      const rr = (this.owner ?? this).rec;
+      const ok = globalThis.ORTHROS_LOCK_FAST !== 0 && this._mem && !(this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && !this.gdiDC && !(rr && !rr.destroyed)
+        && !this.texJob && !tracingResources() && !globalThis.ORTHROS_WATCH_TEX && !globalThis.ORTHROS_LOCK_LOG;
+      const st = mem.read32(this.lk); mem.write32(this.lk, ok ? st | LK_ARMED : st & ~LK_ARMED);
+    }
+    disarm() { if (this.lk) mem.write32(this.lk, mem.read32(this.lk) & ~LK_ARMED); }
+    /** the render worker's recorder met the resource (d3d-recorder.js newRec): a write must go through beforeWrite */
+    recorded() { this.disarm(); }
     /**
      * The contents in guest memory, allocated on first use. Every write to a surface goes through here (locks, GetDC,
      * copies, fills, D3DX loads): with a render worker, it first waits until no pending command still reads the old
@@ -208,12 +252,17 @@ export function d3dCore(vm) {
     // runtime.js FID_SURF_DESC — the same 32 bytes GetDesc writes)
     ptrOf(c) {
       if (!this.ptr || !com.objectAt(this.ptr)) {
-        const p = this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this, SURF_DESC_BYTES);
+        const p = this.ptr = com.create(c.proc, this.dev.api9 ? 'IDirect3DSurface9' : 'IDirect3DSurface8', this, SURF_DESC_BYTES + SURF_LOCK_BYTES);
         mem.write32(p + 12, p + 24); this.GetDesc({ arg: () => p + 24 });
+        // (the lock entry, runtime.js FID_SURF_LOCK: the lock state moves there)
+        const was = this.locked, flags = this.lockFlags ?? 0, rect = this.lockRect;
+        mem.fill(p + 24 + SURF_DESC_BYTES, SURF_LOCK_BYTES, 0);
+        this.lk = p + 24 + SURF_DESC_BYTES; mem.write32(this.lk + 4, this._mem);
+        if (was) this.setLock(flags, rect);
       } else com.addRef(com.objectAt(this.ptr));
       return this.ptr;
     }
-    destroy() { this.ptr = 0; if (!this.owner) { this.dev.gfx?.destroyResource?.(this); this.free(); } }
+    destroy() { if (this.lk) { this._locked = this.locked; this.loadLock(); this.lk = 0; } this.ptr = 0; if (!this.owner) { this.dev.gfx?.destroyResource?.(this); this.free(); } }
     /**
      * Released to no reference, the surface stays a valid object at the same address while its owner lives (a device's
      * back buffers and automatic depth-stencil surface, a texture's levels), as in Direct3D (GetBackBuffer,
@@ -241,7 +290,7 @@ export function d3dCore(vm) {
       const base = this.ensureMem(c.proc);
       const surf = new GdiSurface(mem, base, this.width, this.height, this.pitch, bpp, { masks: this.fmt === FMT.R5G6B5 ? [0xf800, 0x7e0, 0x1f] : undefined });
       this.gdiDC = makeDC(c.proc, surf, { memory: true });
-      this.locked = true; this.lockFlags = 0; this.lockRect = null;
+      this.setLock(0, null); this.disarm();
       this.trace(c, 'GetDC');
       mem.write32(p, this.gdiDC.handle);
       return D3D_OK;
@@ -261,30 +310,45 @@ export function d3dCore(vm) {
       if ((this.usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)) && this.pool === POOL.DEFAULT && !this.lockable) { this.dev.gfx?.readbackSurface?.(this); }
       const base = lockMem(c, this);
       if (!base) return E_OUTOFMEMORY;
-      let off = 0, rectPx = 0;
-      this.lockRect = null;
+      let off = 0, rectPx = 0, lockRect = null;
       if (pRect) {
         const l = mem.readS32(pRect), t = mem.readS32(pRect + 4), r0 = mem.readS32(pRect + 8), b0 = mem.readS32(pRect + 12);
         // (the rectangle written, for a partial upload: clamped; an empty or inverted one counts as the whole surface)
         const r = Math.min(this.width, r0), b = Math.min(this.height, b0), cl = Math.max(0, l), ct = Math.max(0, t);
-        if (r > cl && b > ct) this.lockRect = [cl, ct, r, b];
+        if (r > cl && b > ct) lockRect = [cl, ct, r, b];
         const blocky = this.fmt === FMT.DXT1 || this.fmt === FMT.DXT2 || this.fmt === FMT.DXT3 || this.fmt === FMT.DXT4 || this.fmt === FMT.DXT5;
         off = blocky ? (t >> 2) * this.pitch + (l >> 2) * (this.fmt === FMT.DXT1 ? 8 : 16) : t * this.pitch + l * (this.pitch / Math.max(1, this.width));
         rectPx = Math.max(0, (r0 - l) * (b0 - t));
       }
       mem.write32(pLocked, this.pitch); mem.write32(pLocked + 4, base + (off | 0));
-      this.locked = true; this.lockFlags = flags;
+      this.setLock(flags, lockRect);
       { const k = this.dev.lockStats ?? (this.dev.lockStats = { whole: 0, rect: 0, rectPx: 0, rectOfPx: 0, readOnly: 0 }); if (flags & 0x10) k.readOnly++; else if (pRect) { k.rect++; k.rectPx += rectPx; k.rectOfPx += this.width * this.height; } else k.whole++; } // (report: lock patterns)
       if (tracingResources()) this.trace(c, `LockRect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} flags 0x${flags.toString(16)}`);
       // --watch-tex <fmt>:<w>x<h>: report the code writing into such surfaces while they are locked for writing
       const watch = globalThis.ORTHROS_WATCH_TEX;
       if (watch && watch === `${this.fmt}:${this.width}x${this.height}` && !(flags & 0x10) && vm.jit && (vm.watchReports ?? 0) < (globalThis.ORTHROS_WATCH_MAX ?? 400)) { this.watchKey = `#${this.owner?.id ?? this.id}`; vm.jit.watchWrites(base, surfaceBytes(this.fmt, this.width, this.height), this.watchKey, 4096); }
       if (globalThis.ORTHROS_LOCK_LOG && (flags & 0x10)) vm.log('lock', `#${this.owner?.id ?? this.id}${this.owner ? ' L' + this.level : ''} ${this.width}x${this.height} fmt ${this.fmt} flags 0x${flags.toString(16)} rect ${pRect ? [0, 4, 8, 12].map((k) => mem.readS32(pRect + k)).join(',') : 'all'} from ${c.proc.symbolize(c.retAddr)}`);
+      this.arm();
       return D3D_OK;
     }
     unlock() {
+      if (this.lk && (mem.read32(this.lk) & LK_PEND)) return this.unlockQueued();
+      this.loadLock();
       if (this.watchKey) { const sites = vm.jit.unwatch(this.watchKey); vm.watchReports = (vm.watchReports ?? 0) + 1; vm.log('warn', `watch ${this.watchKey} ${this.width}x${this.height} fmt ${this.fmt} (unlock by t${vm.current?.id}): ${sites.length ? sites.map(([k, n]) => { const [tid, rest] = typeof k === 'number' ? ['', k.toString(16)] : k.split(':'); return `${tid} ${rest.split('/').map((h) => vm.proc.symbolize(parseInt(h, 16))).join(' < ')} x${n}`; }).join(', ') : 'no translated writer'}`); this.watchKey = null; }
-      if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.markLocked(); this.dev.gfx?.surfaceUpdated?.(this); } return D3D_OK; }
+      if (!this.locked) return D3DERR_INVALIDCALL; this.locked = false; if (!(this.lockFlags & 0x10)) { this.markLocked(); this.dev.gfx?.surfaceUpdated?.(this); } this.arm(); return D3D_OK; }
+    /**
+     * The unlocks the fast path did since the deferred queue last ran (runtime.js FID_SURF_UNLOCK: its queued record,
+     * replayed in order with the other queued calls): what the JavaScript unlocks would have done, once, over the union
+     * of the rectangles written (markLocked of the union marks what markLocked of each one does)
+     */
+    unlockQueued() {
+      const e = this.lk;
+      mem.write32(e, mem.read32(e) & ~LK_PEND);
+      this.rgbaCache = null; // (as lock does)
+      const l = mem.readS32(e + 44);
+      if (l !== LK_NONE) { this.lockRect = l === -1 ? null : [l, mem.readS32(e + 48), mem.readS32(e + 52), mem.readS32(e + 56)]; this.markLocked(); this.dev.gfx?.surfaceUpdated?.(this); }
+      return D3D_OK;
+    }
     /** A lock for writing ended: the surface is dirty, over the union of the rectangles locked since the last upload. */
     markLocked() {
       const r = this.lockRect, d = this.dirtyRect, partial = r && (!this._dirty || d);
