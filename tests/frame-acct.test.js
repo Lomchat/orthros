@@ -44,11 +44,11 @@ test('an API with a long timed call is timed on every call from then on', () => 
   while (!a.apiTimed(3)) n++;
   const p = a.enter(C.api), a0 = a.acc[C.api]; clk.t += 2; a.apiEnd(p, 3, a0, a.acc[C.draw], true);
   assert.equal(a.heavyApis, 1);
-  for (let i = 0; i < 50; i++) assert.equal(a.apiTimed(3), true);
+  for (let i = 0; i < 50; i++) { assert.equal(a.apiTimed(3), true); if (i % 40 === 39) a.frame(); } // (a frame caps the exact timing)
   assert.ok(n < 32);
   // 1024 short calls in a row: sampled again
-  for (let i = 0; i < 1024; i++) { assert.equal(a.apiTimed(3), true); const q = a.enter(C.api), b0 = a.acc[C.api]; clk.t += 0.001; a.apiEnd(q, 3, b0, a.acc[C.draw], true); }
-  let untimed = 0; for (let i = 0; i < 64; i++) if (!a.apiTimed(3)) untimed++;
+  for (let i = 0; i < 1024; i++) { if (i % 40 === 0) a.frame(); assert.equal(a.apiTimed(3), true); const q = a.enter(C.api), b0 = a.acc[C.api]; clk.t += 0.001; a.apiEnd(q, 3, b0, a.acc[C.draw], true); }
+  a.frame(); let untimed = 0; for (let i = 0; i < 64; i++) if (!a.apiTimed(3)) untimed++;
   assert.ok(untimed > 32, `${untimed}`);
 });
 
@@ -189,4 +189,53 @@ test('phase: slow frames whose work fits in 33.4 ms are counted as paced (a fram
   const r = s.phase('next');
   assert.equal(r.slow33, 6); assert.equal(r.slowPaced, 4);
   assert.match(r.text, /4 of them paced/);
+});
+
+test('sampled game file reads add up to the exact ones, with far fewer clock reads; tasks inside a gap are their own category', () => {
+  const run = (sample) => {
+    globalThis.ORTHROS_ACCT_SAMPLE = sample;
+    const clk = fakeClock(), a = new FrameAccount(clk.now);
+    a.enter(C.guest); a.frame(); // (applies the switch)
+    let reads = 0;
+    for (let i = 0; i < 6000; i++) {
+      clk.t += 0.005; // guest code
+      const kind = a.ioTimed(); const p = kind ? a.enter(C.io) : -1, a0 = a.acc[C.io];
+      clk.t += 0.0015 + (i % 3) * 0.001; // the read
+      if (kind) a.ioEnd(p, a0, kind);
+      reads++;
+    }
+    const f = a.frame(), r = a.lastReads;
+    return { io: f[C.io], guest: f[C.guest], total: sum(f), r };
+  };
+  try {
+    const exact = run(0), sampled = run(1);
+    assert.ok(Math.abs(exact.io - 6000 * 0.0025) < 1e-6);
+    assert.ok(Math.abs(sampled.io - exact.io) / exact.io < 0.05, `io ${sampled.io} vs ${exact.io}`);
+    assert.ok(Math.abs(sampled.total - exact.total) < 1e-6, 'the frame still adds up');
+    assert.ok(sampled.r < exact.r / 8, `clock reads ${sampled.r} vs ${exact.r}`);
+  } finally { delete globalThis.ORTHROS_ACCT_SAMPLE; }
+  // a task in a gap is charged to `task`, one in guest code is not split out
+  const clk = fakeClock(), a = new FrameAccount(clk.now);
+  a.enter(C.late); clk.t = 5;
+  const tp = a.taskStart(); clk.t = 9; a.taskEnd(tp);
+  clk.t = 10; a.enter(C.guest); clk.t = 12; assert.equal(a.taskStart(), -1);
+  const f = a.frame();
+  assert.equal(f[C.task], 4); assert.equal(f[C.late], 6);
+});
+
+test('a very frequent API kept in exact timing by rare heavy calls is capped per frame and still estimated by its own samples', () => {
+  const clk = fakeClock(), a = new FrameAccount(clk.now);
+  a.enter(C.guest);
+  let truth = 0, k = 0, tot = 0;
+  for (let f = 0; f < 2000; f++) {
+    for (let i = 0; i < 2000; i++, k++) {
+      clk.t += 0.002; // guest
+      const cost = k % 397 === 0 ? 1 : 0.001; // (a heavy call every 400: keeps the API in `always`)
+      if (a.apiTimed(5)) { const outer = a.cur !== C.api, p = a.enter(C.api), a0 = a.acc[C.api], d0 = a.acc[C.draw]; clk.t += cost; a.apiEnd(p, 5, a0, d0, outer); } else clk.t += cost;
+      truth += cost;
+    }
+    tot += a.frame()[C.api];
+  }
+  assert.ok(Math.abs(tot - truth) / truth < 0.12, `api ${tot} vs ${truth}`);
+  assert.ok(a.lastReads < 800, `clock reads in the last frame: ${a.lastReads}`);
 });

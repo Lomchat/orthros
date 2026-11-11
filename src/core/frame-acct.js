@@ -14,11 +14,16 @@
 // short again. An API whose timed call took 0.5 ms or more of its own (draws excluded) is timed on every call
 // (`always`) until 1024 of its calls in a row are short again: rare heavy calls are not left to sampling.
 //
+// The game file reads (`io`, up to 2 M per load, ~1.5 us each) are sampled the same way when they run from guest code
+// (an untimed ReadFile): 1 call in ~16 timed, the others counted and estimated at the frame's close; a read inside a timed
+// API call is timed exactly, and reads of 0.5 ms or more switch to timing every read (as `always`). ORTHROS_ACCT_SAMPLE=0
+// (dbg:) times every read: the exact reference.
+//
 // Pacing (`wait`, `sleep`) is the game's own frame pacing — guest threads waiting for their timers — not work: a
 // frame's work is its duration minus those.
 
 /** Category names, in their index order (telemetry and reports use these names). */
-export const CATS = ['guest', 'api', 'draw', 'interp', 'jit', 'ahead', 'install', 'prog', 'tex', 'readback', 'io', 'net', 'present', 'render', 'audio', 'host', 'wait', 'sleep', 'ioWait', 'late'];
+export const CATS = ['guest', 'api', 'draw', 'interp', 'jit', 'ahead', 'install', 'prog', 'tex', 'readback', 'io', 'net', 'present', 'render', 'audio', 'host', 'wait', 'sleep', 'ioWait', 'late', 'task'];
 /** Category indices by name. */
 export const C = Object.freeze(Object.fromEntries(CATS.map((k, i) => [k, i])));
 /** What each category holds (reports, docs). */
@@ -42,7 +47,8 @@ export const CAT_INFO = {
   wait: 'guest threads waiting inside a nested call (pacing)',
   sleep: 'every guest thread waits: the worker sleeps until the next wake-up (pacing)',
   ioWait: 'guest threads waiting for a file read on the network (the worker idle, or a nested wait for a read)',
-  late: 'the worker resumed later than planned (timer clamping, garbage collection, other tasks), or a host wait woke after its deadline (a coarse host timer)',
+  late: 'the worker resumed later than planned (timer clamping, garbage collection, untracked tasks), or a host wait woke after its deadline (a coarse host timer)',
+  task: "the worker's own event-loop tasks between two pumps (a fetch's block installs, messages from the page and the helpers): measured, no longer part of late / ioWait / sleep",
 };
 export const N_CATS = CATS.length;
 /** Pacing categories: excluded from a frame's work. */
@@ -86,10 +92,22 @@ export function histSparse(hist) { const out = []; for (let i = 0; i < hist.leng
 /** Add a sparse list (histSparse) into dense counts. */
 export function histAddSparse(dense, sparse) { for (let i = 0; i + 1 < (sparse?.length ?? 0); i += 2) if (sparse[i] >= 0 && sparse[i] < dense.length) dense[sparse[i]] += sparse[i + 1]; return dense; }
 
-/** Sampled sections: mean interval between two timed calls. */
-const SAMPLE_EVERY = 16;
+/**
+ * Sampled sections: mean interval between two timed calls (SAMPLE_EVERY at least; a section called thousands of times a
+ * frame — ReadFile in a load: 8 000 — is sampled less often, SAMPLE_TARGET timed calls a frame are enough: see `every`).
+ */
+const SAMPLE_EVERY = 16, SAMPLE_TARGET = 128, SAMPLE_MAX_EVERY = 256;
+/** the mean interval for a section called `n` times in the last frame */
+const every = (n) => Math.max(SAMPLE_EVERY, Math.min(SAMPLE_MAX_EVERY, Math.round(n / SAMPLE_TARGET)));
 /** A timed API call this long (ms, its own time) makes its API timed on every call; ALWAYS_CALLS short ones in a row, sampled again. */
 const HEAVY_MS = 0.5, SHORT_MS = 0.05, ALWAYS_CALLS = 1024;
+/**
+ * An API timed on every call (above) is timed exactly for this many calls per frame; the rest of the frame's calls of
+ * that API are sampled (1 in ~16) and estimated from that API's own samples (a stratum of its own, not the mean of all
+ * APIs). Bounds the clock reads of a very frequent API with the odd heavy call (ReadFile: 1.5 M calls in a load, a
+ * big read now and then kept it timed on every call, 2 clock reads each). ORTHROS_ACCT_SAMPLE=0: no cap.
+ */
+const ALWAYS_FRAME_CAP = 48, CAP_DECAY = 0.98;
 
 export class FrameAccount {
   /** @param {() => number} [now] clock in ms (performance.now by default) */
@@ -101,6 +119,7 @@ export class FrameAccount {
     this.out = new Float64Array(N_CATS); // the last closed frame (estimates applied)
     this.cur = C.host; this.at = now(); this.on = true;
     this.rng = 0x2545f491; this.apiLeft = 1; this.interpLeft = 1;
+    this.alwaysFrame = new Uint16Array(256); this.capLeft = new Uint16Array(256); this.capN = new Float64Array(256); this.capMs = new Float64Array(256); this.capDrawMs = new Float64Array(256); this.capUntimed = new Float64Array(256); this.capSumN = new Float64Array(256); this.capSumMs = new Float64Array(256); this.capSumDraw = new Float64Array(256); this.capList = [];
     this.always = new Uint16Array(256); // per API index: timed on every call while non-zero (short calls left before sampling again)
     // per frame: sampled (randomly timed) API calls, their exclusive time, and the calls not timed; same for the interpreter
     this.apiSampledN = 0; this.apiSampledMs = 0; this.drawSampledMs = 0; this.apiUntimedN = 0;
@@ -110,6 +129,7 @@ export class FrameAccount {
     this.nestApi = 0; this.nestDraw = 0; // own api / draw time of every timed outer call so far (apiEnd: a call's nested ones taken out)
     this.heavyApis = 0; // APIs switched to timing on every call
     this.drawAll = 0; this.drawAllFrame = false; this.drawAllSwitches = 0; // every draw timed while non-zero (short draws left)
+    this.sampleOn = true; this.apiEvery = SAMPLE_EVERY; this.interpEvery = SAMPLE_EVERY; this.ioEvery = SAMPLE_EVERY; this.ioLeft = 1; this.ioAll = 0; this.ioSampledN = 0; this.ioSampledMs = 0; this.ioUntimedN = 0; this.ioMean = 0.001; this.ioTotN = 0; this.ioTotMs = 0;
     this.reads = 0; // clock reads by the accounting itself (its cost: ~0.25 µs each in a Chrome worker)
     // per API index: time and count of its timed calls (with the call counts, an estimate of each API's time)
     this.idxMs = new Float64Array(256); this.idxN = new Float64Array(256); this.idxCalls = new Float64Array(256);
@@ -127,7 +147,7 @@ export class FrameAccount {
   leave(prev) { this.reads++; const t = this.now(); this.acc[this.cur] += t - this.at; this.at = t; this.cur = prev; }
   /** Move `ms` the current frame already charged to `from` to another category (e.g. a gap's late part). */
   move(from, to, ms) { if (ms <= 0) return; const have = this.acc[from] - this.base[from]; if (ms > have) ms = have; if (ms <= 0) return; this.acc[from] -= ms; this.acc[to] += ms; }
-  nextInterval() { let x = this.rng; x ^= x << 13; x ^= x >>> 17; x ^= x << 5; this.rng = x >>> 0; return 1 + (this.rng % (2 * SAMPLE_EVERY - 1)); }
+  nextInterval(every = SAMPLE_EVERY) { let x = this.rng; x ^= x << 13; x ^= x >>> 17; x ^= x << 5; this.rng = x >>> 0; return 1 + (this.rng % (2 * every - 1)); }
 
   /**
    * An API call (thunk index `idx`) is about to run: true when it is timed — then enter(C.api) / apiEnd bracket it.
@@ -136,9 +156,16 @@ export class FrameAccount {
    */
   apiTimed(idx) {
     if (idx < this.idxCalls.length) this.idxCalls[idx]++; else this.growCalls(idx);
-    if (idx < this.always.length && this.always[idx]) return true;
+    if (idx < this.always.length && this.always[idx]) {
+      if (!this.sampleOn || ++this.alwaysFrame[idx] <= ALWAYS_FRAME_CAP) return true;
+      // (over the frame's cap: sampled, with the API's own estimate)
+      if (this.alwaysFrame[idx] === ALWAYS_FRAME_CAP + 1) this.capList.push(idx);
+      if (this.capLeft[idx] > 1) { this.capLeft[idx]--; if (this.cur !== C.api) this.capUntimed[idx]++; return false; }
+      this.capLeft[idx] = this.nextInterval(this.apiEvery);
+      return true;
+    }
     if (--this.apiLeft > 0) { if (this.cur !== C.api) this.apiUntimedN++; return false; }
-    this.apiLeft = this.nextInterval();
+    this.apiLeft = this.nextInterval(this.apiEvery);
     return true;
   }
   /**
@@ -154,11 +181,14 @@ export class FrameAccount {
     this.nestApi += ms; this.nestDraw += draw;
     if (idx >= this.idxMs.length) { const m = new Float64Array(Math.max(idx + 1, this.idxMs.length * 2)), n = new Float64Array(m.length); m.set(this.idxMs); n.set(this.idxN); this.idxMs = m; this.idxN = n; }
     this.idxMs[idx] += ms + draw; this.idxN[idx]++;
-    if (idx >= this.always.length) { const a = new Uint16Array(Math.max(idx + 1, this.always.length * 2)); a.set(this.always); this.always = a; }
+    if (idx >= this.always.length) { const a = new Uint16Array(Math.max(idx + 1, this.always.length * 2)); a.set(this.always); this.always = a; for (const k of ['alwaysFrame', 'capLeft']) { const u = new Uint16Array(a.length); u.set(this[k]); this[k] = u; } for (const k of ['capN', 'capMs', 'capDrawMs', 'capUntimed', 'capSumN', 'capSumMs', 'capSumDraw']) { const f = new Float64Array(a.length); f.set(this[k]); this[k] = f; } }
     const al = this.always[idx];
     if (ms >= HEAVY_MS) { if (!al) this.heavyApis++; this.always[idx] = ALWAYS_CALLS; }
     else if (al && ms < SHORT_MS) this.always[idx] = al - 1;
-    if (al) return; // (timed because heavy: measured, not a sample)
+    if (al) { // (timed because heavy: measured, not a sample — except over the frame's cap, a sample of the API's own)
+      if (this.sampleOn && this.alwaysFrame[idx] > ALWAYS_FRAME_CAP) { this.capN[idx]++; this.capMs[idx] += ms; this.capDrawMs[idx] += draw; }
+      return;
+    }
     this.apiSampledN++; this.apiSampledMs += ms; this.drawSampledMs += draw;
   }
   /** Is the draw about to be submitted timed (then enter(C.draw) / drawEnd bracket it)? */
@@ -171,10 +201,34 @@ export class FrameAccount {
     else if (this.drawAll > 0 && ms < SHORT_MS) this.drawAll--;
   }
   growCalls(idx) { const a = new Float64Array(Math.max(idx + 1, this.idxCalls.length * 2)); a.set(this.idxCalls); this.idxCalls = a; a[idx]++; }
+  /**
+   * A game file read is about to run: 0 when it is not timed (counted: its time stays in the enclosing category until the
+   * frame's estimate moves it), 1 when it is timed (enter(C.io) / ioEnd(prev, acc[io], 1)), 2 when it is a timed sample.
+   * Only a read made from guest code is sampled; one inside a timed API call or any other section is timed exactly.
+   */
+  ioTimed() {
+    if (!this.sampleOn || this.cur !== C.guest || this.ioAll > 0) return 1;
+    if (--this.ioLeft > 0) { this.ioUntimedN++; return 0; }
+    this.ioLeft = this.nextInterval(this.ioEvery);
+    return 2;
+  }
+  ioEnd(p, a0, kind) {
+    this.leave(p);
+    const ms = this.acc[C.io] - a0;
+    if (kind === 2) { this.ioSampledN++; this.ioSampledMs += ms; }
+    if (ms >= HEAVY_MS) this.ioAll = ALWAYS_CALLS; else if (this.ioAll > 0 && ms < SHORT_MS) this.ioAll--;
+  }
+  /**
+   * An event-loop task of the worker starts (a fetch's block install, a message): while the worker is in a gap between two
+   * pumps (late / ioWait / sleep) its time is charged to `task`; elsewhere (nested in guest code) nothing changes.
+   * Returns what taskEnd takes, or -1.
+   */
+  taskStart() { const c = this.cur; return c === C.late || c === C.ioWait || c === C.sleep ? this.enter(C.task) : -1; }
+  taskEnd(p) { if (p >= 0) this.leave(p); }
   /** An interpreter fallback: true when this one is timed (then enter(C.interp) / interpEnd(prev, acc[interp]) bracket it). */
   interpTimed() {
     if (--this.interpLeft > 0) { if (this.cur !== C.interp) this.interpUntimedN++; return false; }
-    this.interpLeft = this.nextInterval();
+    this.interpLeft = this.nextInterval(this.interpEvery);
     return true;
   }
   interpEnd(p, a0) { this.leave(p); this.interpSampledN++; this.interpSampledMs += this.acc[C.interp] - a0; }
@@ -187,22 +241,40 @@ export class FrameAccount {
     this.reads++; this.lastReads = this.reads; this.reads = 0; // (the reads of the frame closed now)
     const t = this.now(); this.acc[this.cur] += t - this.at; this.at = t;
     const a = this.acc, b = this.base, o = this.out;
+    this.sampleOn = !(globalThis.ORTHROS_ACCT_SAMPLE === 0 || globalThis.ORTHROS_ACCT_SAMPLE === '0' || globalThis.ORTHROS_ACCT_SAMPLE === false);
+    // (the next frame's sampling intervals follow this frame's call counts; with the switch off, the fixed one)
+    if (this.sampleOn) { this.apiEvery = every(this.apiUntimedN + this.apiSampledN); this.interpEvery = every(this.interpUntimedN + this.interpSampledN); this.ioEvery = every(this.ioUntimedN + this.ioSampledN); }
+    else { this.apiEvery = this.interpEvery = this.ioEvery = SAMPLE_EVERY; }
     if (this.apiSampledN) { this.apiTotN += this.apiSampledN; this.apiTotMs += this.apiSampledMs; this.drawTotMs += this.drawSampledMs; this.apiMean = this.apiTotMs / this.apiTotN; this.drawMean = this.drawTotMs / this.apiTotN; }
     if (this.interpSampledN) { this.interpTotN += this.interpSampledN; this.interpTotMs += this.interpSampledMs; this.interpMean = this.interpTotMs / this.interpTotN; }
+    if (this.ioSampledN) { this.ioTotN += this.ioSampledN; this.ioTotMs += this.ioSampledMs; this.ioMean = this.ioTotMs / this.ioTotN; }
+    const ioEst = this.ioUntimedN * (this.ioSampledN >= 8 ? this.ioSampledMs / this.ioSampledN : this.ioMean);
+    // (the capped APIs' own estimates: their calls over the frame's cap that were not timed)
+    let capApi = 0, capDraw = 0;
+    for (const i of this.capList) {
+      // (the API's mean over its last ~50 capped frames: one sample of a rare heavy call in a frame's ~120 would be scaled
+      // by ~2000 calls, and the frame's estimate clipped by the guest time it can be taken from)
+      const sn = this.capSumN[i] = this.capSumN[i] * CAP_DECAY + this.capN[i], sm = this.capSumMs[i] = this.capSumMs[i] * CAP_DECAY + this.capMs[i], sd = this.capSumDraw[i] = this.capSumDraw[i] * CAP_DECAY + this.capDrawMs[i];
+      const n = this.capUntimed[i];
+      if (n && sn) { capApi += n * sm / sn; capDraw += n * sd / sn; }
+      this.capN[i] = 0; this.capMs[i] = 0; this.capDrawMs[i] = 0; this.capUntimed[i] = 0; this.capLeft[i] = 0;
+    }
+    this.capList.length = 0; this.alwaysFrame.fill(0);
     const local = this.apiSampledN >= 8;
-    const apiEst = this.apiUntimedN * (local ? this.apiSampledMs / this.apiSampledN : this.apiMean);
+    const apiEst = capApi + this.apiUntimedN * (local ? this.apiSampledMs / this.apiSampledN : this.apiMean);
     // (every draw timed during this frame: none to estimate)
-    const drawEst = this.drawAllFrame ? 0 : this.apiUntimedN * (local ? this.drawSampledMs / this.apiSampledN : this.drawMean);
+    const drawEst = capDraw + (this.drawAllFrame ? 0 : this.apiUntimedN * (local ? this.drawSampledMs / this.apiSampledN : this.drawMean));
     this.drawAllFrame = this.drawAll > 0;
     const interpEst = this.interpUntimedN * (this.interpSampledN >= 8 ? this.interpSampledMs / this.interpSampledN : this.interpMean);
     for (let i = 0; i < N_CATS; i++) { o[i] = a[i] - b[i]; b[i] = a[i]; }
     // (the untimed calls ran inside guest code's time: moved from it, never more than it holds)
-    let move = apiEst + drawEst + interpEst, k = 1;
+    let move = apiEst + drawEst + interpEst + ioEst, k = 1;
     if (move > o[C.guest]) { k = o[C.guest] / move; move = o[C.guest]; }
-    o[C.api] += apiEst * k; o[C.draw] += drawEst * k; o[C.interp] += interpEst * k;
+    o[C.api] += apiEst * k; o[C.draw] += drawEst * k; o[C.interp] += interpEst * k; o[C.io] += ioEst * k;
     o[C.guest] -= move;
     this.apiSampledN = 0; this.apiSampledMs = 0; this.drawSampledMs = 0; this.apiUntimedN = 0;
     this.interpSampledN = 0; this.interpSampledMs = 0; this.interpUntimedN = 0;
+    this.ioSampledN = 0; this.ioSampledMs = 0; this.ioUntimedN = 0;
     return o;
   }
 }
