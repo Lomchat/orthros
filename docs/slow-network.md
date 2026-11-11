@@ -2100,8 +2100,11 @@ fed by its `open` and by every range of its parts' files that arrives, `HttpBack
 paths, the game's opens and its files' bytes only). Three guesses, each fetched as a predicted range
 (`HttpBackend.predict`: the announced-read machinery — `wantRange`'s transport units, deduplicated against everything on
 its way, urgent once started, up to `WANT_REQUESTS` in flight, `WANT_REQUESTS_H1_LOOSE` on an HTTP/1.1 origin, asked with
-`w=1`: not learned as reads — the page's read log reports the game's reads of them; counted as `predict` in
-`NetLink.bgBy`):
+`w=1`: not learned as reads — a guess is not a read —, the game's reads of them reported by the page's read log; counted
+as `predict` in `NetLink.bgBy`). A session restored from a snapshot reports only the reads the server did not learn from
+its own requests (`worker.js` `readLogUnlearnedOnly`): the pieces an announced or predicted request brought are marked
+(`HttpBackend.unlearned`, unmarked when a learned request asks for them), and the game's first read of each is reported
+(`takeUnlearned`) — before, such a session's reads served by guesses were learned nowhere:
 - **Walks** (`?dbg=ORTHROS_PREDICT=0` turns all three off): a game that opens files of one extension one after another
   under one folder walks them in an order. Each extension has a run: its folder (the common ancestor of its opens, at
   most 3 levels up) and the files of that extension there, sorted as an enumeration sorts paths (lower case, `\`). The
@@ -2120,9 +2123,12 @@ its way, urgent once started, up to `WANT_REQUESTS` in flight, `WANT_REQUESTS_H1
   order: `w3d>dds` 308 of 324 opened; INI files' references to models, far fewer — never fetched.
 - **The whole small file at its open** (`?dbg=ORTHROS_PREDICT_OPEN=0`): a file opened that is not here goes whole, at
   once, when it is at most 1 MiB and worth it (below) — its pieces would each be a wait of the game's otherwise (582 of
-  the 592 Create-a-Hero files of more than a piece are read whole). Unlike `HttpFile.wholeFirst` (off, no gain), the game
-  is not made to wait for more than its read: the read joins the request on its way, and the file's next reads find
-  their pieces arriving while the game parses the first.
+  the 592 Create-a-Hero files of more than a piece are read whole). The same aim as `HttpFile.wholeFirst` (off by
+  default, no gain measured), not the same means: there the game's first read waits for the whole file; here it does not
+  wait for more than its read — the read joins the request on its way, and the file's next reads find their pieces
+  arriving while the game parses the first. On by default because it measured a gain on its own (A/B below, 2026-11-11):
+  Create-a-Hero 207, 195 s with it, 229, 229 s without (the walks and the names on in both), its demand requests
+  630, 643 in that load instead of 1 343, 1 380; the launch to the menu not told apart (277, 277 s with; 323, 271 s without).
 - **The cost rule** (all three): a guess of `b` bytes right with probability `p` saves a round trip, wrong it costs its
   bytes; it goes when `(1 − p) × b ≤ 2 × p × rate × round trip` (the link's measure, as file bytes; `p` the run's
   proven share, a pair's, or 0.8 for the whole file at its open). At 1.25 MB/s and 50 ms a file opened goes whole up to
@@ -2176,6 +2182,22 @@ aborted by a demand read). With guesses kept off thin links: 19.4 MB and 575 wai
 (19.5 MB, 563 waits, 195 s; 41.5 MB) and as `main` (19.6 MB at 300 s). A first visit at 85 KB/s (empty learned directory) stopped after the launcher's
 11 MB `game.dat` read with the predictor off as well (5.2 MB in 15 minutes, on and off alike): not this change's, not
 explained here.
+
+**Re-measured after the read-log fix** (2026-11-11, the same harness and scenario — Escape ×6, `waitframe:14,30` for the
+menu, MY CAPTAINS, `waitframe:40,100000` —, 1.25 MB/s 50 ms, `ORTHROS_BROWSER_CPU=800%`, an empty learned directory and a
+copy of the live server's units each first visit; one build, the switches by `--dbg`; time to the menu = launch → its
+anchor, Create-a-Hero = the click → its anchor):
+
+| AotR, 1.25 MB/s | predict off | on, whole file at open off | on (default) |
+|---|---|---|---|
+| first visit: launch → menu | 514 s | 323, 271 s | 277, 277 s |
+| game's waits to the menu (their time) | 5 570 (338 s) | 2 855 (129 s), 2 947 (116 s) | 2 924 (118 s), 2 893 (116 s) |
+| first visit: MY CAPTAINS → Create-a-Hero | 257 s | 229, 229 s | 207, 195 s |
+| demand requests in that load | 1 822 | 1 343, 1 380 | 643, 630 |
+| learned order (live copy, `--memprefetch`): menu / Create-a-Hero | 194 / 119 s | | 186 / 122 s |
+
+The learned run on fetched 48 predicted ranges (1.9 MB) in the whole run, 9 files whole at their open (3.4 MB): no
+regression.
 
 Not measured: the owner's real machine and link, HTTP/2 (the harness origin is HTTP/1.1: four predicted requests at once
 — `WANT_REQUESTS_H1_LOOSE` —, 32 over HTTP/2 in production), BFME 1.08 and Vice City.

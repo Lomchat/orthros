@@ -153,7 +153,9 @@ export class OpenPredictor {
   /**
    * A file of `size` bytes just opened is fetched whole (?dbg=ORTHROS_PREDICT_OPEN=0: off): at most WHOLE_MAX, worth it
    * at OPEN_P (the share of a load's small files a game reads whole — Age of the Ring's Create-a-Hero load: 582 of
-   * its 592 files of more than one piece), never while the learned order follows the game.
+   * its 592 files of more than one piece), never while the learned order follows the game. Unlike HttpFile.wholeFirst
+   * (off, no gain), the game's read does not wait for the whole file. On: A/B at 1.25 MB/s, AotR's first Create-a-Hero
+   * load 207, 195 s with it, 229, 229 s without (docs/slow-network.md "Predicted opens").
    */
   openWhole(size) {
     const v = globalThis.ORTHROS_PREDICT_OPEN;
