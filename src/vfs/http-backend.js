@@ -1708,16 +1708,21 @@ export class HttpBackend {
       const a = Math.max(pos, c * CHUNK), b = Math.min(end, c * CHUNK + piece.length);
       out.set(piece.subarray(a - c * CHUNK, b - c * CHUNK), outOff + (a - pos));
     }
-    // the block, and for a stream the next ones, in the background (not on a thin link: there the bandwidth goes to
-    // what the game reads and what earlier sessions read next — a whole block for a piece read is 16 times the bytes;
-    // not the next ones of a media file the game is not streaming: see speculate)
+    this.wantAfterPieces(path, size, mtime, index, ahead);
+    return true;
+  }
+  /**
+   * Block `index` read from its pieces: the block, and for a stream the next `ahead` ones, in the background (not on a
+   * thin link: there the bandwidth goes to what the game reads and what earlier sessions read next — a whole block for a
+   * piece read is 16 times the bytes; not the next ones of a media file the game is not streaming: see speculate).
+   */
+  wantAfterPieces(path, size, mtime, index, ahead) {
     if (ahead && !this.speculate(path)) ahead = 0;
     for (let i = index; i <= index + ahead && i * BLOCK < size && !this.net.thin(); i++) {
       const wk = `${path}#${i}`;
       if (!this.want.has(wk) && (i === index || !this.peekBlock(path, size, i, mtime))) this.want.set(wk, { path, size, mtime, index: i });
     }
     this.fillBackground();
-    return true;
   }
 
   /**
@@ -2161,12 +2166,18 @@ class HttpFile {
   /**
    * A read of [off, end) answered elsewhere — the emulator's copy of the blocks in shared memory (data-link.js, the
    * data worker replays it: data-worker.js w32Drain) —: its bookkeeping as readNow's, without the bytes: the learned
-   * order's position, the read counters and log, the sequence and stream detection, the read-ahead it starts.
+   * order's position, the read counters and log, the sequence and stream detection, the read-ahead it starts, and the
+   * whole blocks wanted in the background for the blocks it read from their pieces (readPieces). `whole(index)`: the
+   * block is whole where the read was answered (not wanted again).
    */
-  seen(off, end) {
+  seen(off, end, whole = null) {
     end = Math.min(end, this.len);
     if (off >= end) return;
-    const sequential = this.track(off, end);
+    const sequential = this.track(off, end), fast = this.b.net.fast(), bulk = sequential && this.run >= STREAM_BYTES;
+    for (let bi = Math.floor(off / BLOCK); bi * BLOCK < end; bi++) {
+      if (this.b.peekBlockHere(this.path, this.len, this.mtime, bi) || whole?.(bi)) continue;
+      this.b.wantAfterPieces(this.path, this.len, this.mtime, bi, bulk && fast ? 3 : sequential ? 2 : 0);
+    }
     if (sequential && (this.run >= STREAM_BYTES || (!this.b.net.fast() && this.run >= CHUNK))) this.b.readAhead(this.path, this.len, this.mtime, end, this.run / Math.max(0.25, (performance.now() - this.runT0) / 1000), this.runReads, end - this.runFrom);
   }
   /** readNow's bookkeeping of a read of [off, end) (see seen): whether it follows the previous one. */

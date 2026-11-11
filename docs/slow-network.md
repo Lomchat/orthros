@@ -2357,6 +2357,50 @@ decode brotli itself (`DecompressionStream` has gzip and deflate, not brotli, in
 on each request (the launch set's are the same for every new player: cut at fixed places of the learned order, they
 could be made ahead like the units).
 
+## The data worker of the Windows games (2026-11-11)
+
+The engines that run in the page read their data in a worker of their own (`src/vfs/data-worker.js`); the Windows
+games read it on the emulator's worker, the guest's thread: fetches, decompression, `installBlock`, the learned order's
+background fill, the prediction of opens and the OPFS writes shared that thread with the guest, and a read that missed
+cut the scheduler's slices to 2 ms (`readSliceMs`) so that the event loop could complete it. Now (CLAUDE.md
+"Standardization") the Windows games use the same data worker (`?dbg=ORTHROS_DATA_WORKER=0`: the reader on the emulator
+thread, as before; read at start):
+
+- **One module boundary**: `src/vfs/data-link.js` is the emulator's side (`DataLink`, `RemoteBackend` — the mounted
+  version's tree, its stat/readdir/open as `PartsBackend`'s, through game-tree.js —, `RemoteFile` — HttpFile's interface:
+  `size`, `prepare`, `read(off, len, into)`, `close`); `data-worker.js`'s `w32*` functions the worker's (the version
+  opened with `openVersion`, a `PartsBackend` per mounted version for its predictor, the stores as the emulator opened
+  them, `prefetchAll` / `wholeDownload` as the engines'); `src/vfs/shared-blocks.js` the memory between them.
+- **The block cache is shared memory**: one `SharedArrayBuffer` of 1 MiB slots (`cacheBlocks` per mounted version, as
+  the parts' memory budget was), each a block of one file or the 64 KiB pieces of it that are here (a mask). The data
+  worker writes every network arrival there (`HttpBackend.arrivals`) and what it has of a read it served (memory,
+  store); the emulator reads a hit with a plain copy straight into guest memory under a seqlock (a slot's `gen`, odd while
+  the slot changes hands; a torn copy is a miss). Slots found through an open-addressing table, replaced by CLOCK (the
+  emulator marks what it reads). File keys come from the mounted trees on both sides (`fileKeys`).
+- **The reader's state follows every read**: a hit is noted in a ring (handle, offset, end), the data worker replays the
+  notes every 4 ms and before any request through `HttpFile.seen` — the bookkeeping half of `readNow` (`track`: the
+  learned order's position, sequence and stream detection, read counters) and the read-ahead it starts. The read log
+  (ReadLog, the playable mark) stays on the emulator, told at each read as before; a session restored from a snapshot
+  gets the reads the server did not learn from the data worker (`takeUnlearned` is the reader's).
+- **A miss**: `ReadFile`'s parked read (`prepare`) asks the data worker by message and waits up to 2 ms
+  (`ORTHROS_DATA_QUICK_MS`) for its first answer: here (memory, store: no park) or "needs the network" (the guest thread
+  parks; the other threads run). Its completion shows in shared memory (`p.ready()`, polled by the scheduler between
+  slices: `vm.readsPolled`, no 2 ms slices for it) and by message (the worker's event loop wakes when every thread
+  waits). A read that cannot park (a nested wait, `_lread`, a mapped view, the loader) waits in `Atomics.wait` for the
+  data worker's answer (an answer buffer grown as needed); a dead data worker fails it after 30 s without heartbeat.
+  OVERLAPPED / file pointer semantics are kernel32's, unchanged above the file interface.
+- **Memory**: the shared blocks hold what the emulator's cache held (256 MiB a mounted version); the data worker's own
+  reader keeps 64 blocks (`ORTHROS_DATA_OWN_BLOCKS`) plus its pieces (64 MiB at most, as before).
+- **The emulator's statistics** read the reader through views of the same shapes (`DataLink.views`: the NetLink
+  snapshot, the parts' counters, the prefetch's and offline copy's progress — every 250 ms); the exit report adds a
+  `[report] data worker:` line (reads answered from the shared blocks, sent to the data worker, parked, torn copies,
+  slots replaced, notes dropped).
+- **Tests**: tests/http-backend-fuzz.test.js "data worker (randomized)" — the data worker in a worker thread
+  (tests/data-worker-shim.js), two shared slots for 30 MB of files, random reads, seeks, parked reads, handles opened
+  and closed, every read compared with the reader on the test's thread and with the files' bytes.
+
+DW_MEASUREMENTS
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

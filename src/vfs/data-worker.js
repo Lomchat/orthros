@@ -661,6 +661,7 @@ const W32_DRAIN_MS = 4, W32_STATS_MS = 250, W32_FLUSH_MS = 2000;
  * network arrival put there; the learned order and the offline copy as the engines' (prefetchAll, wholeDownload).
  */
 async function w32Init(o) {
+  for (const [k, v] of Object.entries(o.globals ?? {})) if (/^ORTHROS_[A-Z0-9_]+$/.test(k)) globalThis[k] = v; // (the emulator's ?dbg= switches)
   W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.t0 = performance.now();
   const X = W.w32 = { handles: new Map(), dead: new Set(), mounts: new Map(), keys: new Map(), blocks: null, answer: null, unlearnedOnly: false, reads: [] };
   const log = (msg, kind = 'file') => postMessage({ log: msg, kind });
@@ -675,9 +676,9 @@ async function w32Init(o) {
     }
     return store;
   };
-  // (the emulator's memory cache is the shared blocks: the reader here keeps a smaller one of its own — its planning's
-  // look-ups, the blocks it assembles —, the stores answer the rest)
-  const cacheBlocks = Math.max(1, o.cacheBlocks ?? 256), own = Math.min(cacheBlocks, Number(globalThis.ORTHROS_DATA_OWN_BLOCKS) || 64);
+  // (the emulator's memory cache is the shared blocks; the reader here keeps its own as before — its planning looks there
+  // and in the store before fetching: a smaller one fetched again blocks the emulator had, ORTHROS_DATA_OWN_BLOCKS=n)
+  const cacheBlocks = Math.max(1, o.cacheBlocks ?? 256), own = Math.min(cacheBlocks, Number(globalThis.ORTHROS_DATA_OWN_BLOCKS) || cacheBlocks);
   W.version = await openVersion(o.name, { tree: o.tree, manifest: o.manifest, bw: o.bw, store: storeOf, legacy: persistent ? openLegacyStore : null,
     cacheBlocks: own, encoded: !!o.encoded, session: W.session,
     // (a session restored from a snapshot reports only the reads the server did not learn from its requests — those
@@ -736,9 +737,14 @@ function w32Drain() {
   X.blocks.drain((h, off, end) => {
     const f = X.handles.get(h);
     if (!f) return X.dead.has(h); // (its open's message not here yet: later)
-    f.seen(off, end);
+    f.seen(off, end, f.sharedWhole ??= sharedWhole(f));
     return true;
   });
+}
+/** Whether block `bi` of handle `f`'s file is whole in the shared blocks (under any of its keys). */
+function sharedWhole(f) {
+  const B = W.w32.blocks, keys = W.w32.keys.get(f.b)?.get(f.path) ?? [];
+  return (bi) => { const full = (1 << Math.ceil(Math.min(BLOCK, f.len - bi * BLOCK) / CHUNK)) - 1; return keys.some((key) => B.maskOf(key, bi) === full); };
 }
 
 /** Bytes that arrived from the network for `files`' file `path` from `start`, put in the shared blocks under its keys. */
@@ -802,7 +808,9 @@ async function w32Sync({ gen, h, off, end, from, buf }) {
   try {
     const f = X.handles.get(h); if (!f) throw new Error('file not open');
     const p = f.prepare(off, end - off, true);
-    if (p) await p;
+    // (the game's thread blocked on the network: the background downloads go away meanwhile, as a synchronous read on
+    // the emulator's thread made them — HttpBackend.fetchRangeNow)
+    if (p) { f.b.abortBackground(); await p; }
     const bytes = f.read(off, end - off);
     try { w32Publish(f, off, end); } catch { /* answered all the same */ }
     const k = Math.max(0, Math.min(bytes.length - (from - off), X.answer.length));

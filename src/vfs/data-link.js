@@ -34,7 +34,10 @@ export class DataLink {
     return new Promise((resolve, reject) => {
       link.opened = { resolve, reject };
       worker.onerror = (e) => { if (link.opened) { link.opened = null; reject(new Error(`data worker: ${e.message ?? 'failed to start'}`)); } };
-      worker.postMessage({ w32: { ...o, timeOrigin: performance.timeOrigin } });
+      // (the worker's debug globals — ?dbg=ORTHROS_…: data-worker.js reads some — go with it)
+      const globals = {};
+      for (const k of Object.keys(globalThis)) if (k.startsWith('ORTHROS_') && (typeof globalThis[k] !== 'object' || globalThis[k] === null)) globals[k] = globalThis[k];
+      worker.postMessage({ w32: { ...o, globals } });
     });
   }
 
@@ -56,7 +59,7 @@ export class DataLink {
     this.reads = { bytes: 0, videoBytes: 0 };
     /** the data worker's counters, as last told (every 250 ms) */
     this.state = null;
-    this.stats = { syncReads: 0, syncMs: 0, prepares: 0, quick: 0, parked: 0 };
+    this.stats = { syncReads: 0, syncMs: 0, prepares: 0, quick: 0, parked: 0, settleMs: 0 };
   }
 
   message(m) {
@@ -99,7 +102,9 @@ export class DataLink {
     let resolve; const p = new Promise((r) => { resolve = r; });
     this.pending.set(seq, resolve);
     this.worker.postMessage({ w32prep: { seq, h, off, len, held: !!held } });
-    if (B.settle(seq, Number(globalThis.ORTHROS_DATA_QUICK_MS ?? QUICK_MS)) === 'done') { this.pending.delete(seq); this.stats.quick++; return null; }
+    const t0 = performance.now(), how = B.settle(seq, Number(globalThis.ORTHROS_DATA_QUICK_MS ?? QUICK_MS));
+    this.stats.settleMs += performance.now() - t0;
+    if (how === 'done') { this.pending.delete(seq); this.stats.quick++; return null; }
     this.stats.parked++;
     p.ready = () => B.isDone(seq);
     return p;
@@ -141,7 +146,7 @@ export class DataLink {
   /** A line for the exit report: how the reads were answered. */
   report() {
     const b = this.blocks?.stats ?? {}, w = this.state?.blocks ?? {}, s = this.stats;
-    return `reads from the shared blocks ${b.hits ?? 0}, sent to the data worker ${b.misses ?? 0} (${Math.round(s.syncMs)} ms waited; ${b.torn ?? 0} torn copies), asynchronous reads asked ${s.prepares} (${s.quick} answered within ${QUICK_MS} ms, ${s.parked} parked); blocks published ${w.published ?? 0}, slots replaced ${w.evicted ?? 0}, notes dropped ${w.drops ?? 0}`;
+    return `reads from the shared blocks ${b.hits ?? 0}, sent to the data worker ${b.misses ?? 0} (${Math.round(s.syncMs)} ms waited; ${b.torn ?? 0} torn copies), asynchronous reads asked ${s.prepares} (${s.quick} answered within ${QUICK_MS} ms, ${s.parked} parked; ${Math.round(s.settleMs)} ms waiting for the first answers); blocks published ${w.published ?? 0}, slots replaced ${w.evicted ?? 0}, notes dropped ${w.drops ?? 0}`;
   }
   /** Any message to the data worker (data-worker.js dispatch: mark, phase, …). */
   post(m) { this.worker.postMessage(m); }
