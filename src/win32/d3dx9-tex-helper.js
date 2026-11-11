@@ -2,4 +2,4 @@
 // then it runs the jobs it is handed, in order.
 import { texHelper } from './d3dx9-tex-jobs.js';
 import { GuestMemory } from '../cpu/memory.js';
-self.onmessage = ((run) => (e) => run(e.data))(texHelper(GuestMemory));
+self.onmessage = ((run) => (e) => run(e.data))(texHelper(GuestMemory, (m) => self.postMessage(m)));

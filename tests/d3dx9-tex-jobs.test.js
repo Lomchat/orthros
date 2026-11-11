@@ -3,7 +3,8 @@
 // a level, draws (a backend binding the texture: Resource.settleJobs) and releases, run with the pixel work on the
 // calling thread and by texture helpers (worker threads on the shared guest memory): every lock, draw and the end see
 // the same bytes — the game's buffers overwritten right after each call (a job keeps nothing of them). Then helpers that
-// never answer: their jobs run on the calling thread, the same bytes.
+// never answer: their jobs run on the calling thread, the same bytes. One set of helpers serves every session's memory
+// (a page's machines: a launcher and its game have a guest memory each).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
@@ -23,7 +24,7 @@ const spawnHelper = () => {
 
 function env(jobs) {
   const E = d3dEnv(null, true), { mem, ctx, com } = E;
-  if (jobs) E.vm.host.texJobs = jobs(mem);
+  if (jobs) E.vm.host.texJobs = jobs();
   const X = {}; registerD3DX9({ define(dll, d) { Object.assign(X, d); } }, E.vm);
   const out = E.alloc(64), pp = E.alloc(64);
   [320, 240, 22, 1, 0, 0, 1, 0, 1, 1, 75, 0, 0, 0].forEach((v, i) => mem.write32(pp + 4 * i, v));
@@ -98,11 +99,12 @@ function session(seed, jobs) {
   return { seen, stats: E.vm.host.texJobs?.stats };
 }
 
-test('texture jobs: a random session sees the bytes of the synchronous path', () => {
-  for (let seed = 1; seed <= depth(6, 2); seed++) {
+test('texture jobs: random sessions see the bytes of the synchronous path (one set of helpers, a guest memory per session)', () => {
+  const jobs = new TexJobs(2, spawnHelper); // (several machines of a page — a launcher, its game — share the helpers)
+  for (let seed = 1; seed <= depth(6, 3); seed++) {
     const want = session(seed, null).seen;
-    const got = session(seed, (mem) => new TexJobs(2, spawnHelper, mem));
-    assert.ok(got.stats.jobs > 10, `seed ${seed}: jobs handed out (${got.stats.jobs})`);
+    const got = session(seed, () => jobs), n0 = got.stats.jobs; got.stats = { ...got.stats };
+    assert.ok(n0 > 10, `seed ${seed}: jobs handed out (${n0})`);
     assert.equal(got.seen.length, want.length);
     got.seen.forEach((g, i) => assert.deepEqual(g, want[i], `seed ${seed} step ${i} (${want[i][0]})`));
   }
@@ -111,7 +113,7 @@ test('texture jobs: a random session sees the bytes of the synchronous path', ()
 test('texture jobs: helpers that never answer — their jobs run on the calling thread, the same bytes', () => {
   const logs = [];
   const want = session(3, null).seen;
-  const got = session(3, (mem) => new TexJobs(2, () => ({ postMessage() {}, terminate() {} }), mem, (m) => logs.push(m), { firstMs: 20, ms: 20 }));
+  const got = session(3, () => new TexJobs(2, () => ({ postMessage() {}, terminate() {} }), (m) => logs.push(m), { firstMs: 20, ms: 20 }));
   assert.ok(got.stats.local > 0 && logs.length === 1, `jobs run here (${got.stats.local}), told once`);
   got.seen.forEach((g, i) => assert.deepEqual(g, want[i], `step ${i} (${want[i][0]})`));
 });

@@ -16,13 +16,13 @@ import { FMT } from '../src/win32/d3d8.js';
 const helpers = [];
 after(async () => { for (const w of helpers) await w.terminate(); });
 /** texture helpers on worker threads (as the browser's workers: d3dx9-tex-helper.js) */
-function texJobs(mem, n = 2) {
+function texJobs(n = 2) {
   const url = new URL('../src/win32/d3dx9-tex-jobs.js', import.meta.url).href, memUrl = new URL('../src/cpu/memory.js', import.meta.url).href;
-  return new TexJobs(n, () => { const w = new Worker(`Promise.all([import('${url}'), import('${memUrl}')]).then(([{ texHelper }, { GuestMemory }]) => { const run = texHelper(GuestMemory); require('node:worker_threads').parentPort.on('message', run); });`, { eval: true }); helpers.push(w); return w; }, mem);
+  return new TexJobs(n, () => { const w = new Worker(`Promise.all([import('${url}'), import('${memUrl}')]).then(([{ texHelper }, { GuestMemory }]) => { const run = texHelper(GuestMemory); require('node:worker_threads').parentPort.on('message', run); });`, { eval: true }); helpers.push(w); return w; });
 }
 function env(async = false) {
   const E = d3dEnv(null, async), { mem, ctx, com } = E;
-  if (async) E.vm.host.texJobs = texJobs(mem);
+  if (async) E.vm.host.texJobs = texJobs();
   const X = {}; registerD3DX9({ define(dll, d) { Object.assign(X, d); } }, E.vm);
   const out = E.alloc(64), pp = E.alloc(64);
   [320, 240, 22, 1, 0, 0, 1, 0, 1, 1, 75, 0, 0, 0].forEach((v, i) => mem.write32(pp + 4 * i, v));

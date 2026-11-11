@@ -6,6 +6,7 @@ import { FMT, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
 import { parseImage, parseImageInfo, toRgba, fromRgba, resizeRgba, applyColorKey, isDxt, isDdsFile } from './d3dx9-image.js';
+import { runJob } from './d3dx9-tex-jobs.js';
 import { FILTER_POINT, encodable, levelData, fillChainFromImage, blitInto, blitKeepsRgba, sourceRgba, sourceSpan, filterChain, filledFrom } from './d3dx9-texwork.js';
 import { defineEffects } from './d3dx9-effect.js';
 import { assembleShader } from './d3dx9-asm.js';
@@ -118,7 +119,15 @@ export function registerD3DX9(api, vm) {
   /** a written level, as fillSurface leaves it (its bytes to come) */
   const markFilled = (s) => { s.rgbaCache = null; s.dirty = true; s.dev.gfx?.surfaceUpdated?.(s); };
   /** hand a job to the texture's helper: the levels it reads or writes wait for it (Surface.mem), the texture too */
-  const handOut = (J, owner, levels, job) => { const f = J.submit(J.helperOf(owner.id), job); for (const l of levels) { l.texJob = f; l.disarm?.(); } owner.texJob = f; return f; };
+  const handOut = (J, owner, levels, job) => { const f = J.submit(J.helperOf(owner.id), job, mem); for (const l of levels) { l.texJob = f; l.disarm?.(); } owner.texJob = f; if (globalThis.ORTHROS_TEX_WAIT) J.wait(f); if (globalThis.ORTHROS_TEX_VERIFY) verifyJob(J, f, job); return f; };
+  // (debugging, ORTHROS_TEX_VERIFY=1: each job waited for, run again here, the bytes compared — not for a blit into a part of a level, which reads what it wrote)
+  const verifyJob = (J, f, job) => {
+    J.wait(f);
+    if (job.kind === 'blit' && !(job.dr.l === 0 && job.dr.t === 0 && job.dr.r === job.dst.width && job.dr.b === job.dst.height)) return;
+    const outs = job.kind === 'blit' ? [job.dst] : job.levels, got = outs.map((l) => (l.mem ? mem.bytes(l.mem, l.bytes).slice() : null));
+    runJob(mem, job);
+    outs.forEach((l, i) => { if (!l.mem) return; const b = mem.bytes(l.mem, l.bytes); let k = 0; while (k < b.length && b[k] === got[i][k]) k++; if (k < b.length && (vm.texVerifyLogs = (vm.texVerifyLogs ?? 0) + 1) <= 20) vm.log('warn', `d3dx texture job ${job.kind} level ${i} fmt ${l.fmt} ${l.width}x${l.height}: helper's bytes differ at ${k} (${got[i][k]} vs ${b[k]}; helper's nonzero ${got[i].some((v) => v !== 0)})`); });
+  }; // (ORTHROS_TEX_WAIT=1, debugging: each job waited for at once)
   /** an image's bytes a job takes: a copy when they are guest memory (a DDS file parsed in place) */
   const ownBytes = (b) => (b.buffer instanceof SharedArrayBuffer || b.buffer === mem.buffer ? b.slice() : b);
   const fillVolume = (c, t, i, data) => { const l = t.levels[i]; const a = l.ensureMem(c.proc); mem.writeBytes(a, data.subarray(0, Math.min(data.length, l.bytes))); l.updated(); };
