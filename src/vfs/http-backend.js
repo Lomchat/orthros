@@ -811,7 +811,7 @@ export class HttpBackend {
           return;
         }
         // (each run settled as soon as its bytes are here: the answer is read as it arrives, in the runs' order)
-        const total = bytes, go = (ok) => (ok ? this.fetchBatchNow(runs, turn.reason ?? 'other', (i, d) => settle(runs[i], d)) : fail());
+        const total = bytes, go = (ok) => (ok ? this.fetchBatchNow(runs, { ...turn, w }, (i, d) => settle(runs[i], d)) : fail());
         const quiet = this.net.fast() ? 0 : turn.prio[1];
         if (turn.forLoad) w.forLoad = true;
         const started = this.net.tryTurn(quiet, w, total) ? go(true) : this.net.turn(turn.prio[0], quiet, turn.stop, w, total).then(go);
@@ -841,7 +841,7 @@ export class HttpBackend {
         };
         try {
           if (runs.length === 1) { const r = runs[0]; settle(r, await this.fetchBackgroundNow(r.path, r.start, r.end, null, false, false, turn.reason ?? 'other')); }
-          else await this.fetchBatchNow(runs, turn.reason ?? 'other', (i, d) => settle(runs[i], d));
+          else await this.fetchBatchNow(runs, { ...turn, w }, (i, d) => settle(runs[i], d));
         } catch { for (const r of runs) r.resolve(null); }
         await Promise.all(all);
       },
@@ -849,52 +849,71 @@ export class HttpBackend {
     return B;
   }
   /**
-   * The runs of a batch in one request, its turn on the link taken: `deliver(i, answer)` once per run — its bytes as soon
-   * as they arrived (the answer is read as a stream, the runs in order), undefined for one to skip, null when the network
-   * failed. A server without batches (an older one: 404/405) turns them off for this backend and the runs go one request
-   * each.
+   * The runs of a batch in one request, its turn on the link taken (`turn`: the batch's — prio, stop, w, reason,
+   * forLoad): `deliver(i, answer)` once per run — its bytes as soon as they arrived (the answer is read as a stream, the
+   * runs in order, each framed by its length: a run whose length is not the one asked is never taken), undefined for one
+   * to skip, null when the network or the server failed (asked again later). A server without batches (404/405 not about
+   * an item) turns them off for this backend; then, or for a run it refused (not found, past the file's end: the file
+   * changed since the tree was read), the runs go one request each, each taking its turn on the link.
    */
-  async fetchBatchNow(runs, reason = 'other', deliver) {
-    const total = runs.reduce((n, r) => n + r.end - r.start, 0);
+  async fetchBatchNow(runs, turn, deliver) {
+    const reason = turn.reason ?? 'other';
+    const total = runs.reduce((n, r) => n + r.end - r.start, 0), stream = total + 4 * runs.length;
     const tok = this.net.begin('bg', total, null, null, reason); tok.keep = true;
-    let wire = 0, ok = false, next = 0;
+    let wire = 0, ok = false, next = 0, alone = false;
     const rest = (d) => { for (; next < runs.length; next++) deliver(next, d); };
     try {
       const announced = reason === 'announced';
       const res = await fetch(`${this.batchUrl}?${announced ? 'w=1' : 'p=1'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(runs.map((r) => [r.path, r.start, r.end])) });
       this.net.firstByte(tok);
-      if (res.status === 404 || res.status === 405 || res.status === 400 || res.status === 413) {
-        // (not a batch server — off for this backend —, or a run it does not know: each run alone, a file gone then that
-        // run's answer only)
+      if (res.status === 404 || res.status === 405 || res.status === 400 || res.status === 413 || res.status === 416) {
+        // (not a batch server — off for this backend —, or a run it does not know or refused: each run alone, after
+        // this request left the link; a file gone or changed then that run's answer only)
         const why = await res.text().catch(() => '');
         if ((res.status === 404 || res.status === 405) && !/^batch item/.test(why)) this.batchOff = true;
         this.stats.batchFallbacks = (this.stats.batchFallbacks ?? 0) + 1;
-        await Promise.all(runs.map((r, i) => this.fetchBackgroundNow(r.path, r.start, r.end, null, false, false, reason).then((d) => deliver(i, d), () => deliver(i, null))));
-        next = runs.length;
+        alone = true;
         return;
       }
-      if (res.status !== 200) return rest(undefined);
-      wire = wireOf(0, res.headers?.get?.('content-length'));
-      const data = new Uint8Array(total);
+      // (a server error, a refusal — 5xx, 403 —: nothing learned about the runs, asked again later)
+      if (res.status !== 200) return rest(null);
+      wire = wireOf(0, res.headers?.get?.('x-orthros-wire-length') ?? res.headers?.get?.('content-length'));
+      const data = new Uint8Array(stream);
       let got = 0, at = 0;
-      // (the runs whose bytes are all here: delivered — copies, the batch's buffer not held by its pieces)
-      const flush = () => { while (next < runs.length && at + runs[next].end - runs[next].start <= got) { const n = runs[next].end - runs[next].start; deliver(next++, data.slice(at, at + n)); at += n; } };
+      // (the runs whose frame is all here: delivered — copies, the batch's buffer not held by its pieces —, each only
+      // when its length is the one asked; a frame that is not stops the stream: nothing after it can be trusted)
+      let bad = false;
+      const flush = () => {
+        while (next < runs.length && at + 4 <= got) {
+          const n = runs[next].end - runs[next].start;
+          const len = (data[at] | (data[at + 1] << 8) | (data[at + 2] << 16) | (data[at + 3] << 24)) >>> 0;
+          if (len !== n) { bad = true; return; }
+          if (at + 4 + n > got) return;
+          deliver(next++, data.slice(at + 4, at + 4 + n)); at += 4 + n;
+        }
+      };
       const reader = res.body?.getReader?.();
       if (reader) {
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
-          if (got + value.length > total) { reader.cancel().catch(() => {}); return rest(null); }
+          if (got + value.length > stream) { reader.cancel().catch(() => {}); return rest(null); }
           data.set(value, got); got += value.length; flush();
+          if (bad) { reader.cancel().catch(() => {}); break; }
         }
-      } else { const d = new Uint8Array(await res.arrayBuffer()); if (d.length > total) return rest(null); data.set(d); got = d.length; flush(); }
-      if (got !== total) return rest(null);
-      if (!wire) wire = total;
+      } else { const d = new Uint8Array(await res.arrayBuffer()); if (d.length > stream) return rest(null); data.set(d); got = d.length; flush(); }
+      if (bad || got !== stream) { this.stats.batchBad = (this.stats.batchBad ?? 0) + (bad ? 1 : 0); return rest(null); }
+      if (!wire) wire = stream;
       ok = true;
       this.stats.batches = (this.stats.batches ?? 0) + 1; this.stats.batchRuns = (this.stats.batchRuns ?? 0) + runs.length;
       this.stats.batchRaw = (this.stats.batchRaw ?? 0) + total; this.stats.batchWire = (this.stats.batchWire ?? 0) + wire;
     } catch { rest(null); } finally {
       this.net.end(tok, wire, total, ok);
+      if (alone) {
+        const w = turn.w ?? {};
+        await Promise.all(runs.map((r, i) => this.fetchBackground(r.path, r.start, r.end, null, false, false, { ...turn, w }).then((d) => deliver(i, d), () => deliver(i, null))));
+        next = runs.length;
+      }
     }
   }
   // ---------------------------------------------------------------- announced reads

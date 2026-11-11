@@ -2097,10 +2097,14 @@ on the fly), so the bytes ten thousand nearly identical `.ini` / `.bse` files sh
 
 **The change** (generic: the request's shape only, every game and runtime that reads through `HttpBackend`):
 - **Server** (`src/server/server.js` `sendBatchEncoded`): `POST /gamezb/<version>?p=1` (or `w=1`), the body a JSON array
-  `[[path, start, end], ...]` (1 024 ranges, 16 MiB at most; light copies' paths too). The answer is the ranges' bytes
-  one after another in the body's order, compressed **together** as one stream — brotli quality 5 with a window that
-  holds the whole batch (`Content-Encoding: br`, else zstd, else gzip: the browser decodes it) —, `X-Orthros-Raw` /
-  `X-Orthros-Items`. A file it does not have answers 404 `batch item not found`. Encoded in the same queue as the other
+  `[[path, start, end], ...]` (1 024 ranges, 16 MiB at most; light copies' paths too). The answer is the ranges one
+  after another in the body's order, each **framed** — its length as a u32 little-endian, then its bytes —, compressed
+  **together** as one stream — brotli quality 5 with a window that holds the whole batch (`Content-Encoding: br`, else
+  zstd, else gzip: the browser decodes it) —, `X-Orthros-Raw` / `X-Orthros-Items`, and `X-Orthros-Wire-Length` (the
+  encoded size, for the client's link accounting: a proxy may recode the answer or drop its Content-Length). A file it
+  does not have answers 404 `batch item not found`; a range past a file's end (the file changed since the client's tree:
+  a game updated) 416 `batch item out of range` — never cut to the file: a shorter item would shift the next ones' bytes
+  into it (the first version did, and the client took them). Encoded in the same queue as the other
   background ranges (`encodeSlot`, demand reads first); never learned as the game's reads. `/api/netstats` counts
   `batches` and `batchItems`.
 - **Client** (`HttpBackend.batch`, `fetchBatchNow`): one turn on the link (`NetLink`, the batch's bytes), one request;
@@ -2115,6 +2119,11 @@ on the fly), so the bytes ten thousand nearly identical `.ini` / `.bse` files sh
   found) and by the learned read-ahead (`pumpAhead`: a batch is one request of its budget; a small file's whole block
   joins it too). Only on a link that never carried `BATCH_MAX_BPS` (2 MiB/s; below). Not the game's own reads (one
   range each, synchronous), the whole blocks of a fast link, announced lists or the block fill.
+- **Checks and failures**: a run is taken only when its frame's length is the one asked; a frame that is not stops
+  the stream (that run and the rest: failed, asked again later). A refused run (400, 404 `batch item ...`, 413, 416):
+  the runs go one request each, each taking its own turn on the link once the batch left it (the ordinary range
+  request then judges each: a file gone or changed is that run's skip only). A server error or refusal (5xx, 403): the
+  runs failed, asked again later — never marked to skip.
 - **Compatibility**: a server without the route (404/405 other than `batch item ...`) turns batches off for the
   backend, its runs going one request each; asked only by `game-data.js`'s openers (`openData`, `batch` option, on by
   default), so a tool or a test's `fetch` stand-in never sees them. **Switches** (`?dbg=` in the page,

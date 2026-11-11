@@ -48,5 +48,22 @@ test('batch: the learned order\'s small pieces in one request, byte for byte; a 
     assert.equal(r1, true);
     assert.deepEqual(Buffer.from(b2.cache.get('f1.ini#0') ?? b2.chunks.get('f1.ini#0')), files['f1.ini']);
     assert.equal(b2.batchOff, false, 'batches still on');
+    // a file shorter on disk than in the client's tree (the game updated since): the server refuses the batch — it once
+    // cut a.ini's range to the file and b.ini's first bytes were taken as a.ini's end —, the runs go alone, a.ini's answer
+    // skipped, b.ini's bytes exact
+    const a = text(3000, 11), bb = text(4000, 13);
+    fs.writeFileSync(path.join(dir, 'a.ini'), a); fs.writeFileSync(path.join(dir, 'b.ini'), bb);
+    const r416 = await fetch(`${base}/gamezb/g?p=1`, { method: 'POST', body: JSON.stringify([['a.ini', 0, 5000], ['b.ini', 0, 4000]]) });
+    assert.equal(r416.status, 416, 'a range past the file\'s end refused');
+    const tree3 = { dirs: {}, files: { 'a.ini': { size: 5000, mtime: 1 }, 'b.ini': { size: 4000, mtime: 1 } } };
+    const b3 = new HttpBackend(`${base}/game/g/`, tree3, { encoded: true, batch: true, net: new NetLink({ bw: 1.25e6, fixed: true }) });
+    const B3 = b3.batch({ prio: [5, 0], stop: () => false, reason: 'pf1' });
+    const got3 = [B3.add('a.ini', 5000, 1, 0, 0), B3.add('b.ini', 4000, 1, 0, 0)];
+    B3.send();
+    const [ra, rb] = await Promise.all(got3);
+    assert.equal(ra, undefined, 'a.ini: no bytes taken');
+    assert.equal(b3.cache.get('a.ini#0') ?? b3.chunks.get('a.ini#0'), undefined);
+    assert.equal(rb, true);
+    assert.deepEqual(Buffer.from(b3.cache.get('b.ini#0') ?? b3.chunks.get('b.ini#0')), bb);
   } finally { await new Promise((r) => { server.closeAllConnections?.(); server.close(r); }); fs.rmSync(dir, { recursive: true, force: true }); }
 });
