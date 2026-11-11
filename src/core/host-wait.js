@@ -99,8 +99,10 @@ export class HostWaiter {
   /**
    * A wait ending at `deadline` is one of a pacing loop's earlier waits: waking late only shortens the polling, the
    * frame is not longer (its lateness is not `late` for the frame accounting).
+   * `margin`: the expected overshoot of the wait that ends there (default: Atomics.wait's; a wait on the worker's
+   * timer passes timerEst's, usually larger).
    */
-  earlyPacingWait(deadline) { const e = this.paceEnd; return e > 0 && deadline <= e - this.est.value - 0.5; }
+  earlyPacingWait(deadline, margin = this.est.value) { const e = this.paceEnd; return e > 0 && deadline <= e - margin - 0.5; }
   /**
    * Block until the host time `deadline` (ms), or until arr[idx] is notified / no longer `value` (Atomics.wait's
    * result: 'ok' or 'not-equal' woken early, 'timed-out'). `precise` false: a wait without a deadline that matters

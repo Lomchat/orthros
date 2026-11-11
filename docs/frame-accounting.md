@@ -31,6 +31,7 @@ time between two presents, measured at `BrowserHost.framePresented`).
 | `sleep` | every guest thread waits: the worker sleeps until the next wake-up (pacing) |
 | `ioWait` | waiting for a file read on the network: the worker idle or in a nested wait while the thread presenting frames (the last to call Present) waits for a read, or while a parked read is in flight and no guest timer is due within 50 ms; a nested wait for a read (`file read` / `file busy`, or any wait but a sleep while reads are in flight) |
 | `late` | the worker resumed later than planned: timer clamping, garbage collection, other tasks of its event loop; since 2026-10-22 also a host wait (Atomics.wait inside a slice: a guest Sleep, the Sleep(0) throttle) that woke after its deadline — not a frame limiter's earlier waits, whose lateness does not lengthen the frame (docs/thread-scheduling.md "Host wake-up overshoot"). Before, that lateness stayed in `wait`: a coarse host timer was invisible |
+| `task` | (since 2026-11-11) the worker's own event-loop tasks inside a gap between two pumps: a fetch's block installs (`installBlock`, `addPieces`) and the page's messages. Measured, so no longer part of `late` / `ioWait` / `sleep`; records that do not have it are read as before (categories are keyed by name) |
 
 **Work** of a frame = its duration minus the pacing categories (`wait`, `sleep`). A game that paces itself by polling
 the clock (no sleep) shows that polling as `guest`/`api` work: compare slow frames, not fast ones.
@@ -47,6 +48,28 @@ row are short again (a GPU process behind: one draw a frame may wait for the who
 would miss). A timed
 section may span a frame boundary (a timed Present): the counters are cumulative, so its time stays exact. The phase
 report prints the accounting's own clock reads per frame.
+
+### Cost of the accounting (2026-11-11) and the gaps between pumps
+
+- **Sampling by call rate.** A section called thousands of times a frame is sampled less: the mean interval between two
+  timed calls is 16 at least and follows the previous frame's call count (about 128 timed calls a frame, at most 1 in
+  256). Game file reads that run from guest code (`io`, 1.5 M `ReadFile` in a load) are sampled like API calls (counted,
+  estimated at the frame's close from the sampled ones, moved from `guest`); a read inside a timed API call is timed
+  exactly, and a read of 0.5 ms or more makes all reads timed until 1024 are short again. An API kept in
+  every-call timing by rare heavy calls (`ReadFile`, `CreateFileW`: a big read now and then) is timed exactly for its
+  first 48 calls of a frame, the rest sampled and estimated from that API's own decayed mean (a stratum of its own: one
+  heavy sample among ~120 would otherwise be scaled by ~2000 calls). `ORTHROS_ACCT_SAMPLE=0` (dbg:, applied at the next
+  frame) is the exact reference: every read timed, no cap, interval 16.
+- **Gaps** (`gapBegin` / `gapEnd`: FrameAccount, the classification in worker.js). After a pump the worker is in a category until the next one: `sleep` (guests
+  wait for a timer), `ioWait` (a read is in flight and nothing is due soon, or no thread is ready after a read-slice
+  return), else `late`. Changes: a slice that ended on the 2 ms read-slice bound while the last runnable thread blocked
+  on the read is `ioWait` (it was `late`), open-ended (no planned end, so none of it is moved back to `late` — the first
+  version planned 0 ms and moved all of it back: the rule had no effect, fixed in the integration); a wake-up past the
+  plan is not `late` when the wait ended before the frame limiter's deadline (`earlyPacingWait`, as for host waits in a
+  slice: it does not lengthen the frame), the margin being the larger of the Atomics.wait and worker-timer overshoot
+  estimates (the gap ends on a timer or a message, not on Atomics.wait); the event-loop tasks measured in the gap
+  (`task`) are taken out of the lateness. The measurements below predate the first fix (their `late` / `ioWait` split
+  after a read-slice return is the earlier one). `ORTHROS_ACCT_GAPS=0` is the earlier classification.
 
 ## Where it shows
 
@@ -72,6 +95,23 @@ report prints the accounting's own clock reads per frame.
   record (frame-time percentiles from the intervals' histograms, frames > 33 / 40 / 50 / 100 ms, time by category,
   draws, GL calls and GPU time per frame, render worker waits) and the bench mode's `bench` records: see
   docs/real-machine-bench.md.
+
+## Measurements (2026-11-11, AotR MY CAPTAINS, `--gl-discard`, headless Chromium)
+
+Scenario `tools/scenarios/bench/learn-aotr-captains.txt`; before = `ORTHROS_ACCT_SAMPLE=0, ORTHROS_ACCT_GAPS=0`.
+
+| 8 cores (800 %), loading screen of the load | before | after |
+|---|---|---|
+| clock reads per frame | 6075 | 1161 (1947 with the plain 1/16 sampling, before the call-rate intervals) |
+| mean frame (ms): late / sleep | 6.3 / 5.2 | 2.6 / 7.7 |
+| `task`, `io` (ms) | 0.2, 1.7 | 0.2, 2.1 |
+
+At 4 cores (400 %), the load screen: clock reads per frame 2068 -> 940, `late` 10.0 -> 7.7 ms, `sleep` 2.8 -> 6.2 ms; the
+static Create-a-Captain screen after it: `late` 14.6 -> 0.7 ms, `sleep` 6.9 -> 18.9 ms (the game's own frame pacing,
+which the old classification called lateness). Worker time saved: (6075 - 1161) x 509 frames x 0.25 us = 0.6 s of 17.5 s
+(3.5 %) in the 8-core load; `api` + `io` per frame of the load screen: 8.2 ms before, 8.9-9.9 ms after in three runs (run-to-run spread of the
+loads is of the same size: the sampled-vs-exact check is the unit test, within 5 % for `io` and 12 % for a capped API with
+1 heavy call in 400; not compared on a recorded session frame by frame).
 
 ## Phase scenarios (the shared measurement)
 

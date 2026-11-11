@@ -1601,7 +1601,9 @@ export class HttpBackend {
     return data.subarray(0, Math.min(data.length, BLOCK));
   }
   /** A whole block arrived: memory cache, persistent store; its pieces and its background request are dropped. */
-  installBlock(path, index, bytes, skey, assembled = false) {
+  // (frame accounting: when it runs as an event-loop task between two pumps, its time is `task`, see acct.taskStart)
+  installBlock(path, index, bytes, skey, assembled = false) { const tp = acct.taskStart(); try { this.installBlockNow(path, index, bytes, skey, assembled); } finally { acct.taskEnd(tp); } }
+  installBlockNow(path, index, bytes, skey, assembled) {
     const k = `${path}#${index}`;
     if (!assembled && this.arrivals.size) for (const fn of this.arrivals) fn(path, index * BLOCK, bytes);
     this.cache.set(k, bytes);
@@ -1656,7 +1658,8 @@ export class HttpBackend {
   }
 
   /** Pieces m0..m1 of a file from `data` (fetched from piece m0), those not here yet; the piece cache stays bounded. */
-  addPieces(path, m0, m1, data, file = null) {
+  addPieces(path, m0, m1, data, file = null) { const tp = acct.taskStart(); try { this.addPiecesNow(path, m0, m1, data, file); } finally { acct.taskEnd(tp); } }
+  addPiecesNow(path, m0, m1, data, file) {
     if (this.arrivals.size) for (const fn of this.arrivals) fn(path, m0 * CHUNK, data);
     const keep = file && this.keepPieces(), added = [];
     for (let c = m0; c <= m1; c++) {
@@ -2160,8 +2163,11 @@ class HttpFile {
   }
   /** `into`: where the bytes go when the caller owns a destination of `len` bytes (guest memory: no second copy) */
   read(off, len, into) {
-    const ap = acct.enter(ACCT.io); // (frame accounting: a game file read — its network part is `net`)
-    try { return this.readNow(off, len, into); } finally { acct.leave(ap); }
+    // (frame accounting: a game file read — its network part is `net`; from guest code only a sample of them is timed)
+    const kind = acct.ioTimed();
+    if (!kind) return this.readNow(off, len, into);
+    const ap = acct.enter(ACCT.io), a0 = acct.acc[ACCT.io];
+    try { return this.readNow(off, len, into); } finally { acct.ioEnd(ap, a0, kind); }
   }
   /**
    * A read of [off, end) answered elsewhere — the emulator's copy of the blocks in shared memory (data-link.js, the

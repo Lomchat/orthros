@@ -620,27 +620,31 @@ let pumpIdleMs = 0, pumpEndAt = 0, pumpGaps = 0, pumpGapMax = 0, lastPumpReturn 
  * threads asked for (`sleep`, the game's pacing — or `ioWait` when what they wait for is a file read on the network);
  * coming back later than planned is `late` (timer clamping, garbage collection, the event loop's other tasks).
  */
-const gap = { cat: -1, planned: 0, at: 0, acc0: 0 };
 /** the JIT's cold tier (Jit.runCold) with a background translator */
 const COLD_TIER_DEFAULT = true;
+/** a guest thread (of any process) is ready to run */
+function anyRunnable() { for (const v of rootVm.group ? rootVm.group.vms : [rootVm]) { if (!v.proc || v.proc.exited) continue; for (const t of v.proc.threads) if (t.isRunnable()) return true; } return false; }
+/** ?dbg=ORTHROS_ACCT_GAPS=0: the earlier classification of the gaps (everything after a 'running' return is `late`; no early-pacing exclusion) */
+const gapsHonest = () => !(globalThis.ORTHROS_ACCT_GAPS === 0 || globalThis.ORTHROS_ACCT_GAPS === '0');
 function gapBegin(r) {
-  let cat = ACCT.late, planned = 0;
+  let cat = ACCT.late, planned = 0, early = false;
+  const honest = gapsHonest();
   if (r.state === 'sleep' || r.state === 'idle') {
     planned = r.state === 'idle' ? 30 : Math.max(0, r.until - performance.now());
     // (the thread presenting frames waits for a file read, or a read is on the network and no guest timer is due soon:
     // the threads wait for the read)
     cat = vm.frameThreadWaitsForRead() || (vm.readsInFlight > 0 && (r.state === 'idle' || planned > 50)) ? ACCT.ioWait : ACCT.sleep;
+    // (a wait that ends before the frame's pacing deadline: waking late does not lengthen the frame — host-wait.js earlyPacingWait)
+    early = honest && r.state === 'sleep' && cat === ACCT.sleep && hostWaiter.earlyPacingWait(r.until, Math.max(hostWaiter.est.value, hostWaiter.timerEst.value));
+  } else if (honest && vm.readsInFlight > 0 && !anyRunnable()) {
+    // (the slice ended on the read-slice bound as the last runnable thread blocked: nothing runs until the read completes)
+    // (no planned end: the gap lasts until the read completes, none of it is lateness — except the event-loop tasks,
+    // which are their own category)
+    cat = ACCT.ioWait; planned = Infinity;
   }
-  acct.enter(cat);
-  gap.cat = cat; gap.planned = planned; gap.at = acct.at; gap.acc0 = acct.acc[cat];
+  acct.gapBegin(cat, planned, early);
 }
-function gapEnd() {
-  acct.enter(ACCT.host);
-  if (gap.cat < 0) return;
-  const over = acct.at - gap.at - gap.planned;
-  if (over > 0 && gap.cat !== ACCT.late) acct.move(gap.cat, ACCT.late, Math.min(over, acct.acc[gap.cat] - gap.acc0));
-  gap.cat = -1;
-}
+function gapEnd() { acct.gapEnd(); }
 /**
  * The visit flags harvested for the server's heat (Jit.harvestVisitsStep), in steps of about `budgetMs`: a harvest
  * pass every 10 s cut into steps, then its blocks mapped to module + offset and posted in pieces (the server merges
@@ -1034,7 +1038,10 @@ function renderInThread(recorders, threadBackend) {
 function stop(reason) { stopped = true; running = false; dataLink?.stop(); flushProfile(true); if (readLog) reportReads(performance.now(), null, true); post({ type: 'exit', code: -1, reason }); }
 
 self.onmessage = (e) => {
-  const m = e.data;
+  const tp = acct.taskStart();
+  try { onPageMessage(e.data); } finally { acct.taskEnd(tp); }
+};
+function onPageMessage(m) {
   if (m.type === 'start') start(m).catch((err) => post({ type: 'crash', report: String(err.stack || err) }));
   else if (m.type === 'wake') { if (running && !stopped) schedulePump(0); }
   else if (m.type === 'find') { if (vm) { const pat = Uint8Array.from(m.hex.match(/../g).map((h) => parseInt(h, 16))), u8 = vm.mem.u8, hits = []; const lim = 0x7f000000; for (let a = 0x10000; a < lim && hits.length < 20; a++) { if (u8[a] !== pat[0]) continue; let k = 1; while (k < pat.length && u8[a + k] === pat[k]) k++; if (k === pat.length) { const ctx = Array.from(u8.subarray(a - 48, a + 48), (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join(''); hits.push(`${a.toString(16)} ${vm.proc.symbolize(a)} |${ctx}|`); } } log('hang', `find ${m.hex}: ${hits.length} hits\n${hits.join('\n')}`); } } // (debugging: harness input find:<hex bytes>)
@@ -1112,7 +1119,7 @@ self.onmessage = (e) => {
     const apis = (hist ? '[report] API calls since start (' + hist.size + ' functions):\n' + [...hist].sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${v} ${k}`).join('\n') + '\n' : '') + (vm?.d3dDevice ? '[report] Direct3D states used (distinct values):\n  ' + stateUseReport(vm.d3dDevice) + '\n' : '') + (vm?.jit ? `[report] JIT: ${vm.jit.stats.regions} regions translated in ${(vm.jit.stats.translateMs / 1000).toFixed(1)} s (emit ${(vm.jit.stats.tEmit / 1000).toFixed(1)}, build ${(vm.jit.stats.tBuild / 1000).toFixed(1)}, compile ${(vm.jit.stats.tModule / 1000).toFixed(1)}, instantiate ${(vm.jit.stats.tInstance / 1000).toFixed(1)}, consolidate ${(vm.jit.stats.tConsolidate / 1000).toFixed(1)} s), ${(vm.jit.stats.bytes / 1048576).toFixed(0)} MiB of WASM, ${vm.jit.stats.blocks} blocks for ${vm.jit.blockMap.size} distinct block addresses, ${vm.jit.stats.fpuVersions ?? 0} FPU-mode versions, ${vm.jit.stats.fpuModeMisses ?? 0} mode misses, ${vm.jit.stats.misses} translated at a miss${vm.jit.stats.coldEntries ? `; cold tier: ${vm.jit.stats.coldEntries} entries interpreted (${vm.jit.stats.coldSteps ?? 0} instructions), ${vm.jit.stats.coldRequests ?? 0} asked of the background worker, ${vm.jit.stats.coldHot ?? 0} translated here when hot` : ''}${vm.jit.stats.prewarmed ? `; ${vm.jit.stats.prewarmed} translated ahead (learned) in ${(vm.jit.stats.prewarmMs / 1000).toFixed(1)} s, ${regionPos} of ${regionQueue?.length ?? 0} entries looked at` : ''}\n` : '') + (netLink ? `[report] connection: ${(() => { const n = netLink.snapshot(); return `${n.bw ? `${Math.round(n.bw / 1024)} KB/s measured` : 'not measured'}, round trip ${n.rtt ?? '-'} ms; game reads ${n.demandRequests} requests ${(n.demandBytes / 1048576).toFixed(1)} MB (waited ${Math.round(n.demandMs / 1000)} s), background ${n.bgRequests} requests ${(n.bgBytes / 1048576).toFixed(1)} MB, ${n.abortedRequests} aborted`; })()}\n` : '') + (primaryFiles ? (() => { const parts = primaryFiles.parts, st = (k) => netStat(k, parts); return `[report] game files over HTTP: ${st('requests')} requests, ${(st('bytes') / 1048576).toFixed(0)} MiB, ${st('ms').toFixed(0)} ms${parts.some((p) => p.store) ? `; block store: ${storeStat('hits')} hits, ${storeStat('puts')} blocks added, writes ${Math.round(storeStat('putMs'))} ms (${storeStat('flushes')} index flushes, ${Math.round(storeStat('flushMs'))} ms)` : ''}${st('aheadRequests') ? `; ${st('aheadRequests')} learned piece requests ahead of the game (${(st('aheadBytes') / 1048576).toFixed(0)} MiB)` : ''}${parts.length > 1 ? ` (${parts.map((p) => p.name).join(' + ')})` : ''}\n`; })() : '') + (dataLink ? `[report] data worker: ${dataLink.report()}\n` : '') +(host?.gfx?.device?.stats ? `[report] GL programs built at a draw: ${host.gfx.device.stats.programs} in ${(host.gfx.device.stats.programMs ?? 0).toFixed(0)} ms (slowest ${(host.gfx.device.stats.programMaxMs ?? 0).toFixed(1)} ms); ${host.gfx.device.stats.programsShared ?? 0} keys given a program of the same sources\n` : '') + (host?.gfx?.programCache?.started ? `[report] GL programs compiled ahead: ${host.gfx.programCache.started}, ${host.gfx.programCache.resolved ?? 0} resolved ahead when the GPU process had caught up (${host.gfx.programCache.caughtUp ?? 0} times; ${(host.gfx.programCache.resolveMs ?? 0).toFixed(0)} ms, slowest ${(host.gfx.programCache.resolveMaxMs ?? 0).toFixed(1)}; ${host.gfx.programCache.polls ?? 0} completion checks in ${(host.gfx.programCache.pollMs ?? 0).toFixed(0)} ms; starts ${(host.gfx.programCache.startMs ?? 0).toFixed(0)} ms), ${host.gfx.programCache.hits} used (${host.gfx.programCache.resolvedHits ?? 0} of them resolved; ${(host.gfx.device?.stats?.prewarmTakeMs ?? 0).toFixed(0)} ms waiting for the others at draws)\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? `[report] texture level uploads: ${[...host.gfx.device.stats.uploadsBy.values()].reduce((a, b) => a + b, 0)} (${((host.gfx.device.stats.uploadBytes ?? 0) / 1048576).toFixed(0)} MiB as RGBA8) in ${(host.gfx.device.stats.texMs ?? 0).toFixed(0)} ms\n` : '') + (host?.gfx?.device?.stats?.uploadsBy ? '[report] texture level uploads by format:size (most frequent):\n  ' + [...host.gfx.device.stats.uploadsBy].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, v]) => `${k} x${v}`).join(', ') + '\n' : '');
     post({ type: 'report', text: vm ? apis + vm.threadsReport() + '\n' + vm.crashReport(vm.lastThread ?? vm.proc.threads[0], 'state dump') : 'no vm' });
   }
-};
+}
 void IN_RING; void AUDIO_RING_FRAMES;
 
 /**
