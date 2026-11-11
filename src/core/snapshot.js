@@ -95,6 +95,40 @@ export class SnapRegistry {
 }
 
 /**
+ * One registry over several machines' (a process group: vm-snapshot.js groupSnapRegistry): the first one's known names
+ * as they are, the k-th one's prefixed `k:`; an object several know (shared by the processes: the kernel-object
+ * namespace, the host, the files) by its first name. `members` and `ownerOf` give each object of a graph its machine —
+ * the classes, init and load hooks of a restored object are its own machine's (encodeGraph, decodeGraph): a known
+ * object's by its name, then `vmOwner(obj)` (an object that names its machine: a process, a thread), then a class
+ * defined in one machine's closure, else its parent's.
+ * @param {SnapRegistry[]} regs @param {(obj: any) => number} vmOwner the machine an object names (-1: none)
+ */
+export function mergedRegistry(regs, vmOwner) {
+  const m = new SnapRegistry(), protoOwner = new Map();
+  regs.forEach((r, k) => {
+    for (const e of r.byName.values()) {
+      if (!m.byProto.has(e.proto)) m.byProto.set(e.proto, e);
+      if (!m.byName.has(e.name)) m.byName.set(e.name, e);
+      if (GLOBAL_CLASSES.get(e.name)?.proto !== e.proto) protoOwner.set(e.proto, k);
+    }
+    for (const [name, obj] of r.knownByName) {
+      if (GLOBAL_CONSTS.has(name)) continue;
+      const n = k ? `${k}:${name}` : name;
+      m.knownByName.set(n, obj); m.knownOpts.set(n, r.knownOpts.get(name));
+      if (!m.knownName.has(obj)) m.knownName.set(obj, n);
+    }
+  });
+  m.members = regs;
+  m.ownerOf = (o, parent) => {
+    const n = m.knownName.get(o);
+    if (n !== undefined) { const x = /^(\d+):/.exec(n); return x ? Number(x[1]) : 0; }
+    const own = vmOwner(o);
+    return own >= 0 ? own : protoOwner.get(Object.getPrototypeOf(o)) ?? parent;
+  };
+  return m;
+}
+
+/**
  * @typedef {object} ClassEntry
  * @property {string} name
  * @property {object} proto
@@ -149,13 +183,13 @@ const isPlainProto = (p) => p === Object.prototype || p === null;
  * value refused left out) instead of throwing at the first — the list of what to declare.
  */
 export function encodeGraph(root, reg, problems = null) {
-  const ids = new Map(), objects = [], blobs = [], from = [];
+  const ids = new Map(), objects = [], blobs = [], from = [], objs = [];
   const refuse = (e) => { if (!problems) throw e; problems.push(e.message); return { u: 1 }; };
   const where = (id, key) => { const parts = [key]; for (let i = id; i >= 0; i = from[i][0]) parts.push(from[i][1]); return parts.reverse().join(''); };
   const queue = [];
   const ref = (v, parentId, key) => {
     let id = ids.get(v);
-    if (id === undefined) { id = objects.length; ids.set(v, id); objects.push(null); from.push([parentId, key]); queue.push(v); }
+    if (id === undefined) { id = objects.length; ids.set(v, id); objects.push(null); from.push([parentId, key]); objs.push(v); queue.push(v); }
     return { r: id };
   };
   const value = (v, parentId, key, code = false) => {
@@ -199,6 +233,9 @@ export function encodeGraph(root, reg, problems = null) {
     }
     try { objects[id] = container(o, id, null, null); } catch (e) { if (!(e instanceof SnapshotError) || !problems) throw e; problems.push(e.message); objects[id] = { c: null, p: {} }; }
   }
+  // (several processes, groupSnapRegistry: the process each object belongs to — its class, its init and load hooks are
+  // that machine's — when not the first one's; a parent's id is always below its children's)
+  if (reg.ownerOf) for (let i = 0; i < objects.length; i++) { const p = from[i][0], own = reg.ownerOf(objs[i], p >= 0 ? objects[p].o ?? 0 : 0); if (own) objects[i].o = own; }
   return { root: 0, objects, blobs };
 
   /** an object's contents as a record (known objects: their state, their functions code) */
@@ -239,6 +276,10 @@ export function encodeGraph(root, reg, problems = null) {
  */
 export function decodeGraph(graph, reg, vm) {
   const { objects, blobs } = graph, out = new Array(objects.length), inits = [];
+  // (several processes — groupSnapRegistry: `vm` the machines in order, each object restored with its own machine's
+  // classes and hooks)
+  const vms = Array.isArray(vm) ? vm : [vm];
+  const vmOf = (i) => vms[objects[i].o ?? 0], classes = (i) => (reg.members?.[objects[i].o ?? 0] ?? reg).byName;
   // (pass 1: every object, empty; known ones resolved; buffers before the views on them)
   objects.forEach((rec, i) => {
     if (rec.k !== undefined) {
@@ -253,10 +294,10 @@ export function decodeGraph(graph, reg, vm) {
     else if (rec.st) out[i] = new Set();
     else if (rec.t && rec.buf) { const buf = out[rec.buf.r]; out[i] = rec.t === 'DataView' ? new DataView(buf, rec.off, rec.len) : new TYPED[rec.t](buf, rec.off, rec.len); }
     else if (rec.t) out[i] = new TYPED[rec.t](blobs[rec.b].slice().buffer);
-    else if (rec.x) { const e = reg.byName.get(rec.x); if (!e?.load) throw new SnapshotError(`no snapshot class ${rec.x} in this Vm`); out[i] = e.load(rec.d, vm); }
+    else if (rec.x) { const e = classes(i).get(rec.x); if (!e?.load) throw new SnapshotError(`no snapshot class ${rec.x} in this Vm`); out[i] = e.load(rec.d, vmOf(i)); }
     else if (rec.c === null) out[i] = {};
     else if (rec.c === '') out[i] = Object.create(null);
-    else { const e = reg.byName.get(rec.c); if (!e) throw new SnapshotError(`no snapshot class ${rec.c} in this Vm`); out[i] = Object.create(e.proto); if (e.init) inits.push([e, out[i]]); }
+    else { const e = classes(i).get(rec.c); if (!e) throw new SnapshotError(`no snapshot class ${rec.c} in this Vm`); out[i] = Object.create(e.proto); if (e.init) inits.push([e, out[i], vmOf(i)]); }
   });
   const v = (x) => {
     if (x === null || typeof x !== 'object') return x;
@@ -272,7 +313,7 @@ export function decodeGraph(graph, reg, vm) {
     const o = out[i];
     const known = rec.k !== undefined || again, s = rec.k !== undefined ? rec.s : rec;
     if (!s || rec.x) return;
-    if (known && s.d !== undefined) { reg.knownOpts.get(rec.k).load(o, s.d, vm); return; }
+    if (known && s.d !== undefined) { reg.knownOpts.get(rec.k).load(o, s.d, vmOf(i)); return; }
     const at = (key) => `${rec.k ?? `#${i}`}${key}`;
     if (s.a) { const old = known ? o.slice() : null; if (known) o.length = 0; s.a.forEach((x, j) => { o[j] = x?.f ? code(old?.[j], at(`[${j}]`)) : v(x); }); }
     else if (s.m) { const old = known ? new Map(o) : null; if (known) o.clear(); for (const [k, x] of s.m) { const key = v(k); o.set(key, x?.f ? code(old?.get(key), at(`.get(${String(key)})`)) : v(x)); } }
@@ -282,14 +323,14 @@ export function decodeGraph(graph, reg, vm) {
     else if (s.p) for (const [k, x] of Object.entries(s.p)) { if (x?.f) code(o[k], at(`.${k}`)); else o[k] = v(x); }
   });
   fill(false);
-  for (const [e, o] of inits) e.init(o, vm);
+  for (const [e, o, v] of inits) e.init(o, v);
   return {
     root: out[graph.root],
-    reimpose() { fill(true); for (const [e, o] of inits) e.init(o, vm); },
+    reimpose() { fill(true); for (const [e, o, v] of inits) e.init(o, v); },
     /** The resume hooks run; what they return that the host waits for (promises) before the machine goes on. */
     resume() {
       const waits = [];
-      for (const o of out) { const e = o !== null && typeof o === 'object' ? reg.byProto.get(Object.getPrototypeOf(o)) : null; const r = e?.resume?.(o, vm); if (r?.then) waits.push(r); }
+      out.forEach((o, i) => { const e = o !== null && typeof o === 'object' ? reg.byProto.get(Object.getPrototypeOf(o)) : null; const r = e?.resume?.(o, vmOf(i)); if (r?.then) waits.push(r); });
       return waits;
     },
   };
@@ -364,8 +405,10 @@ export function restorePages(mem, pages) {
 /** The snapshot as one buffer (persisted, compared): a header, the graph as JSON, then the binary parts. */
 export function encodeSnapshot(snap) {
   const enc = new TextEncoder();
-  const bins = [snap.pages.index, snap.pages.data, ...snap.graph.blobs].map((b) => new Uint8Array(b.buffer, b.byteOffset, b.byteLength));
-  const json = enc.encode(JSON.stringify({ format: snap.format, meta: snap.meta, pageSize: snap.pages.pageSize, root: snap.graph.root, objects: snap.graph.objects, bins: bins.map((b) => b.length) }));
+  // (several processes: the other machines' memories after the first one's)
+  const procs = snap.procs ?? [];
+  const bins = [snap.pages.index, snap.pages.data, ...procs.flatMap((p) => [p.pages.index, p.pages.data]), ...snap.graph.blobs].map((b) => new Uint8Array(b.buffer, b.byteOffset, b.byteLength));
+  const json = enc.encode(JSON.stringify({ format: snap.format, meta: snap.meta, pageSize: snap.pages.pageSize, root: snap.graph.root, objects: snap.graph.objects, ...(procs.length ? { procs: procs.length } : {}), bins: bins.map((b) => b.length) }));
   const out = new Uint8Array(8 + json.length + bins.reduce((s, b) => s + b.length, 0));
   const dv = new DataView(out.buffer);
   dv.setUint32(0, 0x4f534e50); dv.setUint32(4, json.length); // 'OSNP'
@@ -380,7 +423,10 @@ export function decodeSnapshot(bytes) {
   const len = dv.getUint32(4), head = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + len)));
   if (head.format !== SNAPSHOT_FORMAT) throw new SnapshotError(`snapshot format ${head.format}, expected ${SNAPSHOT_FORMAT}`);
   let at = 8 + len; const bins = head.bins.map((n) => { const b = bytes.slice(at, at + n); at += n; return b; });
-  return { format: head.format, meta: head.meta, pages: { pageSize: head.pageSize, index: new Uint32Array(bins[0].buffer), data: bins[1] }, graph: { root: head.root, objects: head.objects, blobs: bins.slice(2) } };
+  const pages = (k) => ({ pageSize: head.pageSize, index: new Uint32Array(bins[2 * k].buffer), data: bins[2 * k + 1] }), n = head.procs ?? 0;
+  const out = { format: head.format, meta: head.meta, pages: pages(0), graph: { root: head.root, objects: head.objects, blobs: bins.slice(2 + 2 * n) } };
+  if (n) out.procs = Array.from({ length: n }, (_, k) => ({ pages: pages(k + 1) }));
+  return out;
 }
 
 // ---------------------------------------------------------------- comparing snapshots
@@ -393,13 +439,17 @@ export function decodeSnapshot(bytes) {
  */
 export function snapshotsDiffer(a, b, { ignore = [], max = 20 } = {}) {
   const out = [];
-  const pa = new Map(), pb = new Map();
-  a.pages.index.forEach((p, i) => pa.set(p, i)); b.pages.index.forEach((p, i) => pb.set(p, i));
-  const page = (s, i) => (i === undefined ? null : s.pages.data.subarray(i * s.pages.pageSize, (i + 1) * s.pages.pageSize));
-  for (const p of new Set([...pa.keys(), ...pb.keys()])) {
-    if (out.length >= max) return out;
-    const x = page(a, pa.get(p)), y = page(b, pb.get(p));
-    for (let j = 0, n = a.pages.pageSize; j < n; j++) if ((x?.[j] ?? 0) !== (y?.[j] ?? 0)) { out.push(`memory at ${(p * n + j).toString(16)}: ${x?.[j] ?? 0} vs ${y?.[j] ?? 0}`); break; }
+  const memA = [a.pages, ...(a.procs ?? []).map((p) => p.pages)], memB = [b.pages, ...(b.procs ?? []).map((p) => p.pages)];
+  if (memA.length !== memB.length) out.push(`${memA.length} vs ${memB.length} processes`);
+  for (let k = 0; k < Math.min(memA.length, memB.length); k++) {
+    const A = memA[k], B = memB[k], pa = new Map(), pb = new Map(), what = k ? `process ${k}'s memory` : 'memory';
+    A.index.forEach((p, i) => pa.set(p, i)); B.index.forEach((p, i) => pb.set(p, i));
+    const page = (s, i) => (i === undefined ? null : s.data.subarray(i * s.pageSize, (i + 1) * s.pageSize));
+    for (const p of new Set([...pa.keys(), ...pb.keys()])) {
+      if (out.length >= max) return out;
+      const x = page(A, pa.get(p)), y = page(B, pb.get(p));
+      for (let j = 0, n = A.pageSize; j < n; j++) if ((x?.[j] ?? 0) !== (y?.[j] ?? 0)) { out.push(`${what} at ${(p * n + j).toString(16)}: ${x?.[j] ?? 0} vs ${y?.[j] ?? 0}`); break; }
+    }
   }
   const names = (g) => {
     const n = new Array(g.objects.length);

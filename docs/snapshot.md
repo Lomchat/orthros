@@ -64,8 +64,20 @@ subtly wrong. So:
   no backend has seen: created and uploaded whole at its first use. What the host showed comes back through `resume`
   hooks (`snapshotClass(cls, { resume })`, run once the machine is whole): the window manager sets the display mode,
   title and cursor again.
-- **Several processes** (a game started by its launcher, docs/processes.md): a machine that started a child process is
-  never captured (`notQuiet`: "several processes") — its state spans several machines, each with its own memory.
+- **Several processes** (a game started by its launcher, docs/processes.md): the whole group is captured, at a point
+  where every process is quiet and no ended one waits to be released. Each machine's guest memory is kept (`procs`
+  after the first one's pages), and one state graph covers them all: one registry over the machines'
+  (`groupSnapRegistry`, `mergedRegistry`: the k-th machine's known names prefixed `k:`, an object shared by the
+  processes — the kernel-object namespace, an inherited event, a paging-file mapping and its views — one record), with
+  the group itself known as `group`. Each object records the machine it belongs to when not the first (a process or a
+  thread names its own; a class defined in one machine's closure is that machine's; else its parent's): its class,
+  `init` and `load` hooks are that machine's at the restore (a thread's CPU state on its own memory). `restoreVm` builds
+  the group and its machines again in the snapshot's order (each child as `CreateProcess` builds it, with its parent),
+  then puts everything back as for one machine; the page follows the foreground process as after a `CreateProcess`.
+  `tests/snapshot.test.js` restores `multiproc.exe` with its child in the middle of their handshake and runs both copies
+  alike to the end. Until 2026-11-11 such a machine was never captured (`notQuiet`: "several processes"): Age of the
+  Ring and BFME II 1.06, both started by their launcher, never got a snapshot — the warm jobs' publishing sessions ran
+  their 1 200 s and ended "0 kept, 0 published" (the live runner's journal, 2026-11-10/11, every 6 h).
 - **CPU states** are views on the guest memory (rebuilt by address); a PE image's file bytes, only read while it was
   mapped, are not kept.
 - **Time** goes on from where it was: a virtual clock's state, a real clock's origin moved. Everything the guest can
@@ -212,11 +224,16 @@ the first declared) and queues **one job at a time**:
   profile). The key is computed by the server as a page computes it (`plainKey`: the sources' hash, the version's
   `/api/manifest` and `/api/tree` as sent, the machine options of a page with no URL parameter) — the publishing session
   still refuses to post if its own key differs, so a wrong guess costs a failed job, not a wrong snapshot;
-- a **learn** job when the snapshot exists but the server holds no learned prefetch list for the version (`prefetch-<m>.json`):
-  the runner plays `tools/headless.mjs <m> --server-port <port>` against the server for the shortest bench scenario of
-  `tools/scenarios/bench/index.json` that lists the version (at most 300 s), else boots it for 150 s, so the reads, heat and GL
-  programs of the first minutes are learned. (A publish session teaches the lists as well, so a version without snapshot gets
-  its learn job only if the lists are still missing after the publish.)
+- a **learn** job when the snapshot exists but the server holds no learned prefetch list for the version (`prefetch-<m>.json`),
+  or the version has learn scenarios not played on this server yet: the runner starts `tools/warm-learn.mjs`, which plays
+  `tools/headless.mjs <m> --server-port <port>` against the server for each of the version's **learn scenarios**
+  (`tools/scenarios/bench/index.json` `learn`: the loads a new player meets first, e.g. Age of the Ring's MY CAPTAINS and a
+  skirmish start; each on a fresh browser, at most its `maxSeconds` (1 800 s), ended 20 s after its last step; those played already skipped), else for the shortest bench
+  scenario that lists the version (at most 300 s), else boots it for 150 s — so the reads, heat and GL programs of those
+  loads are learned. The scenarios played to their end (every wait met) are told to the server with the job's token
+  (`POST /api/warm-learned/<m>`) and kept by name and content hash (`<learn>/snapshots/learned-scenarios.json`): an edited
+  scenario is played again. (A publish session teaches the boot's lists as well, so a version without snapshot gets its
+  learn job after the publish.)
 
 The next job is queued when the previous one reached its goal or after two hours (a failed key is not tried again for 6 h:
 the queue's usual dedup). Another language than the default is still made on a player's 404. `--warm-only a,b` restricts

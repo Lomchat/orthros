@@ -54,6 +54,32 @@ for (const [exe, points] of [['sync.exe', [3, 15, 60]], ['priority.exe', [3, 15,
   });
 }
 
+test('a launcher and the game it started (two processes): the group restored from its snapshot goes on exactly alike', { skip: skip('multiproc.exe') }, () => {
+  // (docs/processes.md: a game started by its launcher — the machine is captured whole, every process with its memory,
+  // the kernel objects they share, the inherited handles and mappings)
+  const out = (vm) => (vm.group?.vms ?? [vm]).map((v) => v.stdout.join('')).join('|');
+  for (const extra of [4]) {
+    const a = boot('multiproc.exe');
+    let n = 0;
+    while (!a.group && n++ < 400) assert.notEqual(slice(a), 'exited');
+    for (let i = 0; i < extra; i++) slice(a);
+    assert.equal(a.group?.vms.length, 2, 'the child runs');
+    assert.equal(notQuiet(a), null);
+    const s = snap(a);
+    assert.equal(s.procs.length, 1);
+    const b = restoreVm(boot('multiproc.exe', { create: false }), s);
+    assert.equal(b.group.vms.length, 2); assert.equal(b.group.vms[1].parentVm, b);
+    assert.deepEqual(snapshotsDiffer(s, snap(b), { ignore: HOST_TIME_FIELDS }), [], 'restored machine is not the snapshot');
+    for (let i = 0; i < 20; i++) assert.equal(slice(a), slice(b), `slice ${i}`);
+    assert.deepEqual(snapshotsDiffer(snap(a), snap(b), { ignore: HOST_TIME_FIELDS }), [], `after 20 slices (captured ${extra} slices into the child)`);
+    // (then each to its end: the same exit, the same lines printed after the capture by both processes)
+    const va = [...a.group.vms], vb = [...b.group.vms], printed = va.map((v) => v.stdout.join('').length);
+    const codeA = a.run(), codeB = b.run();
+    assert.equal(codeA, 0, out(a)); assert.equal(codeB, codeA);
+    assert.deepEqual(vb.map((v) => v.stdout.join('')), va.map((v, k) => v.stdout.join('').slice(printed[k])));
+  }
+});
+
 test('threads parked in a blocking call keep their wait and its deadline across a restore', { skip: skip('priority.exe') }, () => {
   const a = boot('priority.exe');
   for (let i = 0; i < 15; i++) slice(a);

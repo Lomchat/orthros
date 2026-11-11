@@ -58,7 +58,7 @@ import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64, see
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
 import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY } from './snapshot-store.js';
-import { Warmer } from './warm-jobs.js';
+import { Warmer, LearnedScenarios, learnScenarios } from './warm-jobs.js';
 import { pipeline } from 'node:stream/promises';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -1467,6 +1467,8 @@ export function createServer(opts = {}) {
     : opts.snapshotJobs === 'queue' ? new SnapshotQueue(path.join(snapshots.dir, 'queue.json'))
       : opts.snapshotJobs === true ? new SnapshotJobs({ root: ROOT, url: () => `http://127.0.0.1:${server.address().port}`, logDir: path.join(opts.learnDir, 'snapshots') })
         : opts.snapshotJobs;
+  // (the warm jobs' learn scenarios played on this server, warm-jobs.js)
+  const learnedScenarios = snapshots ? new LearnedScenarios(path.join(snapshots.dir, 'learned-scenarios.json')) : null;
   // operator-made sets (seedcanon-<manifest>.json, tools/ops/profile-seed-make.mjs): offered first, whatever the sessions
   // report (a first launch's settings depend on the emulated machine's speed, so independent reports rarely agree);
   // read again when the file changes (written by the tool while this server runs)
@@ -1919,6 +1921,15 @@ export function createServer(opts = {}) {
         pipeFile(res, f.file);
         return;
       }
+      // a warm job's learn session (tools/warm-learn.mjs, its job's token): the learn scenarios it played to their end
+      m = /^\/api\/warm-learned\/([^/]+)$/.exec(p);
+      if (m && req.method === 'GET') return send(res, 200, JSON.stringify(Object.keys(learnedScenarios?.read()[m[1]] ?? {})), { 'Content-Type': 'application/json' }); // (the ones played already: skipped)
+      if (m && req.method === 'POST') {
+        if (!snapshots || !snapshotJobs?.learnJob?.(url.searchParams.get('token') ?? '', m[1])) return send(res, 403, 'not a learn session of this server');
+        const ids = (url.searchParams.get('ids') ?? '').split(',').filter((x) => /^[\w.-]{1,80}:[0-9a-f]{12}$/.test(x)).slice(0, 32);
+        learnedScenarios.add(m[1], ids);
+        return send(res, 204, '');
+      }
       m = /^\/api\/profile-seed\/([^/]+)$/.exec(p);
       if (m) {
         const man = getManifest(m[1]);
@@ -2112,6 +2123,7 @@ export function createServer(opts = {}) {
       sources: () => snapshotSourcesHash(ROOT),
       snapshotReady: (name, lang, key) => { const f = snapshots.meta(name, lang, key); return !!f && (f.seed ?? null) === (getManifest(name)?.profileSeed === false ? null : (seedFor(name, lang).key ?? null)); },
       hasLearned: (name) => learnedOf(name).size > 0,
+      scenariosLearned: (name) => learnScenarios(ROOT, name).every((sc) => !sc.required || learnedScenarios.has(name, sc.id)),
       jobs: snapshotJobs, log: (l) => console.log(`orthros: ${l}`),
     });
     server.on('listening', () => server.warmer.start());

@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { learnArgs } from './warm-jobs.js';
+import { learnCommand, learnTimeout } from './warm-jobs.js';
 import { pipeline } from 'node:stream/promises';
 
 const safe = (s) => s.replace(/[^A-Za-z0-9._-]/g, '_');
@@ -76,6 +76,8 @@ export class SnapshotJobs {
   }
   /** The job a POST's token belongs to (it must name the same game version, language and key), or null. */
   job(token, name, lang, key) { const j = this.tokens.get(token); return j && j.kind === 'publish' && j.name === name && j.lang === lang && j.key === key ? j : null; }
+  /** The learn job of `name` a token belongs to (tools/warm-learn.mjs reports the scenarios it played), or null. */
+  learnJob(token, name) { const j = this.tokens.get(token); return j && j.kind === 'learn' && j.name === name ? j : null; }
   next() {
     if (this.running || !this.queue.length) return;
     const j = this.running = this.queue.shift(), token = crypto.randomBytes(16).toString('hex');
@@ -83,8 +85,9 @@ export class SnapshotJobs {
     fs.mkdirSync(this.logDir, { recursive: true });
     const log = fs.openSync(path.join(this.logDir, `publish-${safe(j.name)}-${safe(j.lang || 'none')}.log`), 'w');
     const url = this.url(), scratch = j.kind === 'learn' ? fs.mkdtempSync(path.join(fs.existsSync('/tmp/orthros-scratch') ? '/tmp/orthros-scratch' : os.tmpdir(), 'learn-')) : null;
-    const args = ['node', ...(scratch ? learnArgs(this.root, j.name, new URL(url).port, scratch) : ['tools/snapshot-publish.mjs', j.name, '--url', url, '--lang', j.lang, '--key', j.key, '--token', token])];
-    const child = spawn('timeout', [String(this.timeoutS), path.join(this.root, 'tools/with-browser-slot.sh'), ...args], { cwd: this.root, stdio: ['ignore', log, log] });
+    const args = scratch ? learnCommand(j.name, url, token, scratch) : ['node', 'tools/snapshot-publish.mjs', j.name, '--url', url, '--lang', j.lang, '--key', j.key, '--token', token];
+    const timeoutS = scratch ? Math.max(this.timeoutS, learnTimeout(this.root, j.name)) : this.timeoutS;
+    const child = spawn('timeout', [String(timeoutS), path.join(this.root, 'tools/with-browser-slot.sh'), ...args], { cwd: this.root, stdio: ['ignore', log, log] });
     let ended = false;
     const done = () => { if (ended) return; ended = true; fs.closeSync(log); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); this.tokens.delete(token); this.running = null; this.next(); };
     child.on('exit', done); child.on('error', done);
@@ -117,5 +120,9 @@ export class SnapshotQueue {
   job(token, name, lang, key) {
     const j = this.jobs.find((x) => x.token === token);
     return j && (j.kind ?? 'publish') === 'publish' && j.name === name && j.lang === lang && j.key === key && Date.now() - j.at < this.ttlMs ? j : null;
+  }
+  learnJob(token, name) {
+    const j = this.jobs.find((x) => x.token === token);
+    return j && j.kind === 'learn' && j.name === name && Date.now() - j.at < this.ttlMs ? j : null;
   }
 }

@@ -97,9 +97,15 @@ const browser = opfsDir ? await chromium.launchPersistentContext(opfsDir, { args
 const screenOpt = opt('screen') ? { width: Number(opt('screen').split('x')[0]), height: Number(opt('screen').split('x')[1]) } : undefined; // (--screen WxH: the player's screen the game sees, the modes its display lists)
 const page = opfsDir ? (browser.pages()[0] ?? await browser.newPage()) : await browser.newPage({ viewport: { width: 1280, height: 900 }, screen: screenOpt, ignoreHTTPSErrors: pageOrigin.startsWith('https:') });
 const logFile = fs.createWriteStream(path.join(out, `${name}.log`));
+// --coords WxH: the scenario's pointer steps were written for that display (the bench index's `coords`): scaled to the
+// game's current mode; --end-after-input <s>: the run ends that long after the scenario's last step (the loads it opened)
 // --stop-on <text>: the run ends (as at its time limit: report, profile saved) once a log line contains that text — a
 // benchmark of the time to some point (e.g. the end of a game's first-launch computation) without running past it
 const stopOn = opt('stop-on');
+const coordsFrom = opt('coords') ? opt('coords').split('x').map(Number) : null; // (--coords WxH, see the scenario's steps)
+const POINTER_STEPS = new Set(['move', 'click', 'rclick', 'down', 'up', 'wheel']);
+const endAfterInput = opt('end-after-input') !== undefined ? Number(opt('end-after-input')) : null;
+let inputsDoneAt = null;
 let stopSeen = null, stopCpu = null;
 // (with the busiest worker thread's CPU time then: the emulator's, far less sensitive to the machine's load than the time)
 page.on('console', (m) => { const t = m.text(); logFile.write(t + '\n'); if (/^\[(crash|warn|gfx|audio|input|thread|report|hang|frames)\]/.test(t) || args.includes('--verbose')) console.log(t); if (stopOn && stopSeen === null && t.includes(stopOn)) { stopSeen = Date.now(); try { stopCpu = Math.max(0, ...[...workerThreadTicks()].filter(([k]) => !k.startsWith('gpu:')).map(([, v]) => v)) / 100; } catch { /* no /proc */ } } });
@@ -531,6 +537,12 @@ for (;;) {
     }
     if (t < due) continue;
     ev.done = true;
+    // (--coords WxH: the scenario's pointer coordinates written for that display, scaled to the game's current mode —
+    // a game whose first launch picked another resolution, as the page's bench player does)
+    if (coordsFrom && POINTER_STEPS.has(ev.kind)) {
+      const mode = await page.evaluate(() => window.orthros.mode ?? null).catch(() => null);
+      if (mode?.width && mode?.height) ev.args = [Math.round(ev.args[0] * mode.width / coordsFrom[0]), Math.round(ev.args[1] * mode.height / coordsFrom[1]), ...ev.args.slice(2)];
+    }
     console.log(`[input] ${ev.kind} ${ev.args.join(',')} at ${t.toFixed(0)}s`);
     if (ev.kind === 'profile') { profileWorker(ev.args[0] || 20).catch((e) => console.log('[profile] failed:', e.message)); continue; } // (profile:<seconds> — the worker, now)
     if (ev.kind === 'capture') { await page.evaluate((draws) => window.orthros.worker?.postMessage({ type: 'capture', draws }), !!ev.args[0]); console.log(`[capture] frame capture requested at ${t.toFixed(0)}s`); continue; } // (capture[:1] — the next frame, with the target after every draw when 1)
@@ -670,9 +682,12 @@ for (;;) {
     }
   }
   if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }
-  if (t >= seconds || (stopSeen !== null && Date.now() - stopSeen > 1000)) {
+  // (--end-after-input <s>: the run ends that long after the scenario's last step — a learn session, warm-jobs.js)
+  if (endAfterInput !== null && inputs.length && inputsDoneAt === null && inputs.every((e) => e.done)) inputsDoneAt = t;
+  if (t >= seconds || (stopSeen !== null && Date.now() - stopSeen > 1000) || (inputsDoneAt !== null && t - inputsDoneAt >= endAfterInput)) {
+    if (inputsDoneAt !== null && t < seconds) console.log(`[end] the scenario played: ended ${endAfterInput} s after its last step`);
     if (stopSeen !== null) console.log(`[end] stop text seen at ${((stopSeen - t0) / 1000).toFixed(1)} s${stopCpu !== null ? `, worker thread ${stopCpu.toFixed(1)} s CPU` : ''}`);
-    console.log(`[end] time limit ${seconds}s`);
+    if (inputsDoneAt === null || t >= seconds) console.log(`[end] time limit ${seconds}s`);
     await printNetStats();
     // --frames-from <s>: whole-run frame-time percentiles over the frames presented after that time (page time base)
     if (opt('frames-from')) { await page.evaluate((fromMs) => { window.orthros.frames = null; window.orthros.worker?.postMessage({ type: 'frames', fromMs }); }, Number(opt('frames-from')) * 1000); for (let i = 0; i < 30; i++) { const f = await page.evaluate(() => window.orthros.frames); if (f) { console.log('[frames] ' + f); break; } await page.waitForTimeout(100); } }
