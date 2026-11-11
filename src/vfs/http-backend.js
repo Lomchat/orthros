@@ -147,6 +147,8 @@ const WANT_REQUESTS_H1_LOOSE = H1_CONNECTIONS - 2;
 const PLACE_REQUESTS = 8, PLACE_REQUESTS_THIN = 2;
 /** an announced unit whose request failed on the network is asked again this many times (after retryWaits' pauses) */
 const WANT_RETRIES = 2;
+/** pieces remembered as brought by a request the server does not learn, at most (HttpBackend.unlearned: 1 GiB of them) */
+const UNLEARNED_MAX = 16384;
 /** wire length of a response (its encoded body: what crossed the link), else the decoded length */
 const wireOf = (len, header) => { const n = Number(header); return Number.isFinite(n) && n > 0 ? n : len; };
 
@@ -299,6 +301,33 @@ export class HttpBackend {
     this.wantLoose = 0;
     /** told every file range that arrives from the network: (path, start, bytes) — open-predict.js's referenced names */
     this.arrivals = new Set();
+    /**
+     * pieces ("path#chunk") brought by a request the server does not learn (`w=1`: announced, predicted) that no learned
+     * request asked for since and the game did not read yet: a session that reports only the reads the server did not
+     * learn (worker.js readLogUnlearnedOnly, a session restored from a snapshot) reports the game's reads of them —
+     * takeUnlearned. Kept with a session only (without one the read log reports every read); UNLEARNED_MAX at most.
+     */
+    this.unlearned = new Set();
+  }
+  /** Pieces c0..c1 of `path` came by a request the server does not learn (see unlearned). */
+  markUnlearned(path, c0, c1) {
+    if (!this.session || !this.encoded) return;
+    for (let c = c0; c <= c1; c++) this.unlearned.add(`${path}#${c}`);
+    for (const k of this.unlearned) { if (this.unlearned.size <= UNLEARNED_MAX) break; this.unlearned.delete(k); }
+  }
+  /**
+   * The game read [start, end) of `path`: the parts of it whose pieces came by a request the server does not learn, not
+   * read before ([[a, b]…], each piece once), or null — the reads a session reporting only its unlearned reads reports.
+   */
+  takeUnlearned(path, start, end) {
+    if (!this.unlearned.size || end <= start) return null;
+    let out = null;
+    for (let c = Math.floor(start / CHUNK), e = Math.floor((end - 1) / CHUNK); c <= e; c++) {
+      if (!this.unlearned.delete(`${path}#${c}`)) continue;
+      const a = Math.max(start, c * CHUNK), b = Math.min(end, (c + 1) * CHUNK), last = out?.at(-1);
+      if (last && last[1] === a) last[1] = b; else (out ??= []).push([a, b]);
+    }
+    return out;
   }
 
   /** The tree walked as the guest sees it (game-tree.js treeLookup): { file | dir, name, path } or null. */
@@ -328,6 +357,8 @@ export class HttpBackend {
     // (`ahead`: fetched ahead of the game but learned as its own read — the server counts it with the background;
     // `announced`: a background range the engine announced it reads next (wantList) — not learned either, queued by the
     // server between the game's reads and the background's)
+    // (a request the server learns as the game's — a session's, not background —: its pieces no longer unlearned)
+    if (this.encoded && this.session && !background && this.unlearned.size) for (let c = Math.floor(start / CHUNK), e = Math.floor((end - 1) / CHUNK); c <= e; c++) this.unlearned.delete(`${path}#${c}`);
     return this.encoded ? `${this.base.replace(/\/game\//, '/gamez/')}${rel}?r=${start}-${end}${background ? (announced ? '&w=1' : '&p=1') : this.session ? '&s=' + this.session : ''}${!background && ahead ? '&a=1' : ''}${this.pcm ? '&pc=1' : ''}` : this.base + rel;
   }
   /**
@@ -743,7 +774,8 @@ export class HttpBackend {
    * Predicted opens (src/vfs/open-predict.js): [start, end) of `path` (as listed), a file the game is about to open,
    * fetched as an announced range the engine waits for through its own reads (wantList `wait` false: the same units,
    * window and deduplication, urgent once started — a load's own next reads), counted as `predict` (NetLink.bgBy,
-   * stats.predict*), not learned as reads (the server's `w=1`: the game's reads of it are, by the page's read log).
+   * stats.predict*), not learned as reads (the server's `w=1`: a guess is not a read) — the game's reads of it are, by
+   * the page's read log (a session restored from a snapshot too: unlearned).
    * True when here already (nothing asked), else the promise of wantRange.
    */
   predict(path, start, end) {
@@ -1234,6 +1266,7 @@ export class HttpBackend {
         const hits = ress.filter((r) => ['hit', 'raw'].includes(r.headers?.get?.('x-orthros-unit'))).length;
         this.unitHitRate += UNIT_HIT_WEIGHT * (hits / parts.length - this.unitHitRate);
         ok = true;
+        if (announced) this.markUnlearned(path, Math.floor(start / CHUNK), Math.floor((end - 1) / CHUNK));
         return data;
       }
       const res = await fetch(this.rangeUrl(path, start, end, !learn, learn, announced), { ...(this.encoded ? {} : { headers: { Range: `bytes=${start}-${end - 1}` } }), signal: ctl?.signal });
@@ -1245,6 +1278,7 @@ export class HttpBackend {
       if (!data) return undefined;
       if (res.status === 200 && !this.encoded) data = data.subarray(start, end);
       ok = data.length === end - start;
+      if (ok && announced) this.markUnlearned(path, Math.floor(start / CHUNK), Math.floor((end - 1) / CHUNK));
       return ok ? data : undefined;
     } catch { return ctl?.signal.aborted ? ABORTED : null; } finally {
       // (a failed path — a part refused, one fetch failed, a body short — cancels the requests still running: their

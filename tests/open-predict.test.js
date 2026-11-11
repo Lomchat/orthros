@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OpenPredictor } from '../src/vfs/open-predict.js';
+import { HttpBackend, CHUNK } from '../src/vfs/http-backend.js';
 
 const tree = () => {
   const files = {};
@@ -29,4 +30,24 @@ test('opens in no order fetch few files the game does not open', () => {
   while (order.length < 120) { x = (Math.imul(x, 1103515245) + 12345) >>> 0; const i = x % 400; if (!seen.has(i)) { seen.add(i); order.push(i); } }
   const r = run(order);
   assert.ok(r.wasted <= 30, `wasted ${r.wasted}`);
+});
+
+test('a session restored from a snapshot reports the reads served by predicted bytes (the server does not learn w=1)', async () => {
+  const size = 3 * CHUNK, urls = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    urls.push(url); const [, a, b] = /r=(\d+)-(\d+)/.exec(url);
+    return { status: 206, headers: { get: () => null }, arrayBuffer: async () => new Uint8Array(b - a).buffer };
+  };
+  try {
+    const b = new HttpBackend('/game/v/', { dirs: {}, files: { 'a.ini': { size, mtime: 1 } } }, { encoded: true, session: 's1' });
+    const p = b.predict('a.ini', 0, size);
+    assert.notEqual(p, true);
+    assert.equal(await p, true);
+    assert.ok(urls.length && urls.every((u) => u.includes('w=1') && !u.includes('s=s1')), 'asked as a guess, not learned');
+    assert.deepEqual(b.takeUnlearned('a.ini', 100, CHUNK + 10), [[100, CHUNK + 10]], 'the game\'s read of it: to report');
+    assert.equal(b.takeUnlearned('a.ini', 0, CHUNK), null, 'each piece once');
+    b.rangeUrl('a.ini', 2 * CHUNK, size); // (a learned request of the last piece: the server learns that read itself)
+    assert.equal(b.takeUnlearned('a.ini', 2 * CHUNK, size), null);
+  } finally { globalThis.fetch = real; }
 });

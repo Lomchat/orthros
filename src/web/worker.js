@@ -267,7 +267,13 @@ async function start(m) {
   const rank = new Map(); // (?netlog: a block's rank in its part's learned list)
   const version = await openVersion(manifestName, { tree: m.tree, manifest, net: netLink, store: storeOf, legacy: persistent ? openLegacyStore : null,
     cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '',
-    onRead: readLog ? (p, a, b, f) => { if (!(readLogUnlearnedOnly && f?.b?.session)) readLog?.add(f?.readName ?? manifestName, f?.readPath ?? p, a, b, performance.now()); } : null,
+    // (a session restored from a snapshot reports only the reads the server did not learn from its requests: those
+    // without a session, and those served by bytes an announced or predicted request brought — HttpBackend.takeUnlearned)
+    onRead: readLog ? (p, a, b, f) => {
+      const name = f?.readName ?? manifestName, path = f?.readPath ?? p, now = performance.now(), un = f?.b?.takeUnlearned?.(p, a, b);
+      if (!(readLogUnlearnedOnly && f?.b?.session)) readLog?.add(name, path, a, b, now);
+      else if (un) for (const [x, y] of un) readLog?.add(name, path, x, y, now);
+    } : null,
     onFetch: m.opts.netLog ? (f) => log('net', `t=${(performance.now() / 1000).toFixed(1)}s ${f.async ? 'parked' : 'sync'} ${f.url} [${f.start}, ${f.end}) ${Math.round(f.ms)}ms; learned rank ${rank.get(`${f.path}#${Math.floor(f.start / BLOCK)}`) ?? '-'}`) : null,
     onRetry: (r) => log('warn', `game file read: ${r.problem} for ${r.url} [${r.start}, ${r.end}), attempt ${r.attempt + 1}`) });
   dataParts = version.parts;
