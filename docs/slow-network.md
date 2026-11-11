@@ -2453,3 +2453,25 @@ on the page did not remove it). The bench's waits read the page's stats, so a st
 The home screen's "download first" was checked in the page over a simulated 1 MB/s link: progress, measured rate and
 time left update every 5 s (~950 KB/s, "about 24 min left" for Vice City's 1.5 GB), a reload shows "1% downloaded (27 MB
 of 1.5 GB) · about 24 min more" with Resume, which continues from 27 MB; Pause stops it.
+
+## Predicted opens and batched requests together (2026-11-11)
+
+The two changes above merged (with the snapshots of a launcher and its game, docs/snapshot.md), measured against `main`
+in the same conditions: `tools/headless.mjs <version> --net 50:10 --gl-discard --memprefetch`, a frozen copy of the live
+server's units, through `tools/with-browser-slot.sh` with `ORTHROS_BROWSER_CPU=800%`, one browser at a time, the arms
+interleaved; AotR: Escape ×6, `waitframe:14,30` (menu), MY CAPTAINS, `waitframe:40,100000` (Create-a-Hero); RotWK 2.02:
+`rotwk-short.txt`. A batch asked as `w=1` marks its runs unlearned as a single request does (`fetchBatchNow`).
+
+| 1.25 MB/s, 50 ms | main | merged |
+|---|---|---|
+| AotR first visit (empty learned directory): launch → menu | 568, 551 s | 333, 303 s |
+| — MY CAPTAINS → Create-a-Hero | 268, 259 s | 204, 208 s |
+| — demand requests by the end | 7 306, 7 401 | 925, 769 |
+| AotR later player (live learned files): launch → menu | 202, 217 s | 192, 199 s |
+| — MY CAPTAINS → Create-a-Hero | 119, 120 s | 69, 64 s |
+| — requests by the end / MB on the link | 8 429, 8 493 / 296, 310 | 2 121, 2 216 / 262, 262 |
+| RotWK 2.02 (live learned files): launch → menu / skirmish click → play | 95 / 90 s | 98 / 89 s |
+
+The predicted opens alone (the `predict-fix` branch, same harness, one first visit): menu 310 s, Create-a-Hero 200 s —
+the merge loses nothing there. 85 KB/s (live learned files, 600 s, merged only): first frame at 591 s, 1 114 batches,
+38 MB sent, no error.
