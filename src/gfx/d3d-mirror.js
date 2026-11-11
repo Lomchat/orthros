@@ -7,6 +7,7 @@ import { OP, VERSION_FIELDS, CONST_FIELDS, RingReader } from './cmd-ring.js';
 import { surfacePitch, surfaceBytes } from '../win32/d3d8.js';
 import { StateTable } from '../win32/state-table.js';
 import { declLayout9 } from './d3d9-shaders.js';
+import { StaticFrames } from './static-frames.js';
 
 /** One 2D level (or cube face level) or standalone surface: the fields of win32/d3d8.js Surface the backend reads. */
 export class MSurface {
@@ -80,19 +81,23 @@ export class Replayer {
     this.shaders = new Map(); this.decls = new Map();
     this.ack = opts.ack ?? null;
     this.commands = 0;
+    /** static-frames.js (opts.onReuse: a frame shown again — the render worker): frames equal to the previous ones not rendered */
+    this.staticFrames = opts.onReuse ? new StaticFrames(this, opts.onReuse) : null;
   }
   /** replay the commands available up to `available` (a word count): returns the number replayed */
   run(available, limit = Infinity) {
-    const r = this.reader;
+    const r = this.reader, sf = this.staticFrames && this.staticFrames.begin() ? this.staticFrames : null;
     let n = 0;
     while (r.consumed < available && n < limit) {
       if (!r.next()) continue; // (WRAP)
-      this.apply(r);
+      if (sf !== null) sf.step(r); else this.apply(r); // (static frames: a frame equal to the previous ones not rendered again)
       n++;
     }
     this.commands += n;
     return n;
   }
+  /** the words consumed that can be reported to the emulator: not past commands held by static frames */
+  tail() { const h = this.staticFrames?.heldFrom; return h === null || h === undefined ? this.reader.consumed : h; }
   /** a backend device whose uploads acknowledge the contents they read (glTexture / glBuffer) */
   attach(m) {
     const g = this.opts.createBackend?.(m) ?? null;

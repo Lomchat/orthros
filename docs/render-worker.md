@@ -1124,6 +1124,107 @@ harness — the first-launch display here is 1024x768; the bench mode scales the
 Not validated: a real GPU-less PC (the owner's machines have GPUs; the controller never runs there), games that read
 back render targets during play at scale (the readback path is unit-tested for size, not seen in these scenes).
 
+## 11. Software rendering: static frames, and where the GPU process's CPU goes (2026-11-11)
+
+Question: on a machine without GPU (SwiftShader), AotR's MY CAPTAINS load took 83-164 s at 4 cores against 39 s at 8,
+with the GPU process at 3-4 cores during a LOADING screen. Is that the rasterization of frames that do not change, and
+can the render worker skip them without changing a single pixel?
+
+### 11.1 Measurements (headless harness, `tools/with-browser-slot.sh`, default 400 % CPU quota unless said, no `--gl-discard`)
+
+**Frames are not static.** The render worker classifies every presented frame (`ORTHROS_STATIC_REUSE=2`: count only;
+`[gfx] render worker: static frames over 10 s` lines with the first reason a frame is not reusable):
+
+| scene | frames presented | equal to the previous one (exact rule) | why not |
+|---|---|---|---|
+| AotR MY CAPTAINS LOADING screen (clear, 3 quads: background, picture, a 64×64 ring) | 20-27 fps | 0 | the ring's texture is rewritten every frame with other bytes (`LockRect`; the ring glows) |
+| AotR main menu (16 draws) | 11-13 fps | 0 | vertex bytes (`BUF_DATA`) differ every frame: animated |
+| RotWK 2.02 main menu | 13-15 fps | 0 | vertex bytes differ every frame (the 3D shell map) |
+| RotWK 2.02 intro / first screens | 17 fps | 60 of 167 in one 10 s window | the rest: video textures |
+| BFME 1.08 main menu | 2-4 fps | 0 | `STRETCH` every frame (render-to-texture shell map) |
+| Vice City main menu | 46 fps | 0 | draws over the previous image without a color clear, and moving shapes (`BUF_DATA`) |
+| AotR skirmish LOADING screen (pinned 4 cores) | 5-7 fps | 0 | a clear of part of the target (a rectangle or a partial viewport) every frame |
+
+**Where the GPU process's CPU goes.** One session, AotR LOADING screen, 10 s phases switched with `dbg:` (worker
+thread = the emulator; GPU process = all its threads):
+
+| phase | GPU process | emulator thread | frames |
+|---|---|---|---|
+| normal (frames rendered and handed to the page) | 31.1 s CPU (3.1 cores) | 2.9 s | 273 |
+| `ORTHROS_GL_NULL=1` + `ORTHROS_RW_NO_PRESENT=1` (no GL call, no frame handed over) | **0.3 s** | **7.8 s** | 286 |
+| `ORTHROS_GL_NULL=1` only (blank frames still handed to the page) | 27.4 s | 2.9 s | 241 |
+| `ORTHROS_RW_NO_PRESENT=1` only (rendered, not handed over; another session) | 28.7-30.2 s | 2.2-2.9 s | 204-297 |
+
+The GPU process's CPU does not follow the work: 3 quads at 25 fps, an empty canvas handed over at 25 fps, the AotR menu
+at 11 fps, the RotWK menu at 13 fps, BFME's at 3 fps all cost ~3.1 cores, and only *no GPU activity at all* frees it.
+Its threads (`/proc/<pid>/task/*/comm`) are 16 `Thread<NN>` (SwiftShader's worker pool, sized from the host's 48 cores,
+not from the quota), each ~0.2 core. The scope's `cpu.stat` shows why the emulator starves: the 400 % quota is used up
+in **every** 100 ms period (100 of 100 periods throttled, AotR skirmish load) — sixteen threads spinning or rasterizing
+in parallel exhaust the 400 ms of a period in a few ms of wall time, then CFS bandwidth control stops the whole scope,
+the emulator's thread included, until the next period. The emulator gets ~25 % of a core.
+
+**The 4-core model overstates the problem.** The same MY CAPTAINS load with the browser also pinned to 4 cores
+(`ORTHROS_BROWSER_CPUS=44-47`, quota unchanged — closer to a real 4-core PC, where nothing can run more than 4 threads
+at once): **50-51 s** (emulator thread 58 % of a core, GPU process 2.4 cores), against **188-209 s** with the quota
+alone (4 runs). Reuse on or off makes no difference there (50 s / 51 s): the loading frames are not static.
+
+### 11.2 What was built: exact static-frame reuse (`src/gfx/static-frames.js`, `ORTHROS_STATIC_REUSE`)
+
+In the render worker's replayer (render worker only: `onReuse`; not inline/compare modes):
+- A frame is *plain* when every command is an absolute state setter (render/stage/sampler states, viewport, scissor,
+  shaders, streams, indices, textures by id, transforms, lights, material, constants, buffer bytes carried in the ring),
+  a texture level written by the guest (`SURF_DIRTY`: its guest bytes copied as the command is read, compared byte for
+  byte; `SURF_MEM` of a copy on write compared by surface only), or a clear / draw / present — and nothing reads what the
+  targets held: each target is first cleared whole (color, and depth/stencil before a draw that tests them — a depth test
+  that always passes reads nothing), no render-target texture is sampled before being made in the frame. Anything else
+  (resource creation or destruction, guest-memory buffer writes, readbacks, StretchRect, gamma, another device, a
+  canvas resize) is not plain.
+- Two consecutive plain frames with equal commands (version counters, transform slot versions and the frame number set
+  aside — they only key the backend's caches) and equal written bytes leave the device state as it was between them
+  (absolute setters applied twice give what they give once), so a third equal frame starts from the same state, reads
+  the same resources and makes the same image. It is *held*: its commands copied out of the ring and compared word by
+  word with the reference as they arrive, not reported consumed to the emulator (`Replayer.tail()`, `publishTail`: the
+  emulator's fences still protect the guest memory a held command may read); at its PRESENT the state commands are
+  applied (the mirror stays exact), no GL call is made, no frame is handed to the page (it keeps showing the same image)
+  and `SHOWN` advances. The first command that differs, an emulator waiting for the render worker (`EMU_WAIT`), or the
+  switch turned off releases the held commands, replayed as usual before it. A render-scale change or a context
+  restoration ends the streak.
+- Switch: `ORTHROS_STATIC_REUSE` (render worker debug global, `dbg:` works mid-session): unset/1 on, 0 off, 2 count only.
+  The 10 s log line gives presented / plain / equal / reused / released counts and the reasons.
+- Test: `tests/static-frames.test.js` (equal frames reused after two, every kind of difference rendered — commands,
+  vertex bytes, texture bytes, drawing over the previous image, a depth test on an uncleared buffer, a resource
+  written — and the mirror equal to a replay of every frame).
+
+Tried and removed: replaying a frame whose only difference is a texture's bytes within the rectangle its draws cover
+(scissor; the extent from fixed-function positions and flip-chain history). On the LOADING screen it cut the replay to a
+68×68 rectangle (4 624 pixels instead of 786 432) in 95 % of the frames, and the GPU process stayed at 3.1 cores
+(24.9 s per 8 s against 31.8 s per 10 s off): the cost is not rasterization (11.1).
+
+### 11.3 Results and decision
+
+- AotR MY CAPTAINS load at 400 % (quota): 188 s with reuse (on), 195-209 s in count mode — no frame of that load is
+  reusable, the difference is run-to-run noise. Pinned 4 cores: 50 s on, 51 s off.
+- Menus (AotR, RotWK, BFME 1.08, Vice City): no reusable frame (table above), GPU process unchanged (RotWK menu
+  31.4 s/10 s; Vice City on/off/on 75.2 / 76.4 / 80.4 s per 20 s, fps 46-47 throughout; BFME 1.08 74.7 / 75.5 / 75.9 s).
+- Playing skirmish: not reached. Two runs of `learn-aotr-skirmish` (quota alone, then pinned to 4 cores) spent their
+  900 s in the skirmish load (5-7 fps loading screen, render worker busy 9.2-10.1 s per 10 s); those frames are not
+  plain from their first partial clear, so the switch changes nothing there.
+- Images: a reused frame issues no GL call and hands nothing over, so the page keeps the exact image of the previous
+  frame, which the unit test shows is the image the reused frame's commands would make; when reuse applies the page's
+  image is the previous one by construction.
+
+Decision: **off by default** (`ORTHROS_STATIC_REUSE` unset). It wins on no measured scene: the only reusable frames seen
+are part of RotWK's first screens (60 of 167 frames in one 10 s window), and the GPU process's cost does not come from
+rasterizing static frames. Kept behind the switch (and its count mode, `=2`, which names why each scene's frames
+differ) for games with truly static screens (paused games, still menus, dialog boxes); with the switch off the replayer
+calls the replay directly (no copy, no comparison). Not validated: screenshots of a reused frame against a rendered one
+(no measured scene reuses long enough; the image is the previous one by construction), a real GPU (none here).
+
+What would help GPU-less machines, from these numbers: fewer GPU-process wake-ups, not fewer pixels (any activity at
+10 fps or more keeps SwiftShader's pool hot), and benchmarks that model a 4-core PC by pinning
+(`ORTHROS_BROWSER_CPUS`) rather than by a quota alone, which makes the emulator wait out throttled periods that a real
+4-core machine does not have.
+
 ## Appendix: how the numbers were taken
 
 Each run: `tools/with-browser-slot.sh node tools/headless.mjs <manifest> --gl-discard --timescale 1.5 --learn <copy of

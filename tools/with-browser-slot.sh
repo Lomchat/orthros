@@ -17,7 +17,13 @@ memmin=${ORTHROS_MEM_MIN_GB:-12}
 mem=${ORTHROS_BROWSER_MEM:-12G}
 scope=()
 if [ "$mem" != "0" ] && command -v systemd-run >/dev/null && systemd-run --scope --quiet -p MemoryMax=64M -- true 2>/dev/null; then
-  scope=(systemd-run --scope --quiet -p "MemoryMax=$mem" -p MemorySwapMax=0 -p "CPUQuota=${ORTHROS_BROWSER_CPU:-400%}" -p CPUWeight=20 --)
+  scope=(systemd-run --scope --quiet -p "MemoryMax=$mem" -p MemorySwapMax=0 -p "CPUQuota=${ORTHROS_BROWSER_CPU:-400%}" -p CPUWeight=20)
+  # ORTHROS_BROWSER_CPUS=<cpu list> (e.g. 44-47): the browser also pinned to those cores. A quota alone on this 48-core
+  # host lets SwiftShader's 16 worker threads burn the quota in a few ms of each 100 ms period, then the whole scope —
+  # the emulator's thread included — is throttled for the rest (docs/render-worker.md section 11): pinned, the model is
+  # closer to a real 4-core PC
+  [ -n "${ORTHROS_BROWSER_CPUS:-}" ] && scope+=(-p "AllowedCPUs=$ORTHROS_BROWSER_CPUS")
+  scope+=(--)
 fi
 while :; do
   load=$(cut -d' ' -f1 /proc/loadavg)

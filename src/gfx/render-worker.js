@@ -11,7 +11,8 @@ import { GuestMemory } from '../cpu/memory.js';
 import { refreshApiOpt } from '../core/api-opt.js';
 
 let ctl = null, port = null, replayer = null, backend = null, canvas = null;
-const replay = { ms: 0, frames: 0, commands: 0, waitMs: 0 };
+const lastSf = { frames: 0 };
+const replay = { ms: 0, frames: 0, commands: 0, waitMs: 0, reused: 0 };
 const log = (msg) => port?.postMessage({ type: 'log', kind: 'gfx', msg });
 
 self.onmessage = (e) => {
@@ -45,10 +46,12 @@ function init(m) {
       replay.frames++;
       Atomics.store(ctl, CTL.SHOWN, frame); Atomics.notify(ctl, CTL.SHOWN);
     },
+    // (static-frames.js: a frame equal to the ones before it, not rendered — the page keeps showing the same image)
+    onReuse: (mirror, frame) => { replay.reused++; Atomics.store(ctl, CTL.SHOWN, frame); Atomics.notify(ctl, CTL.SHOWN); },
     onReadback: (ticket) => { publishTail(ctl, replayer); Atomics.store(ctl, CTL.READBACK, ticket); Atomics.notify(ctl, CTL.READBACK); },
     onCanvas: (w, h) => { if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; } },
   });
-  canvas.addEventListener?.('webglcontextrestored', () => Atomics.add(ctl, CTL.EPOCH, 1));
+  canvas.addEventListener?.('webglcontextrestored', () => { replayer.staticFrames?.reset(); Atomics.add(ctl, CTL.EPOCH, 1); });
   Atomics.store(ctl, CTL.READY, 1);
   self.postMessage({ type: 'ready', renderer: String(backend.gl.getParameter(backend.gl.RENDERER)) });
   setInterval(postStats, 500);
@@ -59,7 +62,15 @@ function postStats() {
   const pc = backend.programCache, devices = [];
   for (const [id, m] of replayer.devices) if (m.gfx) devices.push([id, { ...m.gfx.stats }]);
   const pcs = { queueLength: pc.queue.length, started: pc.started, hits: pc.hits, pending: pc.pending, resolved: pc.resolved ?? 0, caughtUp: pc.caughtUp ?? 0, resolveMs: pc.resolveMs ?? 0, resolveMaxMs: pc.resolveMaxMs ?? 0, polls: pc.polls ?? 0, pollMs: pc.pollMs ?? 0, startMs: pc.startMs ?? 0, resolvedHits: pc.resolvedHits ?? 0, parallel: pc.parallel };
-  self.postMessage({ type: 'stats', devices, programCache: pcs, replay: { ...replay, commands: replayer.commands } });
+  const sf = replayer.staticFrames?.stats;
+  self.postMessage({ type: 'stats', devices, programCache: pcs, replay: { ...replay, commands: replayer.commands, staticFrames: sf ? { ...sf } : null } });
+  // (static frames: logged every 10 s while frames are presented)
+  if (sf && sf.frames !== lastSf.frames && (lastSf.at = (lastSf.at ?? 0) + 1) % 20 === 0) {
+    const d = (k) => sf[k] - (lastSf[k] ?? 0);
+    log(`render worker: static frames over 10 s: ${d('frames')} presented, ${d('plain')} plain, ${d('equal')} equal to the previous one, ${d('reused')} shown again without rendering, ${d('released')} held then released, ${d('notPlain')} not plain, ${d('dependent')} reading their targets' contents${sf.equalDependent !== undefined ? ` (${d('equalDependent')} of them equal to the previous one)` : ''} (mode ${replayer.staticFrames.m}); render ${(replay.ms - (lastSf.ms ?? 0)).toFixed(0)} ms${sf.why ? `; why not: ${JSON.stringify(sf.why)}` : ''}`);
+    if (sf.why) replayer.staticFrames.stats.why = null;
+    Object.assign(lastSf, sf, { ms: replay.ms });
+  }
 }
 
 /** GL programs of earlier sessions compiled ahead, this session's new ones sent back (as the in-thread path does) */
