@@ -2357,6 +2357,88 @@ decode brotli itself (`DecompressionStream` has gzip and deflate, not brotli, in
 on each request (the launch set's are the same for every new player: cut at fixed places of the learned order, they
 could be made ahead like the units).
 
+## The data worker of the Windows games (2026-11-11)
+
+The engines that run in the page read their data in a worker of their own (`src/vfs/data-worker.js`); the Windows
+games read it on the emulator's worker, the guest's thread: fetches, decompression, `installBlock`, the learned order's
+background fill, the prediction of opens and the OPFS writes shared that thread with the guest, and a read that missed
+cut the scheduler's slices to 2 ms (`readSliceMs`) so that the event loop could complete it. Now (CLAUDE.md
+"Standardization") the Windows games can use the same data worker — **off by default** (measurements below: no gain
+beyond noise yet where the link is not thin), `?dbg=ORTHROS_DATA_WORKER=1` (`--dbg` in the harness; read at the start,
+no in-session A/B: the reader is chosen when the game data opens):
+
+- **One module boundary**: `src/vfs/data-link.js` is the emulator's side (`DataLink`, `RemoteBackend` — the mounted
+  version's tree, its stat/readdir/open as `PartsBackend`'s, through game-tree.js —, `RemoteFile` — HttpFile's interface:
+  `size`, `prepare`, `read(off, len, into)`, `close`); `data-worker.js`'s `w32*` functions the worker's (the version
+  opened with `openVersion`, a `PartsBackend` per mounted version for its predictor, the stores as the emulator opened
+  them, `prefetchAll` / `wholeDownload` as the engines'); `src/vfs/shared-blocks.js` the memory between them.
+- **The block cache is shared memory**: one `SharedArrayBuffer` of 1 MiB slots (`cacheBlocks` per mounted version, as
+  the parts' memory budget was), each a block of one file or the 64 KiB pieces of it that are here (a mask). The data
+  worker writes every network arrival there (`HttpBackend.arrivals`) and what it has of a read it served (memory,
+  store); the emulator reads a hit with a plain copy straight into guest memory under a seqlock (a slot's `gen`, odd while
+  the slot changes hands; a torn copy is a miss). Slots found through an open-addressing table, replaced by CLOCK (the
+  emulator marks what it reads). File keys come from the mounted trees on both sides (`fileKeys`).
+- **The reader's state follows every read**: a hit is noted in a ring (handle, offset, end), the data worker replays the
+  notes every 4 ms and before any request through `HttpFile.seen` — the bookkeeping half of `readNow` (`track`: the
+  learned order's position, sequence and stream detection, read counters) and the read-ahead it starts. The read log
+  (ReadLog, the playable mark) stays on the emulator, told at each read as before; a session restored from a snapshot
+  gets the reads the server did not learn from the data worker (`takeUnlearned` is the reader's).
+- **A miss**: `ReadFile`'s parked read (`prepare`) asks the data worker by message and waits up to 2 ms
+  (`ORTHROS_DATA_QUICK_MS`) for its first answer: here (memory, store: no park) or "needs the network" (the guest thread
+  parks; the other threads run). Its completion shows in shared memory (`p.ready()`, polled by the scheduler between
+  slices: `vm.readsPolled`, no 2 ms slices for it) and by message (the worker's event loop wakes when every thread
+  waits). A read that cannot park (a nested wait, `_lread`, a mapped view, the loader) waits in `Atomics.wait` for the
+  data worker's answer (an answer buffer grown as needed); a dead data worker fails it after 30 s without heartbeat.
+  OVERLAPPED / file pointer semantics are kernel32's, unchanged above the file interface.
+- **Memory**: the shared blocks hold what the emulator's cache held (256 MiB a mounted version); the data worker's own
+  reader keeps 64 blocks (`ORTHROS_DATA_OWN_BLOCKS`) plus its pieces (64 MiB at most, as before).
+- **The emulator's statistics** read the reader through views of the same shapes (`DataLink.views`: the NetLink
+  snapshot, the parts' counters, the prefetch's and offline copy's progress — every 250 ms); the exit report adds a
+  `[report] data worker:` line (reads answered from the shared blocks, sent to the data worker, parked, torn copies,
+  slots replaced, notes dropped).
+- **Tests**: tests/http-backend-fuzz.test.js "data worker (randomized)" — the data worker in a worker thread
+  (tests/data-worker-shim.js), two shared slots for 15 MB of files, random reads, seeks, parked reads, handles opened
+  and closed, every read compared with the reader on the test's thread and with the files' bytes.
+
+Measured 2026-11-11 (tools/headless.mjs, headless Chromium + SwiftShader, `--gl-discard`, a copy of the server's
+learned dir unless said; the server shared with one or two other agents' browsers; A = data worker, B = the reader on
+the emulator thread; ABBA order; phase seconds from the scenario's marks; shares of the frame accounting):
+
+| case | A | B |
+|---|---|---|
+| Age of the Ring, MY CAPTAINS load, 8 cores | 40.7 / 48.1 / 37.5 s | 40.6 / 38.7 / 38.7 s |
+| Age of the Ring, skirmish load + loading screen, 8 cores | 22.3 / 22.0 s | 23.1 / 21.7 s |
+| RotWK 2.02, skirmish load + loading screen (1024x768), 8 cores | 16.8 / 17.2 s | 16.7 / 17.8 s |
+| Age of the Ring, MY CAPTAINS load, 4 cores | 84.4 / 132.7 s | 73.7 / 91.6 s |
+| Age of the Ring first visit (empty learned dir), launch → menu, 50 ms / 10 Mbit/s | 297.5 / 304.0 / 274.0 / 271.9 s | 273.1 / 272.1 / 277.0 / 270.9 / 296.4 s |
+| Age of the Ring launch, 50 ms / 0.68 Mbit/s (~85 KB/s), 420 s | launcher done, game.dat running, 20.0 MB received, stats every second | the emulator worker blocked from t = 6 s to the end in one synchronous request (no stats for 400 s), 5.2 MB delivered |
+
+- **Where the time went**: the emulator worker's `late` (coming back to it later than planned) falls — MY CAPTAINS
+  11-13 % against 19-21 %, the skirmish's loading screen 6 % against 14-18 %, RotWK's load 3-5 % against 25-28 % — and
+  becomes `sleep` / `ioWait` (the worker idle while the data worker fetches: MY CAPTAINS sleep 16-19 % against 15-17 %,
+  RotWK load ioWait 17-34 % against 24 %); `io` 3 % against 4 %. The loads themselves are bound by the guest's work and
+  its pacing on a local link: their times do not move beyond the noise.
+- **Reads**: MY CAPTAINS — 2.05 M reads answered from the shared blocks, 48-50 sent to the data worker (0.5 s waited in
+  all: the loader's reads), ~1 900 asynchronous reads (26-40 answered within 2 ms, the rest parked), 0 torn copies, 0
+  notes dropped; ~8 000 blocks published, ~7 400 slots replaced (every network arrival goes there). Node micro-benchmark
+  of a read inside cached blocks (prepare + read): 16 B 0.48-0.56 µs against 0.49 µs, 256 B 0.51 against 0.50 µs, 4 KiB
+  0.85-0.88 against 0.61-0.67 µs (a copy out of a SharedArrayBuffer into an ordinary array is slower; guest memory is
+  shared memory itself).
+- **First visit at 10 Mbit/s**: the demand requests' total time looks larger (74-75 s against 44-45 s in
+  `[report] connection`) only because the data worker fetches a synchronous read's blocks in parallel (game.dat, 11 MB:
+  eight 1 MiB requests side by side, 4.2 → 8.4 s, against one request, 3.4 → 7.7 s); the wall time the game waited
+  on demand requests is the same (26.8 against 27.4 s, union of the intervals in `--net-trace`). The first A run, before
+  `HttpFile.seen` wanted the blocks read from their pieces whole as `readPieces` does, brought 44 MB in the background
+  instead of 126 MB; fixed.
+- **4 cores**: the data worker shares the cores with the emulator, its render worker and SwiftShader; the emulator waited
+  3.0 s for the data worker's first answers in the slow A run (`QUICK_MS`), 1.4 s at 8 cores.
+- **The thin link**: the reader on the emulator's thread made a synchronous request for the program image's blocks and
+  the worker stayed blocked for the rest of the run; with the data worker the emulator's worker stays responsive and the
+  launch goes on. One run each: to be confirmed before the default changes.
+
+Next: the first answer's wait (2 ms, a parked read pays it whenever the data worker is busy) shorter or gone
+(`Atomics.waitAsync`), a thin-link launch measured to the menu, then the default reconsidered.
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a
