@@ -944,8 +944,9 @@ export class HttpBackend {
     } catch { rest(null); } finally {
       this.net.end(tok, wire, total, ok);
       if (alone) {
-        const w = turn.w ?? {};
-        await Promise.all(runs.map((r, i) => this.fetchBackground(r.path, r.start, r.end, null, false, false, { ...turn, w }).then((d) => deliver(i, d), () => deliver(i, null))));
+        // (in the batch's own turn — asking the link again from inside it waited for that turn: a session without batches
+        // on the server, or a proxy refusing them, never got its bytes)
+        await Promise.all(runs.map((r, i) => this.fetchBackgroundNow(r.path, r.start, r.end, null, false, false, reason).then((d) => deliver(i, d), () => deliver(i, null))));
         next = runs.length;
       }
     }
