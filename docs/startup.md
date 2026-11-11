@@ -468,6 +468,6 @@ player meets first — Age of the Ring's MY CAPTAINS, a skirmish start): the lea
 browser (`tools/warm-learn.mjs`, one slot, one after the other), and the server records those played to their end
 (every wait met) by name and content hash (`<learn>/snapshots/learned-scenarios.json`): a version is queued again until
 each of its current learn scenarios was played, so a version whose boot was learned by its publish session still gets
-its menus learned, and an edited scenario is played again. Scenario files are data; `--coords WxH` scales their pointer
+its menus learned, and an edited scenario is played again (one that never reaches its end is given up after two tries). Scenario files are data; `--coords WxH` scales their pointer
 steps to the game's mode (a first launch may pick another resolution than the one they were written for). Measured:
 docs/snapshot.md "Warm jobs".

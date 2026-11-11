@@ -232,7 +232,12 @@ the first declared) and queues **one job at a time**:
   scenario that lists the version (at most 300 s), else boots it for 150 s — so the reads, heat and GL programs of those
   loads are learned. The scenarios played to their end (every wait met) are told to the server with the job's token
   (`POST /api/warm-learned/<m>`) and kept by name and content hash (`<learn>/snapshots/learned-scenarios.json`): an edited
-  scenario is played again. (A publish session teaches the boot's lists as well, so a version without snapshot gets its
+  scenario is played again; one that did not reach its end (a screen never shown) is told too and given up after two
+  tries (`LEARN_TRIES`), so a broken scenario does not take a browser every 6 h. Learn scenarios listed (2026-11-11):
+  Age of the Ring MY CAPTAINS and a skirmish start (`learn-aotr-*.txt`, written and checked on 10.0), RotWK 2.02
+  MY HEROES (`learn-rotwk-heroes.txt`, the docs/slow-network.md clicks, not run as a learn job), and the bench suite's
+  skirmish starts of RotWK, BFME II and BFME (their `*-short.txt` / `bfme1-skirmish.txt`, 800x600 coordinates scaled by
+  `--coords`; not run as learn jobs). BFME II's Create-a-Hero is not listed (its menu coordinates not known). (A publish session teaches the boot's lists as well, so a version without snapshot gets its
   learn job after the publish.)
 
 The next job is queued when the previous one reached its goal or after two hours (a failed key is not tried again for 6 h:
@@ -266,8 +271,11 @@ browser slots' default 4-core cap for the jobs, one run each):
   --expect-restored`) downloaded 52.4 MB and restored it in 1.9 s, at the main menu (SOLO PLAY … MY CAPTAINS).
 - *Learn* (the snapshot copied into an empty learn directory, `--warm-jobs`): the server queued `learn`; `aotr-captains`
   reached the menu at 193 s and the Create-a-Hero screen at 397 s (played: recorded); `aotr-skirmish` reached the
-  skirmish's loading screen at 261 s and was still on it at its 900 s limit (4 of 5 waits: not recorded — its limit is
-  1 500 s since). A restored session's same skirmish load took ~40 s (learned lists of the live server).
+  skirmish's loading screen at 261 s and was still on it at its 900 s limit (4 of 5 waits: not recorded; cause not
+  found — its limit is 1 500 s since). The first-launch profile those sessions taught then made the snapshot stale
+  ("made from another first-launch profile"): the server published again (367 MiB, published at 177 s, "3 kept, 3
+  published" in 745 s), then queued `learn` once more, which played only `aotr-skirmish` ("1 played already"): menu
+  at 133 s, loading screen 193-216 s, play at 216 s, recorded, 277 s in all.
 - *MY CAPTAINS first visit at the owner's link* (`--net 50:10`, fresh browser, no snapshot, `learn-aotr-captains.txt`,
   the click 4 s after the menu; browser cap raised to 8 cores for both runs):
 
