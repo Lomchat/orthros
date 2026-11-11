@@ -7,7 +7,7 @@ const BATCH = 16; // commands between two publications of the words consumed
 
 /** the words consumed so far, published for the emulator (notified when it waits) */
 export function publishTail(ctl, replayer) {
-  Atomics.store(ctl, CTL.TAIL, replayer.reader.consumed % TWO32 | 0);
+  Atomics.store(ctl, CTL.TAIL, replayer.tail() % TWO32 | 0);
   if (Atomics.load(ctl, CTL.EMU_WAIT)) Atomics.notify(ctl, CTL.TAIL);
 }
 
@@ -53,6 +53,8 @@ export async function replayLoop(ctl, replayer, backend, stats, stop = () => fal
       if (t1 - lastYield > 8) { await yieldTask(); lastYield = performance.now(); late(lastYield - t1, 'a return to the event loop'); }
       continue;
     }
+    // (caught up with a frame held — static-frames.js — while the emulator waits for its commands: they are replayed now)
+    if (replayer.staticFrames?.heldFrom != null && Atomics.load(ctl, CTL.EMU_WAIT)) { replayer.staticFrames.release(null); publishTail(ctl, replayer); continue; }
     if (!idle) { idle = true; backend?.afterSlice(); }
     if (backend && !backend.device) backend.prewarm();
     Atomics.add(ctl, CTL.HEARTBEAT, 1);
