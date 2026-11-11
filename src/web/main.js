@@ -97,6 +97,7 @@ const TEXT = {
 
 /** Centered message over the stage: progress while the game starts, or an error (with its report) that stays. */
 const STALE_RELOAD = 'orthros.staleReload';
+const SHARED_FAILED = 'orthros.sharedSnapshotFailed:';
 /** The page's code is older than the server's (the emulator's worker did not load): one reload, then an error. */
 function staleCode() {
   let tried = null; try { tried = sessionStorage.getItem(STALE_RELOAD); } catch { /* storage off */ }
@@ -369,6 +370,8 @@ async function hasProfile(key) {
  */
 async function sharedSnapshot(name, key, lang) {
   if (params.get('snapshot') === 'publish' || await hasProfile(state.profileKey ?? name)) return null;
+  // (a shared snapshot that failed to restore in this tab — a reload follows the failure — is not tried again: a normal boot)
+  try { if (sessionStorage.getItem(SHARED_FAILED + key)) return null; } catch { /* storage off */ }
   const ctl = new AbortController();
   try {
     const r = await fetch(`/api/snapshot/${encodeURIComponent(name)}?key=${key}&lang=${encodeURIComponent(lang ?? '')}`, { signal: ctl.signal });
@@ -433,6 +436,7 @@ function onWorkerMessage(m) {
     case 'snapshot-drop': state.snapshotPending = null; break; // (the profile changed after it: taken again later)
     case 'snapshot-failed': // (a restore that failed midway: started again without the snapshot)
       log('crash', `the snapshot could not be restored: ${m.error}`); state.snapshotFailed = m.error;
+      if (state.snapshotFrom === 'shared') try { sessionStorage.setItem(SHARED_FAILED + state.snapshotKey, '1'); } catch { /* storage off */ } // (else the reload fetches it again: a loop)
       dropSnapshot(state.manifest).then(() => { if (!headless) location.reload(); });
       break;
     case 'log': log(m.kind, m.msg); break;
