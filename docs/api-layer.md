@@ -598,6 +598,14 @@ at once with its exact result:
   `texHook = -1`). `GetDesc` / `GetLevelDesc` never wait (the description is exact at return). A snapshot settles every job
   first (`captureVm`) and copies the kept RGBA out of shared memory. A level with a pending job is disarmed for the
   fast lock path (above).
+- **Every guest memory of the page**: one set of helpers serves every machine (Age of the Ring's launcher and its game are
+  two processes, each its own guest memory): a job names its memory (`memId`), handed to the helpers the first time it
+  is used and dropped once collected (`FinalizationRegistry`). (The first version handed the helpers the first machine's
+  memory only: the game's textures came out black in the browser while the Node tests, one machine, passed — found with
+  `ORTHROS_TEX_VERIFY`; `d3dx9-tex-jobs.test.js` now runs its sessions, a memory each, on one set of helpers.)
+- **Debugging**: `ORTHROS_TEX_WAIT=1` waits for each job at once (a missing fence or a wrong result?);
+  `ORTHROS_TEX_VERIFY=1` waits, runs the job again on the game thread and logs the first bytes that differ; a job that
+  throws on a helper is reported back (`d3dx texture job failed on helper N`).
 - **A helper that stops answering** (`timeouts`: 15 s for the first job, 5 s later): the helpers are terminated and the
   jobs not done run on the game thread, in order, from their kept inputs (`takeOver`, `stats.local`).
 - Guest memory must be shared (a render worker or the background translator: the default); otherwise, and with
