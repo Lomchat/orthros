@@ -21,7 +21,8 @@
 //   "presented" without any GL work: the page keeps the image it has. The first command that differs releases the held
 //   prefix, replayed as usual before it. Held commands are not reported consumed until the frame is decided (the
 //   emulator's fences still protect the guest memory they may read); an emulator that waits for them releases them.
-// ORTHROS_STATIC_REUSE (render worker debug global): 0 off, 2 count only (frames that could be reused, none reused).
+// ORTHROS_STATIC_REUSE (render worker debug global): 1 on, 2 count only (frames that could be reused, none reused),
+// unset/0 off — the default: the measured scenes have no reusable frames (docs/render-worker.md 11.3).
 import { OP, OPS, OP_NAMES } from './cmd-ring.js';
 import { RingReader } from './cmd-ring.js';
 import { RS } from './d3d8-shaders.js';
@@ -72,7 +73,7 @@ export class StaticFrames {
     this.memOver = null; // (a held frame's SURF_MEMs: surface id -> memory)
     this.stats = { frames: 0, plain: 0, equal: 0, reused: 0, released: 0, notPlain: 0, dependent: 0 };
   }
-  mode() { const v = globalThis.ORTHROS_STATIC_REUSE; return v === undefined ? 1 : Number(v) || 0; }
+  mode() { return Number(globalThis.ORTHROS_STATIC_REUSE) || 0; } // (off by default: docs/render-worker.md 11.3)
   /** before a run of commands: the switch read (`m`: 0 the commands go straight to the replayer) */
   begin() {
     const m = this.mode();
@@ -154,7 +155,11 @@ export class StaticFrames {
       const same = this.ref.n > 0 && key === this.key && equalFrames(this.cur, this.ref, this);
       if (same) { S.equal++; this.streak++; } else this.streak = 1;
       const t = this.ref; this.ref = this.cur; this.cur = t;
-    } else this.streak = 0;
+    } else {
+      this.streak = 0;
+      // (count mode: frames that would be equal but for reading their targets — what a weaker rule would reuse)
+      if (mode === 2 && this.plain) { if (this.ref.n > 0 && equalFrames(this.cur, this.ref, this)) S.equalDependent = (S.equalDependent ?? 0) + 1; const t = this.ref; this.ref = this.cur; this.cur = t; }
+    }
     this.key = key;
     this.cur.n = 0; this.cur.dn = 0; this.plain = true; this.dep = null; this.tgt.clear(); this.early = this.owners = null;
     // (the next frame held when two equal plain frames precede it)

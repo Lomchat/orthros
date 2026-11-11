@@ -8,6 +8,7 @@ import { Replayer } from '../src/gfx/d3d-mirror.js';
 
 function run(words, produced, reuse, mem) {
   const calls = [], reused = [];
+  globalThis.ORTHROS_STATIC_REUSE = 1; // (off by default)
   const r = new Replayer(words, { mem, ack: null, onReuse: reuse ? (m, f) => reused.push(f) : null, createBackend: () => ({
     rscale: 1, clear: () => calls.push('clear'), drawPrimitive: () => calls.push('draw'), present: () => calls.push('present'), beginScene() {}, constTouched() {}, bufferUpdated() {},
     drawPrimitiveUP() { calls.push('up'); },
@@ -57,4 +58,5 @@ test('static frames: equal frames after two are reused, any difference renders, 
   for (const f of [...VERSION_FIELDS, 'textures', 'streams', 'fvf']) assert.deepEqual(A.m[f], B.m[f], f);
   assert.deepEqual([...A.m.rs], [...B.m.rs], 'render states');
   assert.deepEqual(A.r.res.get(9).shadow, B.r.res.get(9).shadow, 'buffer bytes');
+  globalThis.ORTHROS_STATIC_REUSE = undefined;
 });

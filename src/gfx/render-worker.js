@@ -67,7 +67,7 @@ function postStats() {
   // (static frames: logged every 10 s while frames are presented)
   if (sf && sf.frames !== lastSf.frames && (lastSf.at = (lastSf.at ?? 0) + 1) % 20 === 0) {
     const d = (k) => sf[k] - (lastSf[k] ?? 0);
-    log(`render worker: static frames over 10 s: ${d('frames')} presented, ${d('plain')} plain, ${d('equal')} equal to the previous one, ${d('reused')} shown again without rendering, ${d('released')} held then released, ${d('notPlain')} not plain, ${d('dependent')} reading their targets' contents (mode ${replayer.staticFrames.m}); render ${(replay.ms - (lastSf.ms ?? 0)).toFixed(0)} ms${sf.why ? `; why not: ${JSON.stringify(sf.why)}` : ''}`);
+    log(`render worker: static frames over 10 s: ${d('frames')} presented, ${d('plain')} plain, ${d('equal')} equal to the previous one, ${d('reused')} shown again without rendering, ${d('released')} held then released, ${d('notPlain')} not plain, ${d('dependent')} reading their targets' contents${sf.equalDependent !== undefined ? ` (${d('equalDependent')} of them equal to the previous one)` : ''} (mode ${replayer.staticFrames.m}); render ${(replay.ms - (lastSf.ms ?? 0)).toFixed(0)} ms${sf.why ? `; why not: ${JSON.stringify(sf.why)}` : ''}`);
     if (sf.why) replayer.staticFrames.stats.why = null;
     Object.assign(lastSf, sf, { ms: replay.ms });
   }
