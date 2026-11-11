@@ -256,3 +256,28 @@ The publish jobs found the page's key (the session refused nothing: "running, ke
 learn job only matters for a version whose snapshot exists but whose lists do not: tested on BFME 1.08 (snapshot copied
 into an empty learn directory: the server queued `learn`, the runner's headless run created the four files). Not
 measured: lists without snapshot (the slots were busy), repeated runs. The baseline's load differs from the warm runs'.
+
+**Age of the Ring, 2026-11-11** (a launcher and its game: "Several processes" above; private servers on copies, the
+browser slots' default 4-core cap for the jobs, one run each):
+- *Publish*: the live runner's sessions of `aotr-10` (and `bfme2-106`) had ended "time is up: 0 kept, 0 published" after
+  1 203 s, every 6 h since 2026-11-10 — no capture was ever tried (the group). With the group captured: first snapshot
+  at 177 s (384.7 MiB, taken in 2.7 s), kept at 207 s, published at 242 s; a later one replaced it (405.5 MiB, 55 MB
+  brotli); "done: 2 kept, 2 published" at 624 s. A new player (fresh browser, `snapshot-browser-check.mjs --once
+  --expect-restored`) downloaded 52.4 MB and restored it in 1.9 s, at the main menu (SOLO PLAY … MY CAPTAINS).
+- *Learn* (the snapshot copied into an empty learn directory, `--warm-jobs`): the server queued `learn`; `aotr-captains`
+  reached the menu at 193 s and the Create-a-Hero screen at 397 s (played: recorded); `aotr-skirmish` reached the
+  skirmish's loading screen at 261 s and was still on it at its 900 s limit (4 of 5 waits: not recorded — its limit is
+  1 500 s since). A restored session's same skirmish load took ~40 s (learned lists of the live server).
+- *MY CAPTAINS first visit at the owner's link* (`--net 50:10`, fresh browser, no snapshot, `learn-aotr-captains.txt`,
+  the click 4 s after the menu; browser cap raised to 8 cores for both runs):
+
+  | learn directory | first frame | menu | click → Create-a-Hero screen | game reads in that load |
+  |---|---|---|---|---|
+  | empty | 531 s | 555 s | 259 s | 1 819 requests, 96.8 MB |
+  | made by the learn job (its two sessions) | 449 s | 473 s | 264 s | 1 787 requests, 95.7 MB |
+
+  The learned lists brought the menu 82 s earlier, but not the first visit of MY CAPTAINS: the load still waited for
+  nearly every read (the learned read-ahead fetched 36 MB in the background during it, as many reads went to the
+  network as without lists). With the click a few seconds after the menu nothing could be fetched before the load;
+  why the read-ahead does not follow this load on a 1.25 MB/s link is not found yet (docs/slow-network.md "A load of
+  loose files"). Not measured: a player who stays in the menu before the click, repeated runs.

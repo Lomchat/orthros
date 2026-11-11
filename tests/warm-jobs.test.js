@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Warmer, defaultLanguage, learnScenario, learnScenarios } from '../src/server/warm-jobs.js';
+import { Warmer, defaultLanguage, learnScenario, learnScenarios, LearnedScenarios, LEARN_TRIES } from '../src/server/warm-jobs.js';
 import { SnapshotQueue } from '../src/server/snapshot-store.js';
 
 test('warmer queues one job at a time: publish first, learn once the snapshot is there, nothing when both are', async () => {
@@ -48,4 +48,18 @@ test('default language as the page picks it; a learn scenario only for a version
   // (a version with learn scenarios: those, each required; a bench scenario is only the fallback)
   const aotr = learnScenarios(root, 'aotr-10');
   assert.ok(aotr.length >= 2 && aotr.every((s) => s.required && /^[\w.-]+:[0-9a-f]{12}$/.test(s.id)));
+});
+
+test('learn scenarios: one played is done, one that never reaches its end is given up after a few tries', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'warm-'));
+  try {
+    const l = new LearnedScenarios(path.join(dir, 'learned.json'));
+    l.add('a', ['menu:000000000000'], ['map:111111111111']);
+    assert.ok(l.done('a', 'menu:000000000000'));
+    assert.ok(!l.done('a', 'map:111111111111'), 'one failure: tried again');
+    for (let i = 1; i < LEARN_TRIES; i++) l.add('a', [], ['map:111111111111']);
+    assert.deepEqual(l.doneIds('a').sort(), ['map:111111111111', 'menu:000000000000']);
+    l.add('a', [], ['menu:000000000000']);
+    assert.ok(l.done('a', 'menu:000000000000'), 'a played one stays played');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

@@ -64,18 +64,27 @@ export const learnTimeout = (root, name) => Math.max(1500, learnScenarios(root, 
 /** The command (after `timeout <s>` and the browser slot guard) a runner starts for a learn job (tools/warm-learn.mjs). */
 export const learnCommand = (name, url, token, out) => ['node', 'tools/warm-learn.mjs', name, '--server', url, '--token', token, '--out', out];
 
+/** a learn scenario that did not reach its end this many times is not queued again until it changes (its id) */
+export const LEARN_TRIES = 2;
+
 /**
  * The learn scenarios a server has seen played to their end, per version (`<learn>/snapshots/learned-scenarios.json`:
- * { [manifest]: { [scenario id]: ISO date } }), told by tools/warm-learn.mjs with its job's token.
+ * { [manifest]: { [scenario id]: ISO date | { failed: n, at } } }), told by tools/warm-learn.mjs with its job's token —
+ * and those that did not reach their end (a screen never shown: coordinates of another release), given up after
+ * LEARN_TRIES: a broken scenario does not take a browser every few hours.
  */
 export class LearnedScenarios {
   constructor(file) { this.file = file; }
   read() { try { return JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch { return {}; } }
-  has(name, id) { return !!this.read()[name]?.[id]; }
-  add(name, ids) {
+  /** Played to its end, or given up. */
+  done(name, id) { const v = this.read()[name]?.[id]; return typeof v === 'string' || (v?.failed ?? 0) >= LEARN_TRIES; }
+  /** The ids of `name` done (tools/warm-learn.mjs skips them). */
+  doneIds(name) { return Object.keys(this.read()[name] ?? {}).filter((id) => this.done(name, id)); }
+  add(name, played, failed = []) {
     const all = this.read(), at = new Date().toISOString();
-    all[name] ??= {};
-    for (const id of ids) all[name][id] = at;
+    const own = all[name] ??= {};
+    for (const id of played) own[id] = at;
+    for (const id of failed) if (typeof own[id] !== 'string') own[id] = { failed: (own[id]?.failed ?? 0) + 1, at };
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file + '.tmp', JSON.stringify(all)); fs.renameSync(this.file + '.tmp', this.file);
   }

@@ -3,7 +3,8 @@
 // --snapshot-jobs or by tools/snapshot-jobs.mjs, inside the browser slot guard): the version's learn scenarios played one
 // after the other against that server (tools/headless.mjs --server-port: the server learns from their reads, GL programs,
 // regions and heat), each on a fresh browser as a new player. A scenario whose every wait was met (it reached the screens
-// it opens) is reported played, with the job's token: the server does not queue it again until it changes.
+// it opens) is reported played, with the job's token: the server does not queue it again until it changes; one that did
+// not reach its end is reported too (given up after a few tries: warm-jobs.js LEARN_TRIES).
 //   tools/with-browser-slot.sh node tools/warm-learn.mjs <manifest> --server <url> --token <token> --out <scratch dir>
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,7 +35,7 @@ const session = (sc, dir) => new Promise((resolve) => {
 // (the learn scenarios the server has seen played already are skipped — all played: the lists are what is missing, all
 // played again)
 const done = new Set(await fetch(`${server}/api/warm-learned/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : []), () => []));
-const all = learnScenarios(root, name), todo = all.filter((sc) => !sc.required || !done.has(sc.id)), plan = todo.length ? todo : all, played = [];
+const all = learnScenarios(root, name), todo = all.filter((sc) => !sc.required || !done.has(sc.id)), plan = todo.length ? todo : all, played = [], failed = [];
 log(`${name}: ${plan.length ? plan.map((s) => s.id).join(', ') : 'the boot only'}${plan.length < all.length ? ` (${all.length - plan.length} played already)` : ''}`);
 for (const sc of plan.length ? plan : [null]) {
   const dir = fs.mkdtempSync(path.join(out, 'session-'));
@@ -42,9 +43,10 @@ for (const sc of plan.length ? plan : [null]) {
   const r = await session(sc, dir);
   fs.rmSync(dir, { recursive: true, force: true });
   log(`${sc?.id ?? 'boot'}: exit ${r.code}, ${r.met}/${waits} waits met${r.met < waits ? ` (last: ${r.status.slice(0, 300)})` : ''}`);
-  if (sc?.required && r.code === 0 && r.met >= waits) played.push(sc.id);
+  if (sc?.required) (r.code === 0 && r.met >= waits ? played : failed).push(sc.id);
 }
-if (played.length) {
-  const res = await fetch(`${server}/api/warm-learned/${encodeURIComponent(name)}?token=${encodeURIComponent(token)}&ids=${encodeURIComponent(played.join(','))}`, { method: 'POST' }).catch((e) => ({ status: e.message }));
-  log(`played ${played.join(', ')}: told the server (${res.status})`);
+if (played.length || failed.length) {
+  const q = new URLSearchParams({ token, ids: played.join(','), failed: failed.join(',') });
+  const res = await fetch(`${server}/api/warm-learned/${encodeURIComponent(name)}?${q}`, { method: 'POST' }).catch((e) => ({ status: e.message }));
+  log(`played ${played.join(', ') || 'none'}${failed.length ? `, not to their end ${failed.join(', ')}` : ''}: told the server (${res.status})`);
 }
