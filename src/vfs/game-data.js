@@ -123,12 +123,13 @@ export function partOf(version, name, path) {
  * @param {{ tree?: object, store?: object|null|'opfs', net?: NetLink, link?: Set<HttpBackend>, session?: string,
  *   budget?: object, cacheBlocks?: number, encoded?: boolean, onFetch?: Function, onRetry?: Function, onRead?: Function }} [o]
  *   store: the block store, 'opfs' for the version's own, null for none; encoded: the compressed ranges (default);
+ *   batch: batched requests (default; HttpBackend.batch);
  *   onRead: each read of the game (path, start, end), whatever answered it
  */
 export async function openData(name, o = {}) {
   const tree = o.tree ?? await json(`/api/tree/${enc(name)}`);
   const store = o.store === 'opfs' ? await openStore(name) : o.store ?? null;
-  const files = new HttpBackend(`/game/${name}/`, tree, { cacheBlocks: o.cacheBlocks, store, encoded: o.encoded ?? true, session: o.session ?? '',
+  const files = new HttpBackend(`/game/${name}/`, tree, { cacheBlocks: o.cacheBlocks, store, encoded: o.encoded ?? true, session: o.session ?? '', batch: o.batch ?? true,
     link: o.link, net: o.net, budget: o.budget, onFetch: o.onFetch, onRetry: o.onRetry, onRead: o.onRead });
   return { name, tree, store, files, total: treeBytes(tree) };
 }

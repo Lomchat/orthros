@@ -234,7 +234,7 @@ export function createServer(opts = {}) {
   // testing: a slower network (opts.net = { delayMs, bytesPerSec }): each range answered after a round trip, its bytes
   // crossing one link shared by the answers in flight (see SimLink)
   const link = opts.net ? new SimLink(opts.net) : null;
-  const viaLink = (res, bytes, go, onStart = null) => { const cancel = link.send(bytes, go, onStart); res.on('close', cancel); };
+  const viaLink = (res, bytes, go, onStart = null, onProgress = null) => { const cancel = link.send(bytes, go, onStart, onProgress); res.on('close', cancel); };
   const send = (res, code, body, extra) => { res.writeHead(code, headers({ 'Content-Type': 'text/plain; charset=utf-8', ...extra })); res.end(body); };
   /**
    * A whole file's answer when the browser has it already (its validators, revalidated: Cache-Control no-cache): 304,
@@ -1685,6 +1685,78 @@ export function createServer(opts = {}) {
     }
   };
 
+  /**
+   * Batched ranges (docs/slow-network.md "Batched requests"): POST /gamezb/<manifest>?p=1 (or w=1: announced), the body
+   * a JSON array [[path, start, end], ...] (end exclusive; paths as /gamez's, light copies' under LIGHT_DIR too). The
+   * answer is the ranges one after another, in the body's order, each framed — its length (u32 little-endian), then its
+   * bytes: the client checks every length against the range it asked before taking the bytes —, compressed together as
+   * one stream (brotli q5
+   * with a window holding the whole batch, else zstd, else gzip — Content-Encoding: the browser decodes it). One round
+   * trip for many small pieces, and the pieces' common bytes compressed once: a mod's .ini files 0.076 of their bytes
+   * on the wire against 0.199 as precompressed 64 KiB units, its near-identical .bse files 0.003 against 0.32 (Age of the
+   * Ring's launch set, measured). Never learned (background or announced only). `items`: [{ file, light, start, end }].
+   */
+  const BATCH_ITEMS = 1024, BATCH_BYTES = 16 << 20;
+  const sendBatchEncoded = (req, res, items, kind) => {
+    const tReq = performance.now();
+    let total = 0;
+    for (const [i, it] of items.entries()) {
+      let st = it.light?.st; if (!st) try { st = fs.statSync(it.file); } catch { return send(res, 404, 'batch item not found'); }
+      // (a range past the file's end is refused, never cut: the file changed since the client's tree was read — a game
+      // updated —, and a shorter item would have shifted the next ones' bytes into it. 416: the client asks each run alone)
+      if (it.end > (it.light ? it.light.copy.size : st.size)) return send(res, 416, 'batch item out of range');
+      it.at = total + 4 * (i + 1); total += it.end - it.start;
+    }
+    if (total > BATCH_BYTES) return send(res, 413, 'batch too large');
+    // (the stream: each item's u32 length, then its bytes)
+    const streamBytes = total + 4 * items.length;
+    const accept = String(req.headers['accept-encoding'] ?? '');
+    const enc = /\bbr\b/.test(accept) ? 'br' : zlib.zstdCompress && /\bzstd\b/.test(accept) ? 'zstd' : /\bgzip\b/.test(accept) ? 'gzip' : null;
+    const reply = (body, encoding) => {
+      netStats.requests++; netStats.raw += total; netStats.sent += body.length;
+      netStats.batches = (netStats.batches ?? 0) + 1; netStats.batchItems = (netStats.batchItems ?? 0) + items.length;
+      const k = netStats[kind]; k.requests++;
+      let finished = false;
+      res.on('finish', () => { finished = true; k.sent += body.length; k.ms += performance.now() - tReq; netTrace?.(`${(tReq / 1000).toFixed(1)} ${((performance.now() - tReq) / 1000).toFixed(2)} ${kind === 'want' ? 'want' : 'bg'} batch:${items.length} ${path.basename(items[0].file)} 0-${total} ${body.length} batch ${items.map((it) => `${path.basename(it.file)}:${it.start}-${it.end}`).join(',')}`); });
+      res.on('close', () => { if (!finished && k.aborted !== undefined) k.aborted++; });
+      // (X-Orthros-Wire-Length: the encoded size, for the client's accounting of the link — a proxy may recode the
+      // answer or drop its Content-Length)
+      const h = headers({ 'Content-Type': 'application/octet-stream', 'Content-Length': body.length, 'X-Orthros-Raw': total, 'X-Orthros-Items': items.length, 'X-Orthros-Wire-Length': String(body.length) });
+      if (encoding) h['Content-Encoding'] = encoding;
+      // (simulated link: the body written as it crosses — a batch is read as it arrives, its first runs before its last)
+      let sent = 0;
+      const go = () => { if (!res.headersSent) res.writeHead(200, h); res.end(body.subarray(sent)); };
+      if (link) viaLink(res, body.length, go, () => { res.writeHead(200, h); res.flushHeaders(); }, (n) => { const upto = n - (n % 16384); if (upto > sent) { res.write(body.subarray(sent, upto)); sent = upto; } }); else go();
+    };
+    const readAll = (buf, done) => {
+      let left = items.length, failed = null;
+      const one = (err) => { failed ??= err; if (--left === 0) done(failed); };
+      for (const it of items) {
+        if (it.light) { readLight(it.file, it.light.copy, it.start, it.end, buf, it.at, one); continue; }
+        fs.open(it.file, 'r', (err, fd) => {
+          if (err) return one(err);
+          fs.read(fd, buf, it.at, it.end - it.start, it.start, (err2, n) => { fs.close(fd, () => {}); one(err2 ?? (n === it.end - it.start ? null : new Error('short read'))); });
+        });
+      }
+    };
+    encodeSlot(kind, () => !res.destroyed, (release) => {
+      const buf = Buffer.alloc(streamBytes);
+      for (const it of items) buf.writeUInt32LE(it.end - it.start, it.at - 4);
+      readAll(buf, (err) => {
+        if (err) { release(); return send(res, 500, String(err)); }
+        if (!enc) { release(); return reply(buf, null); }
+        const t0 = performance.now();
+        const done = (err3, out) => {
+          release(); netStats.encodeMs += performance.now() - t0;
+          if (!err3 && out.length < buf.length * 0.92) reply(out, enc); else reply(buf, null);
+        };
+        if (enc === 'br') zlib.brotliCompress(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length, [zlib.constants.BROTLI_PARAM_LGWIN]: brWindow(buf.length) } }, done);
+        else if (enc === 'zstd') zlib.zstdCompress(buf, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }, done);
+        else zlib.gzip(buf, { level: 4 }, done);
+      });
+    }, () => {});
+  };
+
   // (a game's saves on the account under its versions' profile keys — and, readable, under the versions' names the
   // copies of before; nothing else)
   const accountApi = opts.accountsDir ? createAccountApi(opts.accountsDir, { publicOrigin: opts.accountOrigin, allowedGame: (game) => manifests.has(game) || profiles().has(game) || !!getManifest(game),
@@ -1842,6 +1914,28 @@ export function createServer(opts = {}) {
         const announced = !!url.searchParams.get('w');
         if (rm && !url.searchParams.get('p') && !announced && !man.baseOf) learnRead(m[1], m[2], Number(rm[1]), Number(rm[2]), url.searchParams.get('s'));
         return sendRangeEncoded(req, res, file, r, announced ? 'want' : url.searchParams.get('p') || url.searchParams.get('a') ? 'bg' : 'demand', light);
+      }
+      // batched ranges: POST /gamezb/<manifest>?p=1|w=1, body [[path, start, end], ...] (sendBatchEncoded)
+      m = /^\/gamezb\/([^/]+)$/.exec(p);
+      if (m) {
+        if (req.method !== 'POST') return send(res, 405, 'POST only');
+        const man = dataManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
+        let body = '', size = 0;
+        req.on('data', (d) => { size += d.length; if (size <= 1 << 20) body += d; });
+        req.on('end', () => {
+          if (size > 1 << 20) return send(res, 413, 'too large');
+          let list; try { list = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+          if (!Array.isArray(list) || !list.length || list.length > BATCH_ITEMS) return send(res, 400, 'bad batch');
+          const items = [];
+          for (const e of list) {
+            if (!Array.isArray(e) || typeof e[0] !== 'string' || !Number.isSafeInteger(e[1]) || !Number.isSafeInteger(e[2]) || e[1] < 0 || e[2] <= e[1]) return send(res, 400, 'bad item');
+            const light = e[0].startsWith(LIGHT_DIR + '/') ? resolveLightFile(man, e[0], listings, { contentLight: engineContentLight(man) }) : null;
+            const file = light ? light.file : resolveGameFile(man, e[0], listings); if (!file) return send(res, 404, 'batch item not found');
+            items.push({ file, light, start: e[1], end: e[2] });
+          }
+          sendBatchEncoded(req, res, items, url.searchParams.get('w') ? 'want' : 'bg');
+        });
+        return;
       }
       m = /^\/api\/regions\/([^/]+)$/.exec(p);
       if (m) {

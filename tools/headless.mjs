@@ -51,6 +51,7 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 let afterWait = false;
 let pagePointer = null, benchDone = false; // (the pointer position of the pageclick / pagemove steps)
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
+let scenarioQuit = false; // (a `quit` step: the run ends at the next turn)
 if (control) fs.writeFileSync(control.file, '');
 // --input-file <file>: the scenario from a file (new lines separate steps as ';' does, '#' lines are comments)
 // --account <name>:<password>: signed in to an Orthros account before the game (see below)
@@ -65,7 +66,8 @@ fs.mkdirSync(out, { recursive: true });
 // (e.g. --net 50:0.68 ~85 KB/s, 50:8 ~1 MB/s, 50:40 ~5 MB/s; tools/check/slow-net-check.mjs runs a bench at such speeds);
 // --net-trace <file>: one line per compressed range answered (start s, duration s, demand/bg, file, range, bytes)
 const netOpt = opt('net') ? opt('net').split(':').map(Number) : null;
-// --br-cache <dir>: the server's precompressed transport units there (src/server/br-cache.js; none without it)
+// --br-cache <dir>: the server's precompressed transport units there (src/server/br-cache.js; none without it);
+// --br-cache-frozen: served as they are, none made (a copy of the live server's: the same units in every run)
 // --learn <dir>: the server keeps the learned prefetch order and GL programs there (see server.js); --programs 0: no
 // programs compiled ahead; --memprefetch: the page prefetches
 // into memory (no persistent profile needed); --prefetch 0: no prefetch
@@ -80,7 +82,7 @@ if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // --bench <name>: the page's bench mode (?bench=<name>, tools/scenarios/bench, docs/real-machine-bench.md): the page
 // plays the scenario itself (with --ui its banner's start button is clicked); the run ends with the bench's record
 if (opt('telemetry')) fs.mkdirSync(opt('telemetry'), { recursive: true });
-const server = opt('server-port') ? null : createServer({ telemetryDir: opt('telemetry'), extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), brCacheDir: opt('br-cache'), gamesDir: opt('games-dir'), learnWriteMs: 2000, netTrace: opt('net-trace'), profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
+const server = opt('server-port') ? null : createServer({ telemetryDir: opt('telemetry'), extra: extraManifests, net: netOpt ? { delayMs: netOpt[0], bytesPerSec: netOpt[1] * 125000 } : null, learnDir: opt('learn'), brCacheDir: opt('br-cache'), ...(args.includes('--br-cache-frozen') ? { brCacheOptions: { generate: false } } : {}), gamesDir: opt('games-dir'), learnWriteMs: 2000, netTrace: opt('net-trace'), profileSeedQuorum: opt('profile-seed-quorum') ? Number(opt('profile-seed-quorum')) : undefined });
 // OPFS storage is per origin: a persistent browser profile needs a stable port (--port, default 8123 with --opfs)
 if (server) await new Promise((r) => server.listen(Number(opt('port', opt('opfs') ? 8123 : 0)), '127.0.0.1', r));
 const port = server ? server.address().port : Number(opt('server-port'));
@@ -210,7 +212,7 @@ async function printNetStats() {
     const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json();
     if (!ns.requests) return;
     const MB = (n) => (n / 1048576).toFixed(1);
-    console.log(`[net] compressed ranges: ${ns.requests} requests, ${(ns.raw / 1048576).toFixed(0)} MB read, ${(ns.sent / 1048576).toFixed(0)} MB sent (${(100 * ns.sent / ns.raw).toFixed(0)} %), encoding ${ns.encodeMs.toFixed(0)} ms, ${ns.cacheHits} cache hits`);
+    console.log(`[net] compressed ranges: ${ns.requests} requests, ${(ns.raw / 1048576).toFixed(0)} MB read, ${(ns.sent / 1048576).toFixed(0)} MB sent (${(100 * ns.sent / ns.raw).toFixed(0)} %), encoding ${ns.encodeMs.toFixed(0)} ms, ${ns.cacheHits} cache hits${ns.batches ? `, ${ns.batches} batches of ${ns.batchItems} runs` : ''}`);
     if (ns.demand) console.log(`[net] demand ${ns.demand.requests} requests ${MB(ns.demand.sent)} MB (mean ${(ns.demand.ms / Math.max(1, ns.demand.requests)).toFixed(0)} ms); background ${ns.bg.requests} requests ${MB(ns.bg.sent)} MB delivered, ${ns.bg.aborted} aborted`);
   } catch { /* no stats */ }
 }
@@ -489,6 +491,7 @@ for (;;) {
   // --control <file>: commands appended to that file while the game runs ("click:x,y", "rclick:x,y", "move:x,y",
   // "key:vk", "text:abc", "down:x,y", "up:x,y", "shot", "quit"), executed at once — an interactive session driven from
   // outside (e.g. `echo click:400,300 >> ctl; echo shot >> ctl`), screenshots reported as [shot] lines
+  if (scenarioQuit) { await printNetStats(); await saveProfile(); break; }
   if (control) {
     let size = 0; try { size = fs.statSync(control.file).size; } catch { /* not yet */ }
     if (size > control.pos) {
@@ -546,6 +549,7 @@ for (;;) {
     if (ev.kind === 'spin') { await page.evaluate((pct) => { const src = `const a = new Float64Array(1 << 19), s = new Int32Array(new SharedArrayBuffer(4)); let x = 0, i = 0; for (;;) { const t0 = performance.now(); while (performance.now() - t0 < ${pct / 10}) { for (let k = 0; k < 4096; k++, i = (i + 8) & ((1 << 19) - 1)) { a[i] += x; x = x * 0.999 + 1; } } Atomics.wait(s, 0, 0, ${10 - pct / 10}); }`; window.__spin = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))); }, ev.args[0] || 25); continue; }
     if (ev.kind === 'end') { stopSeen ??= Date.now(); continue; } // (end: the run ends now, as at its time limit — a scenario timed to a mark needs no more)
     if (ev.kind === 'net') { const l = server?.simLink; if (l) { l.advance?.(); l.delayMs = ev.args[0]; l.rate = ev.args[1] * 125000 / 1000; l.schedule?.(); console.log(`[net] link now ${ev.args[0]} ms, ${ev.args[1]} Mbit/s at ${t.toFixed(0)} s`); } else console.log('[net] no simulated link (--net)'); continue; } // (net:<ms>,<Mbit/s> — the simulated link changed now: a launch on a fast link, the step measured on a slow one)
+    if (ev.kind === 'quit') { ev.done = true; scenarioQuit = true; console.log(`[end] quit by the scenario at ${t.toFixed(0)}s`); break; } // (quit: the run ends here — a timed load measured, nothing more to wait for)
     if (ev.kind === 'dbg') { await page.evaluate((kv) => window.orthros.worker?.postMessage({ type: 'dbg', kv }), String(ev.args[0])); continue; } // (dbg:NAME=value — a worker debug global set now, as --dbg sets them at start: A/B switches within one session)
     // mark:<label> — a phase boundary: worker-thread and GPU-process CPU since the previous mark, and the worker's
     // texture work / API time over the phase (logged as [gfx] mark)
@@ -554,7 +558,7 @@ for (;;) {
       if (markState) { let best = 0, next = 0, gpu = 0; for (const [k, v] of ticks) { const d = v - (markState.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else if (d > best) { next = best; best = d; } else if (d > next) next = d; } console.log(`[cpu] phase ${markState.label} -> ${ev.args[0]}: ${(t - markState.t).toFixed(0)} s, worker thread ${(best / 100).toFixed(1)} s CPU, next worker thread ${(next / 100).toFixed(1)} s CPU, GPU process ${(gpu / 100).toFixed(1)} s CPU, ${frames - markState.frames} frames`); }
       markState = { ticks, frames, t, label: ev.args[0] };
       // (what the network had carried by then: time to a phase on a simulated link reads with it)
-      try { const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json(); if (ns.demand) console.log(`[mark] ${ev.args[0]} at ${t.toFixed(0)} s: ${(ns.sent / 1048576).toFixed(1)} MB sent (demand ${(ns.demand.sent / 1048576).toFixed(1)} MB in ${ns.demand.requests} requests, background ${(ns.bg.sent / 1048576).toFixed(1)} MB)`); } catch { /* no stats */ }
+      try { const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json(); if (ns.demand) console.log(`[mark] ${ev.args[0]} at ${t.toFixed(0)} s: ${(ns.sent / 1048576).toFixed(1)} MB sent (demand ${(ns.demand.sent / 1048576).toFixed(1)} MB in ${ns.demand.requests} requests, background ${(ns.bg.sent / 1048576).toFixed(1)} MB in ${ns.bg.requests} requests${ns.batches ? `, ${ns.batches} of them batches of ${ns.batchItems} runs` : ''})`); } catch { /* no stats */ }
       await page.evaluate((label) => window.orthros.worker?.postMessage({ type: 'mark', label }), String(ev.args[0]));
       continue;
     }

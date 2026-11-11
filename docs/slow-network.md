@@ -2202,6 +2202,161 @@ regression.
 Not measured: the owner's real machine and link, HTTP/2 (the harness origin is HTTP/1.1: four predicted requests at once
 — `WANT_REQUESTS_H1_LOOSE` —, 32 over HTTP/2 in production), BFME 1.08 and Vice City.
 
+## Batched requests (2026-11-10)
+
+**What was slow.** A learned order is mostly small pieces: Age of the Ring's launch set is 5 604 entries (305 MB of
+file), ~2 700 `.ini` files of ~44 KiB and ~2 300 tiny `.bse` files among them; a later load (Create-a-Hero) reads ~900
+loose W3D / TGA / DDS files. Each piece went as its own request — 5 340 requests of 27 KiB of file (5 KB on the wire)
+before AotR's menu at 1.25 MB/s — about three at a time (`PREFETCH_PARTS`, the bytes rule): bound by round trips, the
+link 0.37-0.52 used while the launch set came. And each piece was compressed alone (its precompressed unit, or brotli 5
+on the fly), so the bytes ten thousand nearly identical `.ini` / `.bse` files share crossed the link ten thousand times.
+
+**The change** (generic: the request's shape only, every game and runtime that reads through `HttpBackend`):
+- **Server** (`src/server/server.js` `sendBatchEncoded`): `POST /gamezb/<version>?p=1` (or `w=1`), the body a JSON array
+  `[[path, start, end], ...]` (1 024 ranges, 16 MiB at most; light copies' paths too). The answer is the ranges one
+  after another in the body's order, each **framed** — its length as a u32 little-endian, then its bytes —, compressed
+  **together** as one stream — brotli quality 5 with a window that holds the whole batch (`Content-Encoding: br`, else
+  zstd, else gzip: the browser decodes it) —, `X-Orthros-Raw` / `X-Orthros-Items`, and `X-Orthros-Wire-Length` (the
+  encoded size, for the client's link accounting: a proxy may recode the answer or drop its Content-Length). A file it
+  does not have answers 404 `batch item not found`; a range past a file's end (the file changed since the client's tree:
+  a game updated) 416 `batch item out of range` — never cut to the file: a shorter item would shift the next ones' bytes
+  into it (the first version did, and the client took them). Encoded in the same queue as the other
+  background ranges (`encodeSlot`, demand reads first); never learned as the game's reads. `/api/netstats` counts
+  `batches` and `batchItems`.
+- **Client** (`HttpBackend.batch`, `fetchBatchNow`): one turn on the link (`NetLink`, the batch's bytes), one request;
+  the answer is read as a stream and each run is settled as soon as its bytes are here (in the order's order: the
+  first pieces the game needs are not held until the last arrives). Its pieces are registered as on their way like any
+  background run (a parked read of one joins the batch and makes it go first). A batch carries runs of at most
+  `BATCH_ITEM_MAX` (256 KiB) each, `BATCH_RUNS` (256) of them, at most half of `NetLink.requestBytes()` together (two
+  side by side within the link's bytes rule: one alone would leave the link idle a round trip between two); a larger
+  run, or a batch of one, is the ordinary request (its transport units). Used by the learned order's pieces
+  (`prefetchList` on a link that is not fast, and the startup set — `learnedOnly`: the batch takes its turn on the link
+  first, then is filled with the next runs it would fetch anyway — `sendWhenDue`, `nextPart` going on from the last one
+  found) and by the learned read-ahead (`pumpAhead`: a batch is one request of its budget; a small file's whole block
+  joins it too). Only on a link that never carried `BATCH_MAX_BPS` (2 MiB/s; below). Not the game's own reads (one
+  range each, synchronous), the whole blocks of a fast link, announced lists or the block fill.
+- **Checks and failures**: a run is taken only when its frame's length is the one asked; a frame that is not stops
+  the stream (that run and the rest: failed, asked again later). A refused run (400, 404 `batch item ...`, 413, 416):
+  the runs go one request each, each taking its own turn on the link once the batch left it (the ordinary range
+  request then judges each: a file gone or changed is that run's skip only). A server error or refusal (5xx, 403): the
+  runs failed, asked again later — never marked to skip.
+- **Compatibility**: a server without the route (404/405 other than `batch item ...`) turns batches off for the
+  backend, its runs going one request each; asked only by `game-data.js`'s openers (`openData`, `batch` option, on by
+  default), so a tool or a test's `fetch` stand-in never sees them. **Switches** (`?dbg=` in the page,
+  `--dbg` in `tools/headless.mjs`): `ORTHROS_BATCH=0` off, `=pf` / `=ahead` for the learned order's pass or its
+  read-ahead only, `=all` on every link (past `BATCH_MAX_BPS` too); the batch endpoint itself is always served.
+- **Measuring**: `SimLink` (the harness's `--net`) writes a batch's body as it crosses (`onProgress`), as a real
+  connection delivers it; `tools/headless.mjs --br-cache-frozen` serves a copy of the live server's units without
+  making more (the same units in every run), a `quit` step ends a run once its timed load is over, and the `[mark]`
+  and `[net]` lines count the batches.
+
+**Bytes on the wire** (AotR 10.0's learned order, offline: `node` over the files the order names, 64 KiB pieces as the
+order lists them; solid = the pieces of ~2 MiB batches compressed together; units = each piece alone at brotli 11, as
+`br-cache.js` makes them; MB/s = raw MB encoded per second of one core):
+
+| files (sample) | units, brotli 11 | per piece, brotli 5 | solid brotli 5 | solid brotli 9 | solid brotli 11 | solid zstd 3 | solid gzip 4 |
+|---|---|---|---|---|---|---|---|
+| `.ini` (12 MB, launch set) | 0.199 | 0.228 | **0.076** (95 MB/s) | 0.066 | 0.060 | 0.103 | 0.159 |
+| `.bse` (6 MB, launch set) | 0.320 | 0.329 | **0.003** (206 MB/s) | 0.003 | 0.003 | 0.003 | 0.017 |
+| `.big` / `.dat` archives (30 MB) | 0.316 | 0.348 | 0.329 (51 MB/s) | 0.325 | 0.288 | 0.357 | 0.375 |
+| `.w3d` (10 MB, Create-a-Hero) | 0.435 | 0.465 | **0.394** (45 MB/s) | 0.389 | — | 0.431 | — |
+| `.tga` (10 MB) | **0.108** | 0.133 | 0.128 (65 MB/s) | 0.125 | — | 0.150 | — |
+| `.dds` (10 MB) | **0.494** | 0.540 | 0.538 (40 MB/s) | 0.533 | — | 0.565 | — |
+| `.mp3` (9 MB) | 0.912 | 0.916 | 0.911 | 0.907 | 0.897 | 0.914 | 0.911 |
+
+Text-like loose files share most of their bytes: the batch sends AotR's `.ini` in 0.38 of their units' bytes and its
+`.bse` in 1 %. Textures alone at brotli 11 stay 9-18 % smaller than in a brotli-5 batch (the batch's quality is what a
+request can afford: brotli 11 costs ~1 s of a core per MiB); an archive's pieces are about even. Brotli 5 encodes a
+batch at 40-200 MB/s, so the server's cost stays small beside the link's (the harness server's whole encoding time
+below).
+
+**Measured** (2026-11-10, `tools/headless.mjs` through `tools/with-browser-slot.sh`, one browser at a time, another
+project's browser sometimes beside it; `--gl-discard` (rendering off: the 4-core cap's SwiftShader contention out of
+the load times), a fresh OPFS profile, a copy of the live learned directory and of the live br-cache served frozen
+(`--br-cache-frozen`) in every run; `.vp6` counted as media in both arms (below); batches off = `--dbg ORTHROS_BATCH=0`
+on the same code. AotR: Escape ×6 from the first frame, the menu = 16 draws a frame, MY CAPTAINS at (199, 299), the
+Create-a-Captain screen = 40 draws a frame or more, timed from the click. RotWK 2.02: the menu = 14-30 draws, SOLO →
+SKIRMISH → profile → PLAY (873, 733), timed from PLAY to 12 fps in game. Seconds; one line a run):
+
+| AotR 10.0, 1.25 MB/s, 50 ms | first frame | menu | click → Create-a-Captain | requests (session) | MB sent (session) | server encoding |
+|---|---|---|---|---|---|---|
+| batches | 191 | 215 | **85** | 1 864 (351 batches of 6 115 runs) | 277 | 13.4 s |
+| batches (the version before the turn-first fill) | 217 | 242 | **83** | 2 192 (356 batches of 6 125 runs) | 283 | 11.0 s |
+| off | 208 | 232 | 108 | 8 059 | 268 | 6.9 s |
+| off | 203 | 227 | 117 | 7 941 | 270 | 6.9 s |
+
+Again after the framing fix (2026-11-11, same setup, batches on / off alternated, the browser capped at 8 cores —
+`ORTHROS_BROWSER_CPU=800%` — instead of 4; the scenario `+1..+6` Escape, menu = 14-30 draws, then MY CAPTAINS):
+
+| AotR 10.0, 1.25 MB/s, 50 ms (framed batches) | first frame | menu | click → Create-a-Captain | requests (session) | MB sent (session) |
+|---|---|---|---|---|---|
+| batches | 177 | 181 | **79** | 2 246 (394 batches of 5 976 runs) | 259 |
+| batches | 200 | 205 | **58** | 2 032 (346 batches of 5 987 runs) | 257 |
+| off | 184 | 192 | 135 | 8 314 | 281 |
+| off | 188 | 189 | 122 | 8 382 | 282 |
+
+At 85 KB/s (`50:0.68`, 600 s, batches on: a check that nothing breaks only): 1 120 batches of 4 697 runs, 3 135
+requests, 40 MB sent for 184 MB read, the connection measured 83 KB/s, no error; the game had not reached its first
+frame by 600 s (as before).
+
+In the Create-a-Captain load itself: 364 requests (107 of them batches) for 74 MB on the wire against 1 248 for 95 MB —
+the launch set came sooner (238 batches before the menu instead of ~6 500 requests), so more of the learned order's
+next step was here at the click. The launch is the emulator's CPU here (no shared snapshot for AotR: ~185 s of the
+worker's CPU to the first frame): the same within the runs' spread.
+
+| AotR 10.0, 3.75 MB/s, 50 ms | first frame | menu | click → Create-a-Captain |
+|---|---|---|---|
+| batches on every link (earlier versions) | 200; 211; 197 | 224; 235; 222 | 66; 61; 73 |
+| batches as kept (off past 2 MiB/s: 1 batch in the run) | 182 | 207 | 88 |
+| off | 191; 176 (`.vp6` not media) | 216; 200 | 55; 56 |
+
+| RotWK 2.02, 1.25 MB/s, 50 ms | first frame | menu | PLAY → in game | requests (session) | MB sent |
+|---|---|---|---|---|---|
+| batches | 65 | 89 | **76** | 1 884 (122 batches of 355 runs) | 190 |
+| batches (an earlier version) | 68 | 93 | — | — | — |
+| off | 59 | 91 | 90 | 2 294 | 206 |
+| off | 58 | 90 | — | — | — |
+
+| RotWK 2.02, 3.75 MB/s, 50 ms | first frame | menu | PLAY → in game |
+|---|---|---|---|
+| batches on every link (earlier versions) | 42; 46; 47 | 67; 71; 72 | 60; 79; 82 |
+| off | 48; 46 | 73; 71 | 46; 66 |
+
+At 3.75 MB/s no gain shows beyond the spread, which is wide there (the same code without batches: 55-88 s for
+Create-a-Captain, 46-66 s for the skirmish), and the batch runs came out slower on average: with the round trips gone
+the link was measured fast sooner (~3.3 MB/s from the first half-minute, against ~1.7 MB/s), the fast link's whole-block
+passes started sooner and were on the link during the loads (RotWK: 303-364 MB moved from PLAY to in game against
+182). So batches stop for the session once the link has carried `BATCH_MAX_BPS` (2 MiB/s, measured — or the rate a
+page kept from an earlier visit): the owner's 1.2 MB/s and slower keep them, a link like 3.75 MB/s goes back to one
+request a run (`?dbg=ORTHROS_BATCH=all`: batches there too).
+
+| 85 KB/s, 50 ms | AotR first frame | AotR by 450 s | RotWK first frame |
+|---|---|---|---|
+| batches | 542; 462 (an earlier version) | 2 386 requests, 150 MB of file in 30.9 MB | 542 (3 batches in the run) |
+| off | 539 | 4 361 requests, 154 MB of file in 30.4 MB | 512 |
+
+On the thin link the link is full in both arms (the same bytes by any time) and a batch is small (half of
+`requestBytes()`: ~64 KiB of file at 85 KB/s), so the gain is in requests only — not worse: RotWK's runs, 3 batches in
+one, differ by 30 s, the spread of a thin-link boot. Neither run reached either menu in 1 000 / 700 s.
+
+**What went wrong first, kept as rules:**
+- A batch built when it was queued held its runs' pieces "on their way" until its turn — and the learned order's
+  pass waits for a load to end (`NetLink.silenced`): the learned read-ahead skipped those pieces and the load's reads
+  parked on a batch that could not start. AotR's boot ran 15-35 s longer, its guest executing 55 G more instructions
+  (threads polling while the main thread waited). The pass's batch now takes its turn first and is filled then
+  (`sendWhenDue`): the boot went from 217 to 191 s.
+- Read whole before any run was settled, a batch made a parked read wait for its last byte; it is read as a stream.
+- `.vp6` (EA's VP6 movies) were not media (`src/vfs/game-tree.js` MEDIA / VIDEO): AotR's 96.6 MB intro movie sat in
+  the launch set's order; batches brought the launch set's small files sooner and the link then went to the movie
+  (92 MB of it before the first frame at 1.25 MB/s). By format, for every game.
+
+**Not done here**: announced lists (`wantList`: OpenMW, GoldSrc) and a predicted place's set still go one unit a
+request (their own windows, `WANT_REQUESTS`) — the same batch would carry them; the game's own reads stay one range
+each (synchronous). A batch could keep the textures at brotli 11 (the 9-18 % the table shows) only if the page could
+decode brotli itself (`DecompressionStream` has gzip and deflate, not brotli, in Chrome 153). Batches are compressed
+on each request (the launch set's are the same for every new player: cut at fixed places of the learned order, they
+could be made ahead like the units).
+
 ## What the page says
 
 - While the game waits for the network (`net.waiting`: a parked read, the presenting thread blocked on a read, or a

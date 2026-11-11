@@ -13,9 +13,9 @@ export const LIGHT_DIR = '.light';
  * left out of the startup set, and get no speculative fills unless the game is streaming them (src/vfs/http-backend.js,
  * data-worker.js). Their bytes are never faked: a read of one waits for the network as any other.
  */
-const MEDIA = /\.(bik|bk2|mp3|ogg|avi|mpg|mpeg|wmv|smk|webm)$/i;
+const MEDIA = /\.(bik|bk2|mp3|ogg|avi|mpg|mpeg|wmv|smk|webm|vp6)$/i;
 /** Movies among the media files: a game playing one is not playable yet (playable-watch.js). */
-const VIDEO = /\.(bik|bk2|avi|mpg|mpeg|wmv|smk|webm)$/i;
+const VIDEO = /\.(bik|bk2|avi|mpg|mpeg|wmv|smk|webm|vp6)$/i;
 /** The file `name` is a movie (by format). */
 export const isVideoFile = (name) => VIDEO.test(name);
 /** A .wav this large or larger is a media file (music, speech); smaller ones are a game's sound effects. */
