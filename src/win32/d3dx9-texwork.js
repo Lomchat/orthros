@@ -6,7 +6,6 @@
 import { FMT, surfaceBytes, surfacePitch } from './d3d8.js';
 import { toRgba, toRgbaRows, fromRgba, resizeRgba, applyColorKey, isDxt, mipChain, mipChainReady } from './d3dx9-image.js';
 
-const D3D_OK = 0, D3DERR_INVALIDCALL = 0x8876086c;
 /** D3DX_FILTER: low byte = filter kind (1 NONE, 2 POINT, 3 LINEAR, 4 TRIANGLE, 5 BOX) */
 export const FILTER_POINT = 2;
 
@@ -137,4 +136,3 @@ export function filterChain(mem, lv, src, point, cacheOf, fill) {
 /** the first level filterChain writes (every one after it too, the formats encodable) — lv.length: none */
 export function filledFrom(lv, src) { let first = src + 1; while (first < lv.length && !(lv[first - 1]._mem ?? lv[first - 1].mem)) first++; return first; } // (_mem: a Surface's, read without waiting for its job)
 
-export { D3D_OK, D3DERR_INVALIDCALL };
