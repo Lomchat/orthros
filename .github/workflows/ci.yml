@@ -20,14 +20,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Ubuntu's own archive instead of the runner's mirror list
-        # (the runner's mirror, azure.archive.ubuntu.com, stopped resolving on 2026-11-11 for hours: every run failed
-        # before its tests while installing Chromium's system packages)
-        run: |
-          for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
-            [ -f "$f" ] && sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#g; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#g' "$f"
-          done
-          grep -rhE '^(URIs|deb) ' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null | sort -u || true
       - name: Native tools (clang, lld, llvm 18)
         run: |
           sudo apt-get update
