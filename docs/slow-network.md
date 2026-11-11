@@ -2169,6 +2169,20 @@ SKIRMISH → profile → PLAY (873, 733), timed from PLAY to 12 fps in game. Sec
 | off | 208 | 232 | 108 | 8 059 | 268 | 6.9 s |
 | off | 203 | 227 | 117 | 7 941 | 270 | 6.9 s |
 
+Again after the framing fix (2026-11-11, same setup, batches on / off alternated, the browser capped at 8 cores —
+`ORTHROS_BROWSER_CPU=800%` — instead of 4; the scenario `+1..+6` Escape, menu = 14-30 draws, then MY CAPTAINS):
+
+| AotR 10.0, 1.25 MB/s, 50 ms (framed batches) | first frame | menu | click → Create-a-Captain | requests (session) | MB sent (session) |
+|---|---|---|---|---|---|
+| batches | 177 | 181 | **79** | 2 246 (394 batches of 5 976 runs) | 259 |
+| batches | 200 | 205 | **58** | 2 032 (346 batches of 5 987 runs) | 257 |
+| off | 184 | 192 | 135 | 8 314 | 281 |
+| off | 188 | 189 | 122 | 8 382 | 282 |
+
+At 85 KB/s (`50:0.68`, 600 s, batches on: a check that nothing breaks only): 1 120 batches of 4 697 runs, 3 135
+requests, 40 MB sent for 184 MB read, the connection measured 83 KB/s, no error; the game had not reached its first
+frame by 600 s (as before).
+
 In the Create-a-Captain load itself: 364 requests (107 of them batches) for 74 MB on the wire against 1 248 for 95 MB —
 the launch set came sooner (238 batches before the menu instead of ~6 500 requests), so more of the learned order's
 next step was here at the click. The launch is the emulator's CPU here (no shared snapshot for AotR: ~185 s of the
