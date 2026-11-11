@@ -64,8 +64,20 @@ subtly wrong. So:
   no backend has seen: created and uploaded whole at its first use. What the host showed comes back through `resume`
   hooks (`snapshotClass(cls, { resume })`, run once the machine is whole): the window manager sets the display mode,
   title and cursor again.
-- **Several processes** (a game started by its launcher, docs/processes.md): a machine that started a child process is
-  never captured (`notQuiet`: "several processes") — its state spans several machines, each with its own memory.
+- **Several processes** (a game started by its launcher, docs/processes.md): the whole group is captured, at a point
+  where every process is quiet and no ended one waits to be released. Each machine's guest memory is kept (`procs`
+  after the first one's pages), and one state graph covers them all: one registry over the machines'
+  (`groupSnapRegistry`, `mergedRegistry`: the k-th machine's known names prefixed `k:`, an object shared by the
+  processes — the kernel-object namespace, an inherited event, a paging-file mapping and its views — one record), with
+  the group itself known as `group`. Each object records the machine it belongs to when not the first (a process or a
+  thread names its own; a class defined in one machine's closure is that machine's; else its parent's): its class,
+  `init` and `load` hooks are that machine's at the restore (a thread's CPU state on its own memory). `restoreVm` builds
+  the group and its machines again in the snapshot's order (each child as `CreateProcess` builds it, with its parent),
+  then puts everything back as for one machine; the page follows the foreground process as after a `CreateProcess`.
+  `tests/snapshot.test.js` restores `multiproc.exe` with its child in the middle of their handshake and runs both copies
+  alike to the end. Until 2026-11-11 such a machine was never captured (`notQuiet`: "several processes"): Age of the
+  Ring and BFME II 1.06, both started by their launcher, never got a snapshot — the warm jobs' publishing sessions ran
+  their 1 200 s and ended "0 kept, 0 published" (the live runner's journal, 2026-11-10/11, every 6 h).
 - **CPU states** are views on the guest memory (rebuilt by address); a PE image's file bytes, only read while it was
   mapped, are not kept.
 - **Time** goes on from where it was: a virtual clock's state, a real clock's origin moved. Everything the guest can
@@ -212,11 +224,21 @@ the first declared) and queues **one job at a time**:
   profile). The key is computed by the server as a page computes it (`plainKey`: the sources' hash, the version's
   `/api/manifest` and `/api/tree` as sent, the machine options of a page with no URL parameter) — the publishing session
   still refuses to post if its own key differs, so a wrong guess costs a failed job, not a wrong snapshot;
-- a **learn** job when the snapshot exists but the server holds no learned prefetch list for the version (`prefetch-<m>.json`):
-  the runner plays `tools/headless.mjs <m> --server-port <port>` against the server for the shortest bench scenario of
-  `tools/scenarios/bench/index.json` that lists the version (at most 300 s), else boots it for 150 s, so the reads, heat and GL
-  programs of the first minutes are learned. (A publish session teaches the lists as well, so a version without snapshot gets
-  its learn job only if the lists are still missing after the publish.)
+- a **learn** job when the snapshot exists but the server holds no learned prefetch list for the version (`prefetch-<m>.json`),
+  or the version has learn scenarios not played on this server yet: the runner starts `tools/warm-learn.mjs`, which plays
+  `tools/headless.mjs <m> --server-port <port>` against the server for each of the version's **learn scenarios**
+  (`tools/scenarios/bench/index.json` `learn`: the loads a new player meets first, e.g. Age of the Ring's MY CAPTAINS and a
+  skirmish start; each on a fresh browser, at most its `maxSeconds` (1 800 s), ended 20 s after its last step; those played already skipped), else for the shortest bench
+  scenario that lists the version (at most 300 s), else boots it for 150 s — so the reads, heat and GL programs of those
+  loads are learned. The scenarios played to their end (every wait met) are told to the server with the job's token
+  (`POST /api/warm-learned/<m>`) and kept by name and content hash (`<learn>/snapshots/learned-scenarios.json`): an edited
+  scenario is played again; one that did not reach its end (a screen never shown) is told too and given up after two
+  tries (`LEARN_TRIES`), so a broken scenario does not take a browser every 6 h. Learn scenarios listed (2026-11-11):
+  Age of the Ring MY CAPTAINS and a skirmish start (`learn-aotr-*.txt`, written and checked on 10.0), RotWK 2.02
+  MY HEROES (`learn-rotwk-heroes.txt`, the docs/slow-network.md clicks, not run as a learn job), and the bench suite's
+  skirmish starts of RotWK, BFME II and BFME (their `*-short.txt` / `bfme1-skirmish.txt`, 800x600 coordinates scaled by
+  `--coords`; not run as learn jobs). BFME II's Create-a-Hero is not listed (its menu coordinates not known). (A publish session teaches the boot's lists as well, so a version without snapshot gets its
+  learn job after the publish.)
 
 The next job is queued when the previous one reached its goal or after two hours (a failed key is not tried again for 6 h:
 the queue's usual dedup). Another language than the default is still made on a player's 404. `--warm-only a,b` restricts
@@ -239,3 +261,31 @@ The publish jobs found the page's key (the session refused nothing: "running, ke
 learn job only matters for a version whose snapshot exists but whose lists do not: tested on BFME 1.08 (snapshot copied
 into an empty learn directory: the server queued `learn`, the runner's headless run created the four files). Not
 measured: lists without snapshot (the slots were busy), repeated runs. The baseline's load differs from the warm runs'.
+
+**Age of the Ring, 2026-11-11** (a launcher and its game: "Several processes" above; private servers on copies, the
+browser slots' default 4-core cap for the jobs, one run each):
+- *Publish*: the live runner's sessions of `aotr-10` (and `bfme2-106`) had ended "time is up: 0 kept, 0 published" after
+  1 203 s, every 6 h since 2026-11-10 — no capture was ever tried (the group). With the group captured: first snapshot
+  at 177 s (384.7 MiB, taken in 2.7 s), kept at 207 s, published at 242 s; a later one replaced it (405.5 MiB, 55 MB
+  brotli); "done: 2 kept, 2 published" at 624 s. A new player (fresh browser, `snapshot-browser-check.mjs --once
+  --expect-restored`) downloaded 52.4 MB and restored it in 1.9 s, at the main menu (SOLO PLAY … MY CAPTAINS).
+- *Learn* (the snapshot copied into an empty learn directory, `--warm-jobs`): the server queued `learn`; `aotr-captains`
+  reached the menu at 193 s and the Create-a-Hero screen at 397 s (played: recorded); `aotr-skirmish` reached the
+  skirmish's loading screen at 261 s and was still on it at its 900 s limit (4 of 5 waits: not recorded; cause not
+  found — its limit is 1 500 s since). The first-launch profile those sessions taught then made the snapshot stale
+  ("made from another first-launch profile"): the server published again (367 MiB, published at 177 s, "3 kept, 3
+  published" in 745 s), then queued `learn` once more, which played only `aotr-skirmish` ("1 played already"): menu
+  at 133 s, loading screen 193-216 s, play at 216 s, recorded, 277 s in all.
+- *MY CAPTAINS first visit at the owner's link* (`--net 50:10`, fresh browser, no snapshot, `learn-aotr-captains.txt`,
+  the click 4 s after the menu; browser cap raised to 8 cores for both runs):
+
+  | learn directory | first frame | menu | click → Create-a-Hero screen | game reads in that load |
+  |---|---|---|---|---|
+  | empty | 531 s | 555 s | 259 s | 1 819 requests, 96.8 MB |
+  | made by the learn job (its two sessions) | 449 s | 473 s | 264 s | 1 787 requests, 95.7 MB |
+
+  The learned lists brought the menu 82 s earlier, but not the first visit of MY CAPTAINS: the load still waited for
+  nearly every read (the learned read-ahead fetched 36 MB in the background during it, as many reads went to the
+  network as without lists). With the click a few seconds after the menu nothing could be fetched before the load;
+  why the read-ahead does not follow this load on a 1.25 MB/s link is not found yet (docs/slow-network.md "A load of
+  loose files"). Not measured: a player who stays in the menu before the click, repeated runs.

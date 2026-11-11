@@ -4,7 +4,8 @@
 // these classes is in snapshots unless declared transient here.
 import { THUNK_BASE, THUNK_END, THUNK_SIZE } from '../cpu/memory.js';
 import { DEFER_QUEUE } from '../cpu/jit/runtime.js';
-import { SnapRegistry, SnapshotError, SnapshotStale, snapshotClass, snapshotConstant, encodeGraph, decodeGraph, capturePages, restorePages, SNAPSHOT_FORMAT } from './snapshot.js';
+import { SnapRegistry, SnapshotError, SnapshotStale, snapshotClass, snapshotConstant, encodeGraph, decodeGraph, capturePages, restorePages, mergedRegistry, SNAPSHOT_FORMAT } from './snapshot.js';
+import { ProcessGroup, ExitedProcess, ExitedThread } from './procs.js';
 import { VirtualClock } from './clock.js';
 import { MemBackend, seenFingerprint, hashBytes } from '../vfs/vfs.js';
 import { Scheduler, PARK } from './sched.js';
@@ -32,7 +33,7 @@ const VM_TRANSIENT = ['vfs', 'clock', 'host', 'mem', 'api', 'interp', 'jit', 'ex
   'profile', 'progressAt', 'progressEvery', 'onProgress', 'heapProv', 'heapProvMap', 'stdout', 'onStdout', 'deadline', 'sliceInsns',
   'runOptsByDepth', 'restoring', 'traceCom', 'traceComQuiet', 'GuestCrash', 'returnThunk', 'callbackReturnThunk', 'exitThreadThunk', 'exitProcessThunk',
   'jitArgs', 'waitLogMin', 'mainWaits', 'recentFiles', 'recentReads', 'readSliceMs', 'apiTail', 'exitReport', 'traceRing', 'traceByArg',
-  'ctorOpts', 'locale', 'group', 'parentVm', 'kernelNamed']; // (group...: child processes, core/procs.js — a machine with several is not snapshotted)
+  'ctorOpts', 'locale', 'group', 'parentVm', 'kernelNamed']; // (group...: child processes, core/procs.js — a group's snapshot keeps them apart: groupSnapRegistry)
 
 snapshotConstant('sched.PARK', PARK);
 snapshotConstant('process.TS', TS);
@@ -49,6 +50,7 @@ snapshotClass(Thread, { skip: ['wait', 'parkWait', 'blockReason', 'runMs'], init
  */
 export const HOST_TIME_FIELDS = [];
 snapshotClass(Process);
+snapshotClass(ExitedProcess); snapshotClass(ExitedThread); // (what another process's handles on a released child name: core/procs.js reap)
 snapshotClass(HandleTable);
 snapshotClass(VMem);
 snapshotClass(Heap, { skip: ['watchLog'] }); // (debugging hook)
@@ -136,10 +138,21 @@ export function sealVmSnapRegistry(vm) {
   vm.snap.knowGraph(vm, (o, k) => o === vm && transient.has(k));
 }
 
-/** Why `vm` cannot be snapshotted now (null: it can — between time slices, nothing in progress). */
+/**
+ * Why `vm` cannot be snapshotted now (null: it can — between time slices, nothing in progress). A machine with child
+ * processes (core/procs.js): its whole group, every process quiet.
+ */
 export function notQuiet(vm) {
+  const g = vm.group;
+  if (g) {
+    if (g.ended.length) return 'a process ended, its machine not released yet';
+    for (const v of g.vms) { const why = quiet(v); if (why) return g.vms.length > 1 ? `process ${v.proc?.pid ?? '?'}: ${why}` : why; }
+    return null;
+  }
+  return quiet(vm);
+}
+function quiet(vm) {
   if (!vm.proc) return 'no process';
-  if (vm.group) return 'several processes (a child process was started)';
   if (vm.depth) return 'inside a time slice';
   if (vm.sched.nestedWaits) return 'a nested wait in progress';
   if (vm.readsInFlight) return 'file reads in flight';
@@ -201,14 +214,39 @@ export function persistentChanged(vm, persistent) {
   return null;
 }
 
+/**
+ * The registry of a process group's snapshot (docs/processes.md, docs/snapshot.md "Several processes"): every machine's
+ * known objects (the k-th one's names prefixed `k:`, mergedRegistry) and the group itself, known as `group` — its
+ * machines are rebuilt in the same order before a restore (restoreVm), its state put back in place.
+ */
+export function groupSnapRegistry(g) {
+  const reg = mergedRegistry(g.vms.map((v) => v.snap), (o) => {
+    const v = Object.hasOwn(o, 'vm') ? o.vm : Object.hasOwn(o, 'proc') ? o.proc?.vm : null;
+    return v ? g.vms.indexOf(v) : -1;
+  });
+  // (root and vms: rebuilt; the host's hook, diagnostics and the run's own bookkeeping: transient)
+  reg.known('group', g, { skip: ['root', 'vms', 'onForeground', 'ended', 'idleSince', 'syncBytes'] });
+  return reg;
+}
+
 export function captureVm(vm, meta = {}, problems = null) {
+  const g = vm.group;
+  if (g) vm = g.root; // (several processes: the whole group, from its first machine)
+  const vms = g ? g.vms : [vm];
   // (COM calls the JIT queued run at the next API call, by whichever thread makes it: now, by the last one that ran)
-  if (vm.mem.u32[DEFER_QUEUE >>> 2] && vm.lastThread && !vm.depth) vm.drainDeferred(vm.lastThread);
+  for (const v of vms) if (v.mem.u32[DEFER_QUEUE >>> 2] && v.lastThread && !v.depth) v.drainDeferred(v.lastThread);
   const why = notQuiet(vm);
   if (why) throw new SnapshotError(`not a quiet point: ${why}`);
-  const t0 = performance.now(), graph = encodeGraph(vm, vm.snap, problems), t1 = performance.now(), pages = capturePages(vm.mem);
+  const t0 = performance.now(), graph = encodeGraph(vm, g ? groupSnapRegistry(g) : vm.snap, problems), t1 = performance.now(), pages = capturePages(vm.mem);
   meta = { ...meta, start: vm.proc.start ?? null, persistent: persistentSeen(vm) };
-  return { format: SNAPSHOT_FORMAT, meta, pages, graph, timing: { graphMs: t1 - t0, pagesMs: performance.now() - t1 } }; // (timing: not saved)
+  const snap = { format: SNAPSHOT_FORMAT, meta, pages, graph };
+  if (g) {
+    // (each machine's parent, by index: a restore spawns them in this order)
+    meta.group = { parents: vms.map((v) => (v.parentVm ? vms.indexOf(v.parentVm) : -1)) };
+    snap.procs = vms.slice(1).map((v) => ({ pages: capturePages(v.mem) }));
+  }
+  snap.timing = { graphMs: t1 - t0, pagesMs: performance.now() - t1 }; // (timing: not saved)
+  return snap;
 }
 
 /**
@@ -220,19 +258,30 @@ export function restoreVm(vm, snap) {
   if (vm.proc) throw new SnapshotError('restoring into a Vm that already runs a process');
   const stale = snapshotStale(vm, snap);
   if (stale) throw new SnapshotStale(stale); // (nothing changed yet: the Vm can still start the usual way)
-  const graph = decodeGraph(snap.graph, vm.snap, vm);
-  restorePages(vm.mem, snap.pages); // (after the objects: some write their initial state there — CpuState)
+  // (several processes: the group and its other machines built first, in the snapshot's order — each like the first, as
+  // CreateProcess builds them — then everything put back in place)
+  const parents = snap.meta?.group?.parents, vms = [vm];
+  if (parents) {
+    if (vm.group) throw new SnapshotError('restoring a process group into a machine that has one');
+    if ((snap.procs?.length ?? 0) !== parents.length - 1) throw new SnapshotError('a process group snapshot without every process\'s memory');
+    const g = vm.group = new ProcessGroup(vm);
+    for (let k = 1; k < parents.length; k++) vms.push(g.spawn(vms[parents[k]] ?? vm));
+  }
+  const pages = [snap.pages, ...(snap.procs ?? []).map((p) => p.pages)];
+  const graph = decodeGraph(snap.graph, parents ? groupSnapRegistry(vm.group) : vm.snap, parents ? vms : vm);
+  vms.forEach((v, k) => restorePages(v.mem, pages[k])); // (after the objects: some write their initial state there — CpuState)
+  if (parents) vms.forEach((v, k) => { v.parentVm = parents[k] >= 0 ? vms[parents[k]] : null; });
   // A thread parked in a blocking call waits on closures the call made: the call is re-executed as at its first try (at
   // top level, as from a time slice) to make them again; then the snapshot's state is put back over what it changed, and
   // the wait keeps its deadline.
   const waits = new Map();
-  for (const t of vm.proc.threads) if (t.state === TS.BLOCKED) waits.set(t, rebuildWait(vm, t));
-  graph.reimpose(); restorePages(vm.mem, snap.pages);
-  for (const [t, w] of waits) {
+  for (const v of vms) for (const t of v.proc?.threads ?? []) if (t.state === TS.BLOCKED) waits.set(t, [v, rebuildWait(v, t)]);
+  graph.reimpose(); vms.forEach((v, k) => restorePages(v.mem, pages[k]));
+  for (const [t, [v, w]] of waits) {
     if (w) { w.deadline = t.wakeAt; t.wait = w; t.blockReason = w.reason; continue; }
-    vm.sched.markReady(t); t.wakeAt = Infinity; t.blockReason = null; // (the call would not block now: it runs again when scheduled)
+    v.sched.markReady(t); t.wakeAt = Infinity; t.blockReason = null; // (the call would not block now: it runs again when scheduled)
   }
-  if (vm.jit) vm.jit.setProcessConsts(vm.proc.processHeap.handle);
+  for (const v of vms) if (v.jit && v.proc) v.jit.setProcessConsts(v.proc.processHeap.handle);
   const hostWaits = graph.resume();
   vm.restoring = hostWaits.length ? Promise.all(hostWaits) : null; // (the host's side catching up: awaited before the machine runs)
   return vm;

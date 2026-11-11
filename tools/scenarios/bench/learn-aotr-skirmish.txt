@@ -1,0 +1,32 @@
+# Age of the Ring, a warm job's learn session (src/server/warm-jobs.js): the intro skipped, the main menu, SOLO PLAY →
+# SKIRMISH, a new player's profile named, PLAY on the default map, its loading, 20 s of play. Coordinates for 1024x768
+# (scaled to the game's mode). Draws per frame (Age of the Ring 10.0, 2026-11-11): menu 16-23, the profile dialog over
+# the setup 125-152, the setup screen ~217, the loading screen 82-84, play 900 and more.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++15:key:27
++18:key:27
++20:waitframe:14,100000
+0:mark:menu
+4:move:199,148
+5:click:199,148
+8:move:400,149
+9:click:400,149
+10:waitframe:100,180
+0:mark:profile
+2:click:505,364
+4:text:Orthros
+7:move:404,513
+8:click:404,513
+9:waitframe:190,600
+0:mark:setup
+3:move:873,734
+4:click:873,734
+5:mark:load
+6:waitframe:60,110
+0:mark:loadscreen
+1:waitframe:400,100000
+0:mark:play
+20:mark:end

@@ -8,7 +8,6 @@ import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { VirtualClock } from '../src/core/clock.js';
 import { HeadlessHost } from '../src/server/display.js';
-import { notQuiet } from '../src/core/vm-snapshot.js';
 import { wmOf } from '../src/win32/user32.js';
 import { Ctx } from '../src/win32/ctx.js';
 import { MAX_LIVE_PROCESSES } from '../src/core/procs.js';
@@ -70,7 +69,6 @@ for (const jit of [true, false]) {
     assert.ok(child.proc.exited && child.proc.exitCode === 42);
     assert.equal(child.proc.cmdline, 'multiproc.exe child'); // (its command line as its creator gave it)
     assert.ok(logs.some((l) => /CreateProcess\(app=-, cmd=multiproc.exe child.*inherit=1.*: process \d+ \(C:\\Test\\multiproc.exe/.test(l)), logs.join('\n'));
-    assert.equal(notQuiet(vm), 'several processes (a child process was started)'); // (never snapshotted)
   });
 }
 

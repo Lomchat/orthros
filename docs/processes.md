@@ -119,8 +119,11 @@ its child ended. The render worker is given the child's memory (`useMemory`: a `
 `MEMORY` command in the ring: devices created after it read that memory); when the child is released it forgets it and
 the first memory is current again.
 
-**Not snapshotted.** A machine with a group (`notQuiet`: "several processes") is never captured: its state spans
-several machines.
+**Snapshotted whole** (since 2026-11-11, docs/snapshot.md "Several processes"). A machine with a group is captured with
+every process: each machine's memory and the one state graph of them all (their shared kernel objects, inherited
+handles and mappings kept as one object each), restored by building the group's machines again in the same order.
+Before, such a machine was never captured, so a game started by its launcher (Age of the Ring, BFME II 1.06) never got a
+snapshot.
 
 **Unchanged single-process path.** Without a child, `vm.group` is null: `runFor` calls `runOwn` as before, every
 other change is a test of `vm.group` at a cross-process operation (signal, post, present, input, mapping views). What

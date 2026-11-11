@@ -1,0 +1,18 @@
+# The Rise of the Witch-king, a warm job's learn session (src/server/warm-jobs.js): the intro skipped, the main menu,
+# MY HEROES — its Create-a-Hero screen (docs/slow-network.md "A load of loose files": 32-52 s, the .big archives) — then
+# the end. Coordinates for 1024x768 (scaled to the game's mode); the menu waits as rotwk-short.txt's, the Create-a-Hero
+# screen draws 40 and more per frame.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++15:key:27
++18:key:27
++20:waitframe:14,30,150,100000
+0:mark:menu
+4:move:715,710
+5:click:715,710
+6:mark:load
+8:waitframe:40,100000
+0:mark:heroes
+10:mark:end

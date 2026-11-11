@@ -287,12 +287,12 @@ test('GL call counter: contexts sharing a prototype count their own calls; the m
   }
 });
 
-test('bench definitions: each scenario parses, plays in the page, names its manifests and coordinates', () => {
+test('bench and learn definitions: each scenario parses, plays in the page, names its manifests and coordinates', () => {
   const dir = new URL('../tools/scenarios/bench/', import.meta.url);
-  const { benches } = JSON.parse(fs.readFileSync(new URL('index.json', dir), 'utf8'));
+  const { benches, learn = [] } = JSON.parse(fs.readFileSync(new URL('index.json', dir), 'utf8'));
   assert.ok(benches.length >= 2);
   const names = new Set();
-  for (const b of benches) {
+  for (const b of [...benches, ...learn]) { // (learn: a warm job's learn scenarios, src/server/warm-jobs.js)
     assert.ok(/^[a-z0-9-]+$/.test(b.name) && !names.has(b.name), b.name); names.add(b.name);
     assert.ok(Array.isArray(b.manifests) && b.manifests.length, b.name);
     assert.ok(Array.isArray(b.coords) && b.coords.length === 2 && b.coords.every((v) => v > 0), b.name);

@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { learnArgs } from '../src/server/warm-jobs.js';
+import { learnCommand, learnTimeout } from '../src/server/warm-jobs.js';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const queue = opt('queue'), server = opt('server'), once = args.includes('--once');
@@ -18,9 +18,10 @@ const root = new URL('..', import.meta.url).pathname;
 const done = new Set(); // (tokens run by this runner)
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const run = (j) => new Promise((resolve) => {
-  // ('learn': a headless run of the version's first minutes against that server, which learns from the reads — warm-jobs.js)
+  // ('learn': headless runs of the version's first minutes and learn scenarios against that server, which learns from
+  // the reads — warm-jobs.js, tools/warm-learn.mjs)
   const scratch = j.kind === 'learn' ? fs.mkdtempSync(path.join(fs.existsSync('/tmp/orthros-scratch') ? '/tmp/orthros-scratch' : os.tmpdir(), 'warm-learn-')) : null;
-  const a = scratch ? ['1500', path.join(root, 'tools/with-browser-slot.sh'), 'node', ...learnArgs(root, j.name, new URL(server).port, scratch)]
+  const a = scratch ? [String(learnTimeout(root, j.name)), path.join(root, 'tools/with-browser-slot.sh'), ...learnCommand(j.name, server, j.token, scratch)]
     : ['1500', path.join(root, 'tools/with-browser-slot.sh'), 'node', 'tools/snapshot-publish.mjs', j.name, '--url', server, '--lang', j.lang, '--key', j.key, '--token', j.token];
   const p = spawn('timeout', a, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
   const out = (d) => { for (const l of d.toString().split('\n').filter((x) => x && !(scratch && x.startsWith('[t=')))) log(`${j.name} ${j.lang}: ${l.slice(0, 300)}`); };

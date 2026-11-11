@@ -367,6 +367,7 @@ export class WindowManager {
   }
   /** After a snapshot's restore (core/vm-snapshot.js): the new host shows what the captured one did — mode, title, cursor. */
   resumeHost() {
+    if (this.vm.group && this.vm.group.foreground !== this.vm) return; // (a background process shows nothing: core/procs.js)
     const d = this.host?.display, s = this.screen;
     if (d && (d.width !== s.width || d.height !== s.height || d.fullscreen !== (s.fullscreen ?? false))) {
       if (d.defaultWidth === undefined) { d.defaultWidth = d.width; d.defaultHeight = d.height; }

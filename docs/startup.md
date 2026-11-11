@@ -462,3 +462,12 @@ programs. `--warm-jobs` (docs/snapshot.md "Warm jobs") queues a `learn` job for 
 a headless run of its first minutes through the snapshot runner and the slot guard (bench scenario of the version if the
 index has one, else a 150 s boot). No per-game script in `src/`; the scenarios are the existing ones. Numbers: see the
 snapshot document's table.
+
+Since 2026-11-11 a version can list **learn scenarios** in `tools/scenarios/bench/index.json` (`learn`: the loads a new
+player meets first — Age of the Ring's MY CAPTAINS, a skirmish start): the learn job plays each of them on a fresh
+browser (`tools/warm-learn.mjs`, one slot, one after the other), and the server records those played to their end
+(every wait met) by name and content hash (`<learn>/snapshots/learned-scenarios.json`): a version is queued again until
+each of its current learn scenarios was played, so a version whose boot was learned by its publish session still gets
+its menus learned, and an edited scenario is played again (one that never reaches its end is given up after two tries). Scenario files are data; `--coords WxH` scales their pointer
+steps to the game's mode (a first launch may pick another resolution than the one they were written for). Measured:
+docs/snapshot.md "Warm jobs".

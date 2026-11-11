@@ -1,0 +1,18 @@
+# Age of the Ring, a warm job's learn session (src/server/warm-jobs.js): the intro skipped, the main menu, MY CAPTAINS
+# — its Create-a-Hero screen, the load a new player meets first (~900 loose files of the mod read one after another,
+# docs/slow-network.md) — then the end. Coordinates for 1024x768 (scaled to the game's mode). The menu draws 16-23 per
+# frame, the loading screen 3, the Create-a-Hero screen 55-141.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++15:key:27
++18:key:27
++20:waitframe:14,100000
+0:mark:menu
+4:move:199,299
+5:click:199,299
+6:mark:load
+8:waitframe:40,100000
+0:mark:captains
+10:mark:end
