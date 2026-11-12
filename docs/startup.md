@@ -354,6 +354,9 @@ Known limits (review of 2026-11-12, at integration):
   the lending version, takes that knowledge away from both.
 - The client's "covered" list (entries to forget) only reaches a version's own entries: a lent entry already covered
   is lent again at each session (background work only; own entries come first in the 40 000).
+- A module whose own heat covers `OWN_ENOUGH` (70 %) of the bytes the others would lend gets nothing lent: mature
+  versions measured 72-96 % for their executable (sessions play different content) and are served their own data,
+  as before sharing (lent lists had delayed RotWK 2.02's menu by ~1 s); a first session, at 0 %, gets the whole loan.
 - The heat served to a mature version changes at each index rebuild (10 min) when another version learns in shared
   pages, so its OPFS code cache sees "other extent" misses again from time to time, as its own growing heat already does.
 

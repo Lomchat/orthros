@@ -110,6 +110,21 @@ export function readRegionsFile(f) {
   return m;
 }
 
+/** a module whose own heat covers this share of the bytes other versions would lend gets nothing lent */
+export const OWN_ENOUGH = 0.7;
+/** the share of the bytes in `pairs` (lo, hi, ... merged) that RangeHeat `own` covers (0 without own heat) */
+export function ownCovers(own, pairs) {
+  if (!own) return 0;
+  const lo = own.pairs();
+  let total = 0, cov = 0, j = 0;
+  for (let i = 0; i + 1 < pairs.length; i += 2) {
+    const a = pairs[i], b = pairs[i + 1]; total += b - a;
+    while (j + 1 < lo.length && lo[j + 1] <= a) j += 2;
+    for (let k = j; k + 1 < lo.length && lo[k] < b; k += 2) cov += Math.min(b, lo[k + 1]) - Math.max(a, lo[k]);
+  }
+  return total ? cov / total : 1;
+}
+
 /** at most this many region entries served (the server's list before sharing: 40 000) */
 export const REGIONS_SERVED = 40000;
 
@@ -276,7 +291,14 @@ export class CodeShare {
         }
         if (lent) pagesLent++;
       }
-      if (pairs) { const r = new RangeHeat(); r.addPairs(pairs); outHeat.set(mod, r.pairs()); }
+      let lentPairs = null;
+      if (pairs) { const r = new RangeHeat(); r.addPairs(pairs); lentPairs = r.pairs(); }
+      // (a module the version's own sessions already know — its own heat covers OWN_ENOUGH of the lent code; mature
+      // versions measured 0.72-0.96 for their executable, sessions playing different content — gets
+      // nothing lent: a mature version is served exactly its own data, as before sharing, without the longer lists
+      // that delayed its menu by ~1 s; a module it never taught, or knows little of, still gets the others' knowledge)
+      if (lentPairs && ownCovers(this.opts.heatOf(v)?.get(mod), lentPairs) >= OWN_ENOUGH) continue;
+      if (lentPairs) outHeat.set(mod, lentPairs);
       for (const e of entries.values()) outRegions.push(e);
     }
     const out = { heat: outHeat, regions: outRegions.sort((a, b) => a[3] - b[3]), pagesLent };

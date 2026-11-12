@@ -1422,8 +1422,10 @@ the other versions' ranges, regions get larger): a mature version gains nothing 
 
 Result: no play regression beyond the pairs' spread on RotWK, BFME1, Vice City (Node) or RotWK, AotR (Chrome); a
 mature version's start is ~1 s later in Chrome with a warmed server (RotWK 2.02, two pairs; 1-3 s with the harness's
-new server), against 9-18 s gained by a first session (docs/startup.md). Possible follow-up: lend only to a version
-whose own data is still small. Defaults: code share on (server), MP3 host off, every hot* option off.
+new server), against 9-18 s gained by a first session (docs/startup.md). Follow-up done at the merge: a module whose
+own heat already covers 70 % of the lent bytes gets nothing lent (`OWN_ENOUGH`, code-share.js), so a mature version is
+served its own data again (live learn data: RotWK 2.02 37 743 entries served, 37 435 own; BFME 1.08 34 807, all own;
+AotR 31 474, 31 367 own); a first session (own 0 %) keeps the whole loan. Defaults: code share on (server), MP3 host off, every hot* option off.
 
 ## Measured, not kept
 
