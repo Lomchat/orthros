@@ -1873,6 +1873,92 @@ region with flags live), or an exit that stores a dirty set only on its cold pat
 values in parameters. Kept for measurement: `regsMem` (`region`, `block`, `flow`, `carry`), off by default;
 tools/scenarios/rotwk-regs-ab.txt, aotr-regs-ab.txt.
 
+## The third round of 2026-11-12 combined (registers, stack slots, x87 bounds, transitions, targeted fixes), measured against main
+
+Merged: the targeted fixes (`strSmcOne`, `divFast`, `mmxTopOnce`, `smcGroup` on; `apiInline` off), x87 exponent bounds
+(`x87Bounds`, off), the stack-slot opportunity measurement (tools only), nested region calls and linked exits
+(`nestCalls`, `linkExits`, off). Left out: guest registers in the state block (`regsMem`, see its section: a no-go whose
+modes were not exact and whose default path changed). Every lever keeps its own `JIT_DEFAULTS` key.
+
+Integration fixes (each with a test that fails without it):
+- `smcGroup`: the span's first page is read at `(r + lo) & 0x7fffffff`. With a null pointer and a negative field
+  (`mov [ebx+4], … ; mov [ebx-4], …`, ebx = 0) r + lo was below 0, the map byte read lay past the SMC map (0), the
+  check never fired: the null page was written and the next store trapped imprecisely instead of the leader's precise
+  fault. Wrapped, the address lands on the never-mapped pages above USER_END (SMC_NULL) and the cold path decides as
+  before (tests/jit-fixes.test.js "null pointer, negative field").
+- `smcGroup` and write watches: `Jit.watchWrites` now sets SMC_NEXT on the page before a watched page (as translated
+  code does); unwatching clears it unless the page holds code, dropping a page's code keeps it while the page is
+  watched. A group whose span started on the page before a watch missed it.
+- `linkExits`: `linkOf` never links a static exit to address 0 (or the thunks and above, emitChain's test): 0 is the
+  hash table's empty key, and an empty slot keeps a dropped entry's index and block — the exit ran another region
+  instead of faulting (tests/jit-tier2.test.js "a static exit to address 0 faults").
+- tools/bench/ab-virtual.mjs `--variant-tree NAME=<dir>`: that arm runs another checkout's startbench (main exported
+  with `git archive`), so the combined build and main play the same virtual-clock work at the same time.
+
+Exactness: `make test` green; the JIT, CPU-JIT and x87 interpreter suites at full depth (`ORTHROS_TEST_FULL=1`) with every
+kept switch on (`x87Bounds`, `nestCalls`, `linkExits`, `apiInline` plus the four fixes): 587 of 588, the one failure
+jit-site-prof's exit counts under `nestCalls` (expected, see "Cheaper transitions"; its state comparison passes).
+
+**Node** (`ab-virtual --virtual --variant-tree main=…`, V8's own tiers, no perf; tools/scenarios/fixes-*.txt, the live
+server's learned heat; three arms run together — main, combined, combined + `x87Bounds` — 3 batches, the arms' launch order
+rotated; identical guest work in every arm (the phases' guest instruction counts equal); load average 4-9). Mean of 3,
+per-batch values in brackets:
+
+| game, phase | guest ns/insn main → combined | guest ms/frame | thread CPU ms/frame |
+|---|---|---|---|
+| RotWK 2.02 play (`fixplay`, 6 131 M) | 1.827 [1.847 1.820 1.814] → 1.826 [1.808 1.854 1.815] (−0.1 %) | 8.94 → 8.93 | 10.86 → 10.93 (+0.6 %) |
+| RotWK map load (`load`, 2 440 M) | 0.864 → 0.791 (−8.4 %) | 175.6 → 160.9 | 263.8 → 251.8 (−4.6 %) |
+| AotR 10 play (`fixplay`, 7 443 M) | 1.560 [1.533 1.559 1.588] → 1.543 [1.550 1.524 1.557] (−1.1 %) | 11.07 → 10.95 | 13.40 → 13.26 (−1.0 %) |
+| AotR first play seconds (`play`, 1 923 M) | 1.773 → 1.719 (−3.1 %) | 16.08 → 15.59 | 22.15 → 21.86 (−1.3 %) |
+| AotR load / loading screen | 0.685 → 0.664 (−3.1 %) / 0.962 → 0.928 (−3.5 %) | | −3.7 % / −1.8 % |
+| AotR menu | 2.217 → 2.058 (−7.1 %) | 4.64 → 4.31 | 7.53 → 7.15 (−5.0 %) |
+| BFME 1.08 play (`fixplay`, 6 305 M) | 1.226 [1.233 1.232 1.212] → 1.217 [1.208 1.228 1.215] (−0.7 %) | 12.63 → 12.54 | 14.96 → 14.93 (−0.2 %) |
+| BFME 1.08 map load (`load`, 127 241 M) | 1.370 [1.371 1.364 1.374] → 1.341 [1.339 1.340 1.345] (−2.1 %) | 9.09 → 8.90 | 10.54 → 10.37; **load 202.2 s → 198.8 s (−1.6 %)** |
+| Vice City drive (7 549 M) | 1.379 [1.389 1.332 1.416] → 1.339 [1.348 1.332 1.339] (−2.9 %) | 7.28 → 7.07 | 8.78 → 8.61 (−1.9 %) |
+| Vice City load / cutscene | 1.176 → 1.142 (−2.9 %) / 1.909 → 1.851 (−3.1 %) | | −0.3 % / −1.9 % |
+
+Short phases within their spread both ways (RotWK menu +1.2 %, its first play seconds −1.3 %, BFME1's first 1 038 M
+of play +2.4 % with batches 1.206-1.307). The play gains are smaller than the targeted-fixes section's −3 to −5 %:
+that was `--no-liftoff` (TurboFan only) under perf; here V8 tiers as the browser does. The third arm is an A/A control
+for RotWK (no 24-bit truncating code there: the same code as combined): it differs from combined by −1.4 % in play,
+the noise floor of these means.
+
+`x87Bounds` against combined (same batches): BFME1 map load 1.341 → 1.338 ns (−0.2 %, 198.8 → 198.5 s), BFME1 play
+−0.5 %, AotR play 0.0 %, Vice City drive +2.0 %, RotWK −1.4 % (A/A). The branch's −2.1 % at identical work
+(`--no-liftoff`, perf) does not show with V8's tiers: **stays off**.
+
+Interaction of the four fixes (`--perf-phase`, `--no-liftoff`, host instructions per guest instruction of the regions,
+two batches per game: off / all / `smcGroup` alone, then the three others alone / all / off):
+
+| phase | off | all | `smcGroup` alone | the three others alone | sum of the two deltas |
+|---|---|---|---|---|---|
+| RotWK play (6 131 M) | 7.21 / 7.22 | 6.98 / 7.07 | 7.04 | 7.18 | −0.21 (all: −0.15 to −0.23) |
+| BFME1 map load (127 241 M) | 6.27 / 6.28 | 6.03 / 6.05 | 6.09 | 6.23 | −0.23 (all: −0.23) |
+
+Additive: the levers touch disjoint instruction patterns (`smcGroup` skips string stores, which `strSmcOne` handles;
+`divFast` changes no store, `mmxTopOnce` only the x87 TOP / tag code), so each is kept on its own merits. Process instructions per guest
+instruction all on: RotWK play 14.94 → 14.32 (−4.1 %), BFME1 load 10.78 → 10.37 (−3.8 %).
+
+**Chrome** (headless shell through `tools/with-browser-slot.sh`, `--gl-discard`, fresh profile, each run its own copy of
+the live learn directory without snapshots, each tree's own harness server; one browser at a time; load average 2-13):
+
+| game, phase | fps main → combined | worker CPU ms/frame | guest ms/frame | guest ns/insn |
+|---|---|---|---|---|
+| RotWK `rotwk-quick` play (120 s) | 28.4 → 26.5 | 17.26 → 16.57 (−4.0 %) | 16.8 → 16.4 | 2.382 → 2.188 (−8.1 %) |
+| RotWK menu / map load / loading screen | 28.7 → 28.8 / 2.0 → 3.2 / 6.7 → 10.8 | 10.52 → 10.41 / 281 → 178 / 71.1 → 50.0 | 8.5 → 8.6 / 185 → 121 / 56 → 40 | 2.43 → 2.50 / 0.89 → 1.00 / 1.28 → 1.16 |
+| AotR (fixes-aotr-play) menu / profile / map load, main → combined runs 1, 2 | 27.5 → 28.1, 27.8 / 29.1 → 29.1, 29.0 / 2.5 → 2.1, 2.3 | 11.23 → 11.78, 11.88 / 13.71 → 13.39, 13.15 / 353 → 289, 229 | | 2.73 → 2.67, 2.62 / 2.42 → 2.44, 2.42 / 0.72 → 0.66, 0.66 |
+
+(RotWK, one run each: fewer frames at less CPU per frame — the fps difference is the frames' pacing, not the emulator
+thread. AotR play is not comparable: both combined runs met the scenario's 400-draw anchor flake already seen on main
+and combined in the earlier rounds — after the load the game rendered ~375 draws per frame for 6-7 minutes at 26 fps
+before the anchor, then play started in another game state at 10-15 fps; main's run reached the anchor 16 s after the
+loading screen: 24.9 fps, 21.0 ms worker CPU per frame, 2.54 ns per instruction. In Node, the same scenario ran
+exactly main's guest instruction counts in every phase of all three combined batches: the guest takes the same path.)
+
+Defaults: `strSmcOne`, `divFast`, `mmxTopOnce`, `smcGroup` on; `x87Bounds`, `nestCalls`, `linkExits`, `apiInline` off;
+`regsMem` not merged. Deploy: the translated-code cache keys on JIT_DEFAULTS and the translator's source, so every
+player translates once again after the update; no server, manifest or data change.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for

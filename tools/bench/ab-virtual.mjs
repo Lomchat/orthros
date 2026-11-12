@@ -41,6 +41,10 @@ for (const j of jitOpts.values()) JSON.parse(j);
 // B='ORTHROS_MP3_HOST=1': Miles' MP3 decoding by the host, src/win32/miles-mp3.js)
 const variantEnv = new Map();
 for (let i = 0; i < args.length; i++) if (args[i] === '--variant-env') { const v = args[i + 1], e = v.indexOf('='); variantEnv.set(v.slice(0, e), Object.fromEntries(v.slice(e + 1).split(',').filter(Boolean).map((kv) => [kv.slice(0, kv.indexOf('=')), kv.slice(kv.indexOf('=') + 1)]))); }
+// --variant-tree NAME=<dir>: that variant's runs use <dir>'s startbench (another checkout of the repository, e.g. main
+// exported with `git archive` — combined branches against main on the same guest work and load)
+const variantTree = new Map();
+for (let i = 0; i < args.length; i++) if (args[i] === '--variant-tree') { const v = args[i + 1], e = v.indexOf('='); variantTree.set(v.slice(0, e), path.resolve(v.slice(e + 1), 'tools/bench/startbench.mjs')); }
 const perf = args.includes('--perf');
 // --perf-phase (tier 2, 2026-11-12): each run under `perf record` of user cycles, instructions and instruction-cache fills
 // (from L2, from beyond) with symbols (node --perf-basic-prof), counting only while the scenario has
@@ -52,6 +56,7 @@ const perfPhase = args.includes('--perf-phase');
 const perfLabel = opt('perf-label', 't2play');
 const runs = Number(opt('runs', 2));
 const dir = opt('keep') ?? fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-abv-'));
+// (--runs-only <r>: only round r of the runs — one pair at a time, its arms' order alternated by r)
 fs.mkdirSync(dir, { recursive: true });
 const bench = new URL('./startbench.mjs', import.meta.url).pathname;
 
@@ -61,7 +66,7 @@ for (let r = 0; r < runs; r++) for (const v of (r % 2 ? [...variants].reverse() 
 const reuse = args.includes('--reuse');
 const started = jobs.map((j) => new Promise((resolve) => {
   if (reuse) { resolve(0); return; }
-  const a = [bench, target, '--input', opt('input'), '--virtual', '--limit', opt('limit', '900'), '--phases', path.join(dir, j.name + '.json')];
+  const a = [variantTree.get(j.v.name) ?? bench, target, '--input', opt('input'), '--virtual', '--limit', opt('limit', '900'), '--phases', path.join(dir, j.name + '.json')];
   if (opt('games-dir')) a.push('--games-dir', opt('games-dir'));
   if (opt('heat')) a.push('--heat', opt('heat'));
   if (opt('profile-dir')) { const p = path.join(dir, 'profile-' + j.name); fs.rmSync(p, { recursive: true, force: true }); fs.cpSync(opt('profile-dir'), p, { recursive: true }); a.push('--save', p); }
