@@ -91,6 +91,12 @@ const siteReport = () => {
 };
 // --log <kinds>: the emulator log kinds printed (default crash; e.g. crash,warn — null-page faults are warnings)
 const vm = new Vm({ vfs, clock, host, logKinds: (opt('log') ?? 'crash').split(','), sharedMemory: bgWanted });
+// (measurement: ORTHROS_PERF_FIFO=<perf record/stat --control fifo>: a scenario's dbg:ORTHROS_PERF_CTL=1 / 0 enables / disables
+// the counting, so that perf measures one phase only)
+if (process.env.ORTHROS_PERF_FIFO) {
+  const fd = fs.openSync(process.env.ORTHROS_PERF_FIFO, 'w');
+  Object.defineProperty(globalThis, 'ORTHROS_PERF_CTL', { configurable: true, get: () => undefined, set: (v) => { fs.writeSync(fd, v ? 'enable\n' : 'disable\n'); console.log(`[perf] ${v ? 'enable' : 'disable'} at ${(vm.guestInsns / 1e6).toFixed(0)} M guest instructions`); } });
+}
 if (bgWanted && vm.jit) {
   const { Worker, MessageChannel, receiveMessageOnPort } = await import('node:worker_threads');
   const ch = new MessageChannel();

@@ -134,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, tier2: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -377,7 +377,7 @@ function regionLazyPrediction(blocks, byEip, lzaFree = false) {
  * before, and comparing more sites would give the same results.
  * @returns {Array<number[] | null>} per block index
  */
-function regionRetSites(blocks, byEip) {
+function regionRetSites(blocks, byEip, outsideSites = true) {
   const callers = new Map(); // callee entry block -> return sites of its calls
   const outside = []; // return sites of calls to callees outside the region
   for (const b of blocks) {
@@ -410,7 +410,7 @@ function regionRetSites(blocks, byEip) {
   // the RETs no in-region callee reaches (the region entry's function, a function the region was entered in the
   // middle of) may return to a call of a callee outside the region: a recursive function whose entry is another
   // region's (every level returns to the recursive call's site, in this region) — as the old region-wide list did
-  if (outside.length) for (const b of blocks) if (returns(b) && !sites[b.index]) sites[b.index] = outside.slice();
+  if (outsideSites && outside.length) for (const b of blocks) if (returns(b) && !sites[b.index]) sites[b.index] = outside.slice();
   let budget = MAX_RET_COMPARES;
   for (let i = 0; i < sites.length; i++) {
     const l = sites[i]; if (!l) continue;
@@ -894,6 +894,65 @@ export function buildRegionModule(codes, names = null, shared = false) {
   return m.build();
 }
 
+// ---- tier 2 (tier2.js): guest functions translated once into one module, calling each other with WASM calls
+/** results of a tier-2 function (Emitter.pushT2Results): tV, t2, eax..edi, EFLAGS, the lazy flags, the budget */
+export const T2_RESULTS = Object.freeze(Array(16).fill(T.i32));
+/** WASM function index of the first function a tier-2 module defines (after the region imports) */
+export const T2_FIRST_FUNC = IMP_CHAIN + 1;
+/**
+ * A tier-2 function: the region translator's code for `entry` restricted to the blocks of `onlyBlocks`, its calls and
+ * jumps to the other tier-2 functions (`t2.calls`) made WASM calls. Returns translateRegion's result.
+ */
+export function translateT2(mem, entry, opts) {
+  const em = new Emitter(mem, opts);
+  const out = em.run(entry);
+  if (out.blocks.find((b) => b.eip === entry)?.index !== 0) throw new Error(`tier 2: entry ${entry.toString(16)} is not the first block`);
+  return out;
+}
+/**
+ * The region-signature entry of tier-2 function `fn` (a WASM function index): the dispatcher and chained exits enter
+ * it at a block; it calls the function and leaves as a region does with what the function returned (chained to the
+ * next region when it can). It resets the nesting depth (`depth`): nothing of tier 2 is below it on the WASM stack.
+ */
+export function emitT2Entry(mem, fn, depth, opts) {
+  const E = new Emitter(mem, { ...opts, t2: null });
+  const c = E.c;
+  E.usesX87 = false; E.xmmMask = 0; E.prof = false;
+  c.i32(0).gset(depth);
+  for (let i = 0; i < L_FIRST_DECLARED; i++) c.get(i);
+  c.call(fn);
+  E.popT2Results();
+  c.get(L_T2).i32(-3).eq();
+  { const i = c.hint(false).if_(); c.i32(0).return_(); c.end(); void i; } // (an interpreter fault: the state block holds it all)
+  c.get(L_T2).i32(-2).eq();
+  { const i = c.if_(); c.i32(-1).set(L_T2); c.end(); void i; }
+  c.get(L_T2).i32(-1).eq();
+  { const i = c.hint(true).if_(); if (E.chain) E.emitChain(false); c.end(); void i; }
+  c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
+  E.flushRegs();
+  c.get(L_STATE).get(L_TV).i32store(ST.EIP);
+  c.get(L_T2).i32(-1).ne();
+  { const i = c.if_(); c.get(L_STATE).get(L_T2).i32store(ST.EXIT); c.end(); void i; }
+  c.get(L_TV).i32(0).get(L_T2).i32(-1).eq().select();
+  return c.finish();
+}
+/** A tier-2 module: the functions (`fns`: code bytes) then the entries (`entries`), exported e0..eN; global 0 the depth. */
+export function buildT2Module(fns, fnNames, entries, entryNames, shared = false) {
+  const m = new ModuleBuilder();
+  if (m.type(REGION_PARAMS, REGION_RESULTS) !== REGION_TYPE) throw new Error('region type must be type 0');
+  m.importMemory('env', 'memory', 32768, 32768, shared);
+  m.importTable('env', 'table', 1024, undefined);
+  m.importFunc('env', 'flags', [T.i32, T.i32, T.i32, T.i32, T.i32], [T.i32]);
+  m.importFunc('env', 'round24', [T.f64, T.i32], [T.f64]);
+  m.importFunc('env', 'fallback', [T.i32], [T.i32]);
+  for (const [name, params, results] of MATH_KERNELS) m.importFunc('env', name, params, results);
+  if (m.importFunc('env', 'chain', REGION_PARAMS, REGION_RESULTS) !== IMP_CHAIN) throw new Error('chain import index mismatch');
+  if (m.global(T.i32, true, 0) !== 0) throw new Error('tier 2: depth global');
+  fns.forEach((code, i) => { if (m.func(REGION_PARAMS, T2_RESULTS, LOCAL_TYPES, { buf: code, len: code.length, hints: code.hints }, 't2_' + fnNames[i]) !== T2_FIRST_FUNC + i) throw new Error('tier 2: function index'); });
+  entries.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length, hints: code.hints }, 'w2_' + entryNames[i]); m.exportFunc('e' + i, f); });
+  return m.build();
+}
+
 /**
  * Measurement (startbench --jit-sites: globalThis.ORTHROS_SITE_PROF, Node only, not with block counters): the region
  * exit sites — indirect calls and jumps, returns leaving their region, static exits (to a successor left out for the
@@ -964,6 +1023,28 @@ export class VisitSlots {
   }
 }
 
+/**
+ * Execution counters by block address (tier2.js's profile window, opts.countSlots): one u32 per address shared by the
+ * regions holding a block (per-region counters overflow the counter area with the copies), from the counter area in
+ * chunks; -1 once it is full.
+ */
+export class CountSlots {
+  constructor() { this.map = new Map(); this.next = 0; this.end = 0; this.full = false; }
+  get(mem, eip) {
+    let a = this.map.get(eip);
+    if (a !== undefined) return a;
+    if (this.next >= this.end) {
+      if (this.full) return -1;
+      const base = allocBlockCounters(mem, VISIT_CHUNK >> 2);
+      if (base < 0) { this.full = true; return -1; }
+      this.next = base; this.end = base + VISIT_CHUNK;
+    }
+    a = this.next; this.next += 4;
+    this.map.set(eip, a);
+    return a;
+  }
+}
+
 class Emitter {
   constructor(mem, opts) {
     this.mem = mem;
@@ -987,6 +1068,9 @@ class Emitter {
     this.nullPage = opts.nullPage ?? JIT_DEFAULTS.nullPage; // accesses to the first 64 KiB fault (see nullCheck)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
+    // tier-2 function (tier2.js, opts.tier2): { calls: guest entry -> WASM function index of the tier-2 functions of the
+    // module, depth: the global counting nested calls, maxDepth } — calls to them are WASM calls, every exit returns
+    this.t2 = opts.t2 ?? null;
     this.chainStub = !!(opts.chainStub ?? JIT_DEFAULTS.chainStub); // (see the jump exit in run)
     this.swLocal = !!(opts.swLocal ?? JIT_DEFAULTS.swLocal); // (the x87 status word in a local: see L_SW)
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
@@ -1100,7 +1184,9 @@ class Emitter {
       // (an entry block planned with a non-zero x87 shift loaded the stack for it, a region specialized for the stack
       // top has not loaded it yet: (re)loaded at shift 0 for the exit, which writes it back)
       if (this.x87Plan || this.topAssume !== null) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
-      c.get(L_STATE).i32load(ST.EIP).set(L_TV).i32(EXIT_FPUMODE).set(L_T2).br(this.exitCodeL);
+      // (a tier-2 function is entered at its entry by WASM calls only: under another mode it leaves to tier 1 there)
+      if (this.t2) c.i32(entry).set(L_TV).i32(-1).set(L_T2).br(this.exitCodeL);
+      else c.get(L_STATE).i32load(ST.EIP).set(L_TV).i32(EXIT_FPUMODE).set(L_T2).br(this.exitCodeL);
       c.end(); void i;
       if (this.topAssume !== null) { c.i32(this.topAssume).set(L_TOP); this.loadX87Tags(); this.loadX87Regs(); }
     }
@@ -1116,7 +1202,8 @@ class Emitter {
     this.pathOf = pathOf;
     // per RET block, the return sites of the region's direct calls it may return to: a RET to one of them stays in the
     // region (see HANDLERS[OP.RET])
-    this.retSitesOf = regionRetSites(blocks, byEip);
+    // (a tier-2 function: its calls to other functions are WASM calls, a RET never returns to their sites locally)
+    this.retSitesOf = regionRetSites(blocks, byEip, !this.t2);
     // top level: the region's dispatcher (entries, unstructured edges) routes a block to its top-level unit
     this.emitUnits(top, () => this.dispatchAmong(top, 0, blocks.length - 1, null, def));
     c.end(); // def
@@ -1127,7 +1214,14 @@ class Emitter {
     // there and merges every live value into it: code run at each entry of the region)
     if (!this.dispatchUsed && (this.opts.dispatchBlock ?? JIT_DEFAULTS.dispatchBlock)) { if (c.buf[this.dispatchAt] !== 0x03) throw new Error('dispatch loop not found'); c.buf[this.dispatchAt] = 0x02; this.stats.dispatchBlock = 1; }
     c.end(); // exitJmpL: jump exit (tV = target eip)
-    if (this.opts.exitShare ?? JIT_DEFAULTS.exitShare) {
+    if (this.t2) {
+      // tier-2 function (tier2.js): every exit returns to its WASM caller with the x87 / XMM caches written back —
+      // (tV, t2: -1 a jump to tV, -2 a RET to tV, >= 0 an exit code; the registers, lazy flags and budget)
+      c.i32(-1).set(L_T2);
+      c.end(); // exitCodeL
+      this.flushFpu(true); this.flushXmm();
+      this.pushT2Results();
+    } else if (this.opts.exitShare ?? JIT_DEFAULTS.exitShare) {
       // one exit tail for both kinds: the x87 / XMM caches and the registers written back by one copy of the code
       // (the flushes were emitted once per kind, three times for the x87 stack: the chained path, the jump exit's
       // and the code exit's — ~200 operations of an x87 region's epilogue); a jump exit tries the chain first
@@ -1179,7 +1273,7 @@ class Emitter {
     const out = blocks.map((b) => ({ eip: b.eip, index: b.index, end: b.end }));
     if (this.layout) out.sort((x, y) => x.eip - y.eip);
     // (deps in address order, as code-cache.js inlineDeps over a discovery pass gives them)
-    return { code: c.finish(), blocks: out, stats: this.stats, fpcAssume: this.fpcAssume === null || this.topAssume === null ? this.fpcAssume : this.fpcAssume | X87_MODE_TOP | this.topAssume, altAt: this.altAt, deps: inlineDeps(this.discovered) };
+    return { code: c.finish(), blocks: out, stats: this.stats, usesX87: this.usesX87, fpcAssume: this.fpcAssume === null || this.topAssume === null ? this.fpcAssume : this.fpcAssume | X87_MODE_TOP | this.topAssume, altAt: this.altAt, deps: inlineDeps(this.discovered) };
   }
 
   /**
@@ -1693,10 +1787,82 @@ class Emitter {
     this.exitCode(EXIT.TIMESLICE, eip);
     c.end(); void i;
   }
+  // ------------------------------------------------------------------ tier 2 (tier2.js)
+  /** the values a tier-2 function returns: tV, t2, the registers, EFLAGS, the lazy flags, the budget */
+  pushT2Results() {
+    const c = this.c;
+    c.get(L_TV).get(L_T2);
+    for (let i = L_REG; i <= L_ICOUNT; i++) c.get(i);
+  }
+  /** a tier-2 function's results (pushT2Results) into the locals */
+  popT2Results() {
+    const c = this.c;
+    for (let i = L_ICOUNT; i >= L_REG; i--) c.set(i);
+    c.set(L_T2).set(L_TV);
+  }
+  /**
+   * A guest CALL to tier-2 function `target` (its return address already pushed): a WASM call with the registers, flags
+   * and budget; back from it, a RET to `ret` goes on in this function, anything else leaves it the way the callee did
+   * (a RET elsewhere — SEH, longjmp, a return address replaced — as a jump there). The budget is checked first (a
+   * recursion has no backward branch), and the nesting is bounded (the WASM stack): either leaves to `target`.
+   */
+  t2Call(target, ret, n) {
+    const c = this.c, t2 = this.t2;
+    this.charge(n);
+    c.get(L_ICOUNT).i32(0).le_s().gget(t2.depth).i32(t2.maxDepth).ge_u().or();
+    { const i = c.hint(false).if_(); this.exitTo(target, 0); c.end(); void i; }
+    const s = this.x87Normalize(0), fpc = this.fpcStatic;
+    this.flushFpu(false); this.flushXmm();
+    c.gget(t2.depth).i32(1).add().gset(t2.depth);
+    c.i32(0); // (the entry block: first in the layout)
+    for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
+    c.call(t2.calls.get(target));
+    this.popT2Results();
+    c.gget(t2.depth).i32(1).sub().gset(t2.depth);
+    if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
+    this.loadXmm();
+    this.fpcStatic = null; // (the callee may have changed the x87 mode: the return site's guard tests it)
+    c.get(L_T2).i32(-2).eq().get(L_TV).i32(ret).eq().and();
+    { const i = c.hint(true).if_(); this.stats.t2Calls = (this.stats.t2Calls ?? 0) + 1; this.jumpTo(ret, 0); c.end(); void i; }
+    c.get(L_T2).i32(-2).eq();
+    { const i = c.if_(); c.i32(-1).set(L_T2); c.end(); void i; }
+    c.br(this.exitCodeL);
+    this.fpcStatic = fpc;
+    this.x87Restore(s);
+  }
+  /** A jump to tier-2 function `target` (a tail call, an import stub's jump): a WASM tail call, after a budget check. */
+  t2Tail(target, n) {
+    const c = this.c;
+    this.charge(n);
+    c.get(L_ICOUNT).i32(0).le_s();
+    { const i = c.hint(false).if_(); this.exitTo(target, 0); c.end(); void i; }
+    const s = this.x87Normalize(0);
+    this.flushFpu(false); this.flushXmm();
+    c.i32(0);
+    for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
+    c.return_call(this.t2.calls.get(target));
+    this.stats.t2Tails = (this.stats.t2Tails ?? 0) + 1;
+    this.x87Restore(s);
+  }
+  /** A RET (address in L_TV) of a tier-2 function: back to the WASM caller, which compares it with its return site. */
+  t2Ret() {
+    this.charge(this.insnIdx);
+    const s = this.x87ExitState();
+    this.c.i32(-2).set(L_T2).br(this.exitCodeL);
+    this.x87Restore(s);
+  }
+  /** the tier-2 function called through absolute slot `o` (an import slot: its value now), or -1 */
+  t2Slot(o) {
+    if (!this.t2 || o.t !== OT.MEM || o.base >= 0 || o.index >= 0 || o.size !== 4 || o.seg === SEG.FS || o.seg === SEG.GS) return -1;
+    let v;
+    try { v = this.mem.read32(o.disp >>> 0) >>> 0; } catch { return -1; }
+    return this.t2.calls.has(v) ? v : -1;
+  }
+
   /** Jump to a guest address: intra-region branch or exit. `n` instructions consumed for the budget. */
   jumpTo(target, n) {
     const b = this.byEip.get(target);
-    if (!b) { this.exitTo(target, n); return; }
+    if (!b) { if (this.t2 && this.t2.calls.has(target)) this.t2Tail(target, n); else this.exitTo(target, n); return; }
     const c = this.c;
     this.fpuModeGuard(target, n);
     const t = b.index, sp = this.pathOf[this.cur], tp = this.pathOf[t];
@@ -2219,6 +2385,7 @@ class Emitter {
     this.xsValid = this.xsDirty = this.xdValid = this.xdDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
     this.cur = b.index;
     if (this.counterBase >= 0) { const a = this.counterBase + 4 * b.index; this.c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a); }
+    else if (this.opts.countSlots) { const a = this.opts.countSlots.get(this.mem, b.eip); if (a >= 0) this.c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a); }
     if (this.visitAt !== null && this.visitAt[b.index] >= 0) {
       // (stats.visitSites: the body offset of each flag address, a 5-byte LEB — the area is above 2^28 —: see patchVisitSlots)
       this.c.i32(0).i32(1); (this.stats.visitSites ??= []).push(b.eip, this.c.len + 2); this.c.i32store8(this.visitAt[b.index]);
@@ -2374,7 +2541,12 @@ class Emitter {
     c.i32(insn.addr).call(IMP_FALLBACK).tee(L_T2);
     const i = c.hint(false).if_();
     c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
-    c.i32(0).return_(); // exit code already stored by the host
+    if (this.t2) { // (a tier-2 function: t2 -3, everything in the state block, up to its region-signature entry)
+      c.i32(0).i32(-3);
+      for (let i = 0; i < 8; i++) c.get(L_STATE).i32load(ST.GPR + 4 * i);
+      for (const o of [ST.EFLAGS, ST.LZ_OP, ST.LZ_RES, ST.LZ_SRC1, ST.LZ_SRC2]) c.get(L_STATE).i32load(o);
+      c.get(L_ICOUNT).return_();
+    } else c.i32(0).return_(); // exit code already stored by the host
     c.end(); void i;
     this.reloadAll();
     this.lz = { kind: LZ.NONE, sz: 2 };
@@ -2939,6 +3111,13 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
     E.exitToStack();
     c.end(); // slow
   }
+  const t2s = insn.opsize === 4 ? E.t2Slot(t) : -1;
+  if (t2s >= 0) { // (an import stub's jump to a tier-2 function: a tail call, guarded by the slot's value)
+    const c = E.c;
+    E.loadOp(t); c.set(L_TV);
+    c.get(L_TV).i32(t2s).eq(); const i = c.hint(true).if_(); E.t2Tail(t2s, E.insnIdx); c.end(); void i;
+    c.get(L_TV); E.exitToStack(); return;
+  }
   E.loadOp(t); if (insn.opsize === 2) E.c.i32(0xffff).and();
   if (insn.jtab && insn.jtab.targets.some((a) => E.byEip.has(a))) { E.jumpTable(insn); return; }
   E.count(PF.indirect);
@@ -2956,6 +3135,7 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   const c = E.c; const t = insn.ops[0];
   if (t.t === OT.REL) {
     c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
+    if (E.t2 && insn.opsize === 4 && E.t2.calls.has(t.v)) { E.t2Call(t.v, insn.next, b.insns.length); return; }
     E.inCall = true; E.jumpTo(insn.opsize === 2 ? t.v & 0xffff : t.v, b.insns.length); E.inCall = false; // (inCall: see siteProf)
     return;
   }
@@ -2972,6 +3152,9 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   }
   E.loadOp(t); c.set(L_T4);
   c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
+  // a call through an import slot holding a tier-2 function: that function called, guarded by the slot's value
+  const t2s = insn.opsize === 4 ? E.t2Slot(t) : -1;
+  if (t2s >= 0) { c.get(L_T4).i32(t2s).eq(); const i = c.hint(true).if_(); E.t2Call(t2s, insn.next, b.insns.length); c.end(); void i; }
   c.get(L_T4); if (insn.opsize === 2) c.i32(0xffff).and();
   E.count(PF.indirect);
   if (globalThis.ORTHROS_SITE_PROF) { c.set(L_TV); E.siteProf(insn.addr, t.t === OT.MEM && t.base < 0 && t.index < 0 ? 'icallAbs' : 'icall'); c.get(L_TV); }
@@ -3067,6 +3250,7 @@ HANDLERS[OP.RET] = (E, insn) => {
     c.get(L_TV).i32(site).eq();
     const i = c.if_(); E.count(PF.retLocal); E.inRet = true; E.jumpTo(site, E.insnIdx); E.inRet = false; c.end(); void i;
   }
+  if (E.t2) { E.t2Ret(); return; }
   E.count(PF.ret);
   E.siteProf(insn.addr, 'ret');
   c.get(L_TV);
