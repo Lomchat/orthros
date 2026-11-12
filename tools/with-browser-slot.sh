@@ -25,9 +25,11 @@ if [ "$mem" != "0" ] && command -v systemd-run >/dev/null && systemd-run --scope
   # slot 3 36-39); <cpu list> (e.g. 44-47): those; empty (ORTHROS_BROWSER_CPUS=): the quota alone. A quota alone on
   # this 48-core host lets SwiftShader's 16 worker threads burn the quota in a few ms of each 100 ms period, then the
   # whole scope — the emulator's thread included — is stopped for the rest (docs/render-worker.md section 11): RotWK play
-  # ran at 3 fps and 8.8 ns per guest instruction in the frame accounting with the quota alone, 28 fps and 2.4 ns pinned
-  # (docs/jit-code-shape.md "Chrome against Node"). Pinned, the model is a 4-core PC, where at most 4 threads run at once.
-  if [ "$cpus" = auto ]; then pinned=$(( (${cpu%\%} + 99) / 100 ))
+  # ran (--gl-discard) at 13 fps and 7.2 ns per guest instruction in the frame accounting with the quota alone, 28 fps
+  # and 2.5 ns pinned (docs/jit-code-shape.md "Chrome against Node"). Pinned, the model is a 4-core PC, where at most 4
+  # threads run at once. (Whole cores the quota covers, rounded down: more cores than the quota would throttle again.)
+  if [ "$cpus" = auto ]; then
+    q=${cpu%\%}; case "$q" in ''|*[!0-9]*) pinned=0 ;; *) pinned=$(( q / 100 )); [ "$pinned" -lt 1 ] && pinned=1 ;; esac
   elif [ -n "$cpus" ]; then scope+=(-p "AllowedCPUs=$cpus"); fi
 fi
 while :; do
@@ -36,7 +38,7 @@ while :; do
     for i in $(seq 1 "$max"); do
       run=("${scope[@]}")
       if [ ${#run[@]} -gt 0 ] && [ "$pinned" -gt 0 ]; then
-        hi=$(( $(nproc) - (i - 1) * pinned - 1 )); lo=$(( hi - pinned + 1 ))
+        hi=$(( $(nproc --all) - (i - 1) * pinned - 1 )); lo=$(( hi - pinned + 1 ))
         [ "$lo" -ge 0 ] && run+=(-p "AllowedCPUs=$lo-$hi")
       fi
       [ ${#run[@]} -gt 0 ] && run+=(--)

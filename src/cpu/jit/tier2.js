@@ -16,8 +16,8 @@
 //   address — is a jump there). Cold blocks, indirect transfers, faults, APIs, the budget: every exit unwinds the WASM
 //   calls (each caller passes the callee's exit up) to the function's region-signature entry, which leaves as a region
 //   does (chained); the dispatcher then resumes in tier 1. Every block of a function is enterable from the dispatcher
-//   and chains (hash entries) except in x87 functions (specialized for the x87 mode of their tier-1 region: entered by
-//   WASM calls only; another mode leaves to tier 1 at their entry);
+//   and chains (hash entries), x87 functions too (specialized for the x87 mode of their tier-1 region: entered under
+//   another mode, EXIT_T2MODE at their entry hands their hash entries back to tier 1);
 // - tier-1 regions translated afterwards stop at tier-2 blocks (discoverRegion boundaries) and chain into them.
 // Code written over (SMC) on a page holding tier-2 code drops all of tier 2 (tier 1 takes over).
 import { decode, OP, OT } from '../decoder.js';

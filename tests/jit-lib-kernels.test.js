@@ -102,7 +102,7 @@ test('library kernels: floor, ceil, fabs, memcmp, memcpy against the interpreter
   const n = depth(800, 100);
   for (const [base, jitOpts] of [[img.imageBase, {}], [0x10000000, { chain: false }]]) {
     // A the interpreter, B the JIT with the kernels, D without (the reference off the kernels' paths: what the JIT did)
-    const A = machine(img, base, null), B = machine(img, base, jitOpts), D = machine(img, base, { ...jitOpts, libKernels: false });
+    const A = machine(img, base, null), B = machine(img, base, { ...jitOpts, libKernels: true }), D = machine(img, base, { ...jitOpts, libKernels: false });
     const data = [B.mod.base + dataSec.rva, B.mod.base + dataSec.rva + dataSec.virtualSize];
     for (const def of LIB_KERNELS) {
       const [, fn] = def.name.split('!');

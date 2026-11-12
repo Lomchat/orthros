@@ -516,7 +516,7 @@ export class Vm {
             this.mem.write32(lenAt, 0);
 
             if (this.jit?.watchHit(cpu.exitArg, cpu.eip, len, thread)) break; // write watch (debugging), not code
-            this.invalidateCode(cpu.exitArg, len);
+            this.invalidateCode(cpu.exitArg, len, true);
             break;
           }
           default:
@@ -800,8 +800,14 @@ export class Vm {
   }
 
   // ------------------------------------------------------------------ faults & diagnostics
-  /** Code at [addr, addr+len) changed: drop cached decodes / translations. */
-  invalidateCode(addr, len) {
+  /**
+   * Code at [addr, addr+len) changed: drop cached decodes / translations. `exact` (a guest store the translated code
+   * caught, EXIT.SMC): that range only; else (VirtualProtect, VirtualFree, FlushInstructionCache… — the host's own writes
+   * into code, WriteProcessMemory or a ReadFile into a code buffer, are caught by nothing else) the whole pages, as
+   * Windows rounds a protection change to them.
+   */
+  invalidateCode(addr, len, exact = false) {
+    if (!exact) { const a = addr >>> 0, lo = a - (a % 4096), hi = Math.min(2 ** 32, Math.ceil((a + Math.max(1, len)) / 4096) * 4096); addr = lo; len = hi - lo; }
     this.interp.invalidate(addr, len);
     if (this.jit) this.jit.invalidate(addr, len);
   }

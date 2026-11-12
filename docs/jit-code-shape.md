@@ -998,12 +998,15 @@ Vice City's crack does the same at startup (1-byte stores into its writable `.rs
 first 4 G instructions).
 
 **Change** (jit.js `invalidate`, `smcExact`): only the regions with a block overlapping the written range itself
-(`EXIT_ARG`, `EXIT_LEN` — the store's own width for plain stores, 16 bytes when the store did not record it) are dropped.
+(`EXIT_ARG`, `EXIT_LEN` — a string store's range or a store wider than 16 bytes; 16 bytes for every other store, whose
+width is not recorded: data up to 15 bytes before code still drops it) are dropped.
 The translated code is unchanged: a store into a code page still leaves its region (one map byte per page), the
 dispatcher resumes after it, and when it overlapped no translated byte nothing is dropped and the page keeps its flag
 (`stats.smcKept`). Exact because a region depends only on its blocks' bytes, `[eip, end)` of each run of decoded
 instructions (what the translator reads besides — import slots run inline, jump tables — it compares at run time);
-the VirtualFree / FlushInstructionCache ranges go through the same test. Also: a region leaves `Jit.regions` in O(1)
+the API ranges (VirtualProtect, VirtualFree, FlushInstructionCache) are rounded to whole pages first (Vm.invalidateCode:
+the host's own writes into code — WriteProcessMemory, a ReadFile into a code buffer — raise no SMC exit, so those calls
+are their only net, and Windows rounds a protection change to pages). Also: a region leaves `Jit.regions` in O(1)
 (its index `at`, the last region moved into its place) instead of `indexOf` + `splice` over ~17 000 live regions.
 `?jitopts={"smcExact":false}`, `dbg:ORTHROS_JIT_AB={"smcExact":false}` or `dbg:ORTHROS_SMC_PAGE=1`: page-granular as
 before, for measurement. Tests: tests/jit-smc-exact.test.js (random programs storing data of every width around their
@@ -1131,7 +1134,7 @@ the execution it covers. Prototype: src/cpu/jit/tier2.js, `ORTHROS_JIT_AB={"tier
   guest instructions, printed by startbench at each `ORTHROS_PERF_CTL` switch; the counters cost time), `ORTHROS_TIER2_LOG=1`
   (the selection and build).
 
-## Library kernels recognised by content (2026-11-12, D122): exact, on by default
+## Library kernels recognised by content (2026-11-12, D122): exact, off by default
 
 The C runtime the SAGE games ship (msvcr71.dll 7.10.3052.4, the same file in BFME1, BFME2, RotWK and AotR) runs 8.7 %
 of RotWK's executed guest bytes in play (the study of 2026-11-12: `floor` 3.71 %, `fabs` 0.82 %, `ldexp` 0.81 %, `memcmp`
@@ -1206,8 +1209,12 @@ their content (DECISIONS.md D122): a library is recognised, never a game.
 - RotWK in-session A/B (startbench, real clock, tools/scenarios/rotwk-libk-ab.txt: 25 s phases after a 5 s warm-up
   following each switch), guest ns per instruction on / off: 2.257 / 2.404, 2.004 / 2.273, 2.295 / 2.254 (medians 2.257
   / 2.273); guest ms per frame 14.4 / 15.9, 15.0 / 17.5, 16.2 / 16.0.
-- On by default: fewer host instructions on both games in every round, every kernel faster than its translation per
-  call, exact; no measure where it loses beyond the spread.
+- Off by default (integration of 2026-11-12): fewer host instructions on both games in every round and every kernel
+  faster than its translation per call, but no time measure beyond the spread on any game, which the rule for a default
+  asks for (`JIT_DEFAULTS.libKernels`; `?jitopts={"libKernels":true}` or `dbg:ORTHROS_JIT_AB={"libKernels":true}` to
+  run them). The `memcpy` kernel catches almost nothing (102 calls on BFME1, none seen on RotWK): the study's hot copy is
+  most likely `memmove`, a separate function, not recognised. Under exact SMC invalidation a kernel is still dropped
+  by page (its fingerprinted ranges span helpers and constants, not blocks).
 
 Not done here: `ldexp` (`_decomp` / `_set_exp`, ~90 instructions with the frame they leave), `modf` (SSE2 path and the
 integer part stored through a pointer), `strncpy` (the magic-bits word loop), the MP3 decoder (a later step), and the

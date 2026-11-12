@@ -481,8 +481,10 @@ function scopeCpuStat() {
   try {
     const cg = fs.readFileSync('/proc/self/cgroup', 'utf8').split('\n').find((l) => l.startsWith('0::'))?.slice(3);
     if (!cg) return null;
+    // (no quota on the scope: cpu.max reads "max <period>" — cpu.stat has nr_periods all the same, at 0)
+    if (fs.readFileSync(`/sys/fs/cgroup${cg}/cpu.max`, 'utf8').startsWith('max')) return null;
     const st = Object.fromEntries(fs.readFileSync(`/sys/fs/cgroup${cg}/cpu.stat`, 'utf8').trim().split('\n').map((l) => l.split(' ')).map(([k, v]) => [k, Number(v)]));
-    return 'nr_periods' in st ? st : null; // (no limit set: no bandwidth fields)
+    return 'nr_periods' in st ? st : null;
   } catch { return null; }
 }
 function throttleText(a, b) {
