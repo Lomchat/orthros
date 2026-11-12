@@ -231,6 +231,7 @@ const report = (why) => {
     const h = new Map(); for (const r of vm.jit.regions) { const k = r.fpc === null || r.fpc === undefined ? 'none' : '0x' + (r.fpc & 0xf00).toString(16); h.set(k, (h.get(k) ?? 0) + 1); }
     console.log(`[x87modes] live regions by x87 mode: ${[...h].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')}`);
   }
+  if (vm.jit?.stats.smcChecks) console.log(`[smc] store checks emitted ${vm.jit.stats.smcChecks}, of which group checks ${vm.jit.stats.smcGroups}; stores covered by a group ${vm.jit.stats.smcGrouped}`);
   if (args.includes('--mix') && vm.jit) { console.log(jitMix(vm.jit)); console.log(jitShape(vm.jit, listRegion)); const st = vm.jit.stats; console.log(`[mix] chained transitions ${(st.chained / 1e6).toFixed(1)} M, misses ${st.misses}, fallback steps ${st.fallbackSteps}, interpreter steps ${st.steps}`); }
   if (args.includes('--jit-profile') && vm.jit) { for (const t of vm.proc?.threads ?? []) vm.jit.harvest(t.cpu.b4); console.log(`[jitprof] ${Object.entries(vm.jit.stats.prof ?? {}).filter(([, v]) => v).map(([k, v]) => `${k} ${(v / 1e6).toFixed(1)}M`).join(', ')}; chained ${(vm.jit.stats.chained / 1e6).toFixed(1)}M; unchained (thunk, stop, budget, miss) ${[0, 1, 2, 3].map((k) => (vm.mem.read32(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k) / 1e6).toFixed(1) + 'M').join(' ')}; API calls ${(vm.apiCalls / 1e6).toFixed(1)}M`);
     // (the fast-path API calls the dispatcher ran in WASM, per API)
@@ -269,6 +270,17 @@ if (opt('stall')) {
 const apiHist = args.includes('--api-hist') ? new Map() : null;
 // (the tick counters' reads, the translated code's fast paths included: GetTickCount / timeGetTime by any path)
 if (apiHist) for (const [k, n] of [['tickCount', 'GetTickCount (all paths)'], ['mmTime', 'timeGetTime (all paths)']]) { const f = vm.timerRes[k].bind(vm.timerRes); vm.timerRes[k] = (t) => { apiHist.set(n, (apiHist.get(n) ?? 0) + 1); return f(t); }; }
+// (with a scenario: each phase's API calls dispatched to JavaScript and, with --jit-profile, the dispatcher's WASM fast
+// paths, per frame — [apiphase] lines, the most frequent first)
+let apiHistLast = new Map(), fastLast = new Uint32Array(32);
+const apiPhase = (label, frames) => {
+  const f = Math.max(1, frames), d = [];
+  for (const [k, v] of apiHist) { const x = v - (apiHistLast.get(k) ?? 0); if (x) d.push([k, x]); }
+  apiHistLast = new Map(apiHist);
+  const u32 = vm.mem.u32, b = FAST_PROF >>> 2, names = Object.entries(FAST_NAMES).reduce((a, [k, v]) => { a[v] ??= k.replace(/^[a-z0-9]+\.dll!/, ''); return a; }, { 16: 'deferred COM' }), fd = [];
+  for (let i = 0; i < 32; i++) { const x = u32[b + i] - fastLast[i]; fastLast[i] = u32[b + i]; if (x) fd.push([names[i] ?? i, x]); }
+  console.log(`[apiphase] ${label} per frame (${frames} frames): JS ${d.sort((a, c) => c[1] - a[1]).slice(0, Number(process.env.API_HIST_N || 25)).map(([k, v]) => `${k} ${(v / f).toFixed(1)}`).join(', ')}; fast ${fd.sort((a, c) => c[1] - a[1]).map(([k, v]) => `${k} ${(v / f).toFixed(1)}`).join(', ')}`);
+};
 // --threads: guest instructions per thread (nested runs charged to the outermost), with the report
 const threadInsns = args.includes('--threads') ? new Map() : null;
 if (threadInsns) {
@@ -290,6 +302,7 @@ const scenarioFrom = benchDef?.coords ?? (opt('coords') ? opt('coords').split(',
 const scenario = scenarioFile ? new NodeScenario(fs.readFileSync(scenarioFile, 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined, { from: scenarioFrom }) : null;
 // --slow-apis <ms>: with a scenario, the APIs' time in the frames longer than that, per phase ([slowapis] lines)
 if (scenario && opt('slow-apis')) scenario.enableSlowApis(Number(opt('slow-apis')));
+if (scenario && apiHist) (scenario.phaseReports ??= []).push(apiPhase);
 // --gc <ms>: with a scenario, this thread's garbage collections per phase and in the frames longer than that ([gc] lines)
 if (scenario && opt('gc')) scenario.enableGc(Number(opt('gc')), await import('node:v8'));
 // --jit-profile with a scenario: each phase's profile counters (the difference since the previous mark)

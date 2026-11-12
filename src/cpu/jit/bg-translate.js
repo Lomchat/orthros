@@ -290,7 +290,7 @@ function compileHere(module, n) {
   if (warmImports?.env.memory !== mem.memory) { // (built for this worker's guest memory: again after another 'init')
     const table = new WebAssembly.Table({ initial: 1024, element: 'anyfunc' }), memory = mem.memory, shared = memory.buffer instanceof SharedArrayBuffer;
     const rt = new WebAssembly.Instance(new WebAssembly.Module(buildRuntime({ shared, tailCalls: supportsReturnCall() })), { env: { memory, table, now: () => 0, mmTime: () => 0, tickCount: () => 0 } }).exports;
-    warmImports = { env: { memory, table, flags: rt.flags, round24: rt.round24, chain: rt.chain, fallback: () => 0 } };
+    warmImports = { env: { memory, table, flags: rt.flags, round24: rt.round24, chain: rt.chain, fastApi: rt.fastApi, fallback: () => 0 } };
     for (const [name] of MATH_KERNELS) warmImports.env[name] = rt[name];
   }
   let inst;

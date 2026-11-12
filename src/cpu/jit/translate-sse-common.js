@@ -69,8 +69,9 @@ export function xmmStoreHigh(E, r, emitValue) { const c = E.c; c.get(xmmLocal(r)
  */
 export function mmTouch(E) {
   const c = E.c;
+  if (E.mmClean) return; // (an earlier MM access of the block did it, and nothing changed TOP or the tags since: mmxTopOnce)
   E.x87SetTop0();
-  if (E.usesX87) { c.i32(0xff).set(L_FTW); E.stValid = 0xff; }
+  if (E.usesX87) { c.i32(0xff).set(L_FTW); E.stValid = 0xff; if (E.mmxTopOnce) E.mmClean = true; }
   else c.get(L_STATE).i32(0xff).i32store16(ST.FPU_TW);
 }
 

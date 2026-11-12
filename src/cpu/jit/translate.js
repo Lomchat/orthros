@@ -16,7 +16,7 @@ import { inlineDeps } from './code-cache.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { NULL_PAGE_END, USER_END, nullChecks, nullCheckApplies } from '../nullpage.js';
-import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, EXIT_T2MODE, FAST_TABLE, PROC_CONSTS } from './runtime.js';
+import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, EXIT_T2MODE, FAST_TABLE, FAST_PROF, PROC_CONSTS } from './runtime.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
@@ -105,6 +105,8 @@ const IMP_ARITH24 = IMP_MATH + 10, IMP_F32RC = IMP_MATH + 11;
 const IMP_X87_ARITHF32 = IMP_MATH + 12, IMP_X87_ROUNDF32 = IMP_MATH + 13, IMP_X87_NANARITH = IMP_MATH + 14;
 // the runtime's shared region exit (runtime.js chain, opts.chainStub), after the kernels
 const IMP_CHAIN = IMP_MATH + 15;
+/** the runtime module's fastApi(fid, state, thunk index) (opts.apiInline) */
+const IMP_FASTAPI = IMP_CHAIN + 1;
 
 if (MATH_KERNELS.length !== 15 || MATH_KERNELS[0][0] !== 'exp2m1' || MATH_KERNELS[7][0] !== 'atan2' || MATH_KERNELS[8][0] !== 'sincos' || MATH_KERNELS[9][0] !== 'nan2' || MATH_KERNELS[10][0] !== 'arith24' || MATH_KERNELS[11][0] !== 'f32rc'
   || MATH_KERNELS[12][0] !== 'x87ArithF32' || MATH_KERNELS[13][0] !== 'x87RoundF32' || MATH_KERNELS[14][0] !== 'x87NanArith') throw new Error('math kernel import layout mismatch');
@@ -134,7 +136,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: false, strSmcOne: true, divFast: true, mmxTopOnce: true, smcGroup: true, apiInline: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -487,6 +489,53 @@ function planNullChecks(insns, smc, mode) {
     if (w) for (const [key, g] of groups) if ((g.o.base >= 0 && (w >> g.o.base) & 1) || (g.o.index >= 0 && (w >> g.o.index) & 1)) groups.delete(key);
   }
   return plan;
+}
+
+// ---- grouped self-modifying-code checks (opts.smcGroup). Stores of a block through the same base and index registers
+// (and scale), unchanged between them, whose bytes all lie within one 4 KiB span — the fields of one structure written
+// one after the other — share one check: at the first of them (the leader, after its store), on the span of the whole
+// group, [r + lo, r + hiEnd). Every page holding translated code (or a watch, or never mapped) has its SMC map byte set,
+// and the page before it SMC_NEXT: one byte read at r + lo tells that neither of the (at most) two pages of the span
+// holds any, so the stores after it in the block need no check of their own. When it does, the cold path tests the
+// leader's own store as before (its exit invalidates what it wrote), then the span: touching such a page, the region is
+// left right after the leader — the rest of the block runs from a region entered there, its stores checked from there.
+// Exact because nothing translates code while a region runs (translation happens at the dispatcher), so the pages
+// clean after the leader stay clean until the block's last store; the registers are the same, so the stores land
+// inside the span.
+/** Stores whose ops[0] memory operand is written, checked after the store by Emitter.smcCheck through L_TA */
+const SMC_GROUP_OPS = new Set([...NC_STORE_SMC, ...NC_RMW_SMC]);
+const SMC_GROUP_SPAN = 0x1000;
+/**
+ * The grouped SMC checks of block `insns`: per instruction index, `lead` (the group checked at it) or `member` (its
+ * check covered by the group's leader); groups of one store are left out.
+ */
+function planSmcGroups(insns) {
+  /** @type {Map<number, { key: number, base: number, index: number, lo: number, hiEnd: number, lead: any, leadDisp: number, leadBytes: number, n: number, members: Map<any, number>, broken: boolean, done: boolean }>} */
+  const open = new Map(), lead = new Map(), member = new Map();
+  for (let i = 0; i < insns.length; i++) {
+    const insn = insns[i], o = insn.ops[0];
+    if (!HANDLERS[insn.op] || insn.inlineApi) { open.clear(); continue; }
+    if (SMC_GROUP_OPS.has(insn.op) && o && o.t === OT.MEM && !o.str && !o.a16 && o.seg !== SEG.FS && o.seg !== SEG.GS &&
+      !(o.base === 4 && o.index < 0) && (o.size === 1 || o.size === 2 || o.size === 4 || o.size === 8 || o.size === 16) &&
+      insn.ops.find((x) => x.t === OT.MEM) === o) {
+      const key = (o.base + 1) + 9 * (o.index + 1) + 81 * o.scale, d = o.disp | 0, g = open.get(key);
+      if (g && Math.max(g.hiEnd, d + o.size) - Math.min(g.lo, d) <= SMC_GROUP_SPAN) {
+        g.lo = Math.min(g.lo, d); g.hiEnd = Math.max(g.hiEnd, d + o.size); g.members.set(insn, o.size); g.n++;
+        if (g.n === 2) lead.set(g.lead, g);
+        member.set(insn, g);
+      } else {
+        const ng = { key, base: o.base, index: o.index, lo: d, hiEnd: d + o.size, lead: insn, leadDisp: d, leadBytes: o.size, n: 1, members: new Map(), broken: false, done: false };
+        open.set(key, ng);
+      }
+    }
+    if (!open.size) continue;
+    if (NC_CLOBBER_ALL.has(insn.op)) { open.clear(); continue; }
+    let w = 0;
+    for (const x of insn.ops) if (x.t === OT.REG) w |= 1 << (x.size === 1 && x.r >= 4 ? x.r - 4 : x.r);
+    if (insn.op === OP.PUSH || insn.op === OP.POP || insn.op === OP.PUSHF || insn.op === OP.POPF) w |= 1 << 4;
+    if (w) for (const [key, g] of open) if ((g.base >= 0 && (w >> g.base) & 1) || (g.index >= 0 && (w >> g.index) & 1)) open.delete(key);
+  }
+  return lead.size ? { lead, member } : null;
 }
 
 // ---- if-conversion. A conditional branch over one or two short arms that meet again (a triangle `jcc M ; x ; M:`, its
@@ -896,6 +945,7 @@ export function buildRegionModule(codes, names = null, shared = false) {
     t.importFunc('env', 'fallback', [T.i32], [T.i32]);
     for (const [name, params, results] of MATH_KERNELS) t.importFunc('env', name, params, results);
     if (t.importFunc('env', 'chain', REGION_PARAMS, REGION_RESULTS) !== IMP_CHAIN) throw new Error('chain import index mismatch');
+    if (t.importFunc('env', 'fastApi', [T.i32, T.i32, T.i32], [T.i32]) !== IMP_FASTAPI) throw new Error('fastApi import index mismatch');
     regionTemplate[key] = t;
   }
   const m = regionTemplate[key].fork();
@@ -914,7 +964,7 @@ export const T2_RESULTS = Object.freeze(Array(16).fill(T.i32));
 export const T2_PROF = JIT_SCRATCH_BASE + 0xa0000 + 0x8040, T2_PROF_NAMES = ['entries', 'exitJump', 'exitRet', 'exitCode', 'exitFault', 'calls', 'callsLeft', 'tails']; // (+64: an i64, the guest instructions run in tier 2)
 const t2Count = (c, k) => { if (globalThis.process?.env?.ORTHROS_TIER2_COUNT) c.i32(0).i32(0).i32load(T2_PROF + 4 * k).i32(1).add().i32store(T2_PROF + 4 * k); };
 /** WASM function index of the first function a tier-2 module defines (after the region imports) */
-export const T2_FIRST_FUNC = IMP_CHAIN + 1;
+export const T2_FIRST_FUNC = IMP_FASTAPI + 1;
 /**
  * A tier-2 function: the region translator's code for `entry` restricted to the blocks of `onlyBlocks`, its calls and
  * jumps to the other tier-2 functions (`t2.calls`) made WASM calls. Returns translateRegion's result.
@@ -969,6 +1019,7 @@ export function buildT2Module(fns, fnNames, entries, entryNames, shared = false)
   m.importFunc('env', 'fallback', [T.i32], [T.i32]);
   for (const [name, params, results] of MATH_KERNELS) m.importFunc('env', name, params, results);
   if (m.importFunc('env', 'chain', REGION_PARAMS, REGION_RESULTS) !== IMP_CHAIN) throw new Error('chain import index mismatch');
+  if (m.importFunc('env', 'fastApi', [T.i32, T.i32, T.i32], [T.i32]) !== IMP_FASTAPI) throw new Error('fastApi import index mismatch');
   if (m.global(T.i32, true, 0) !== 0) throw new Error('tier 2: depth global');
   fns.forEach((code, i) => { if (m.func(REGION_PARAMS, T2_RESULTS, LOCAL_TYPES, { buf: code, len: code.length, hints: code.hints }, 't2_' + fnNames[i]) !== T2_FIRST_FUNC + i) throw new Error('tier 2: function index'); });
   entries.forEach((code, i) => { const f = m.func(REGION_PARAMS, REGION_RESULTS, LOCAL_TYPES, { buf: code, len: code.length, hints: code.hints }, 'w2_' + entryNames[i]); m.exportFunc('e' + i, f); });
@@ -996,7 +1047,11 @@ export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect'
   // cold path (a result the hot tests sent aside), and the calls of the cold-path kernels (fpmath-x87cold.js)
   'x87Arith', 'x87ColdEntry', 'x87ColdCall',
   // jump tables (opts.jumpTables): the jumps that stayed in their region (the others count as `indirect`)
-  'jtabLocal'];
+  'jtabLocal',
+  // grouped SMC checks (opts.smcGroup): regions left after a group's leader whose span touched a flagged page
+  'smcGroupExit',
+  // indirect calls and jumps to an API thunk whose fast path ran from the region (opts.apiInline)
+  'apiInline'];
 /** state block offset of profiling counter k */
 export const profOffset = (k) => (k < 16 ? ST.PROF + 4 * k : ST.PROF2 + 4 * (k - 16));
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
@@ -1089,7 +1144,14 @@ class Emitter {
     this.ifcvt = opts.ifcvt ?? JIT_DEFAULTS.ifcvt; // (see ifcvtPlan: true, 'all' or false)
     this.spec = 0; // emitting an if-converted arm: its loads read address 0 unless the arm is the path taken (see loadMem)
     this.ncPlan = null; // null-page checks of the block being emitted (planNullChecks)
+    this.smcGroup = (opts.smcGroup ?? JIT_DEFAULTS.smcGroup) && this.smc && !opts.t2; // (see planSmcGroups)
+    this.smcPlan = null; // grouped SMC checks of the block being emitted (planSmcGroups)
+    this.apiInline = (opts.apiInline ?? JIT_DEFAULTS.apiInline) && !opts.t2; // (see emitFastThunk)
     this.specCheck = false; // (the arm instruction being emitted has a memory operand to check: see nullCheck)
+    // MMX (opts.mmxTopOnce): once an MM access of the block has re-based the x87 stack on TOP = 0 and set every tag,
+    // the block's next MM accesses skip it while no x87 instruction or interpreter fallback ran in between (mmClean)
+    this.mmxTopOnce = opts.mmxTopOnce ?? JIT_DEFAULTS.mmxTopOnce;
+    this.mmClean = false;
     this.nullPage = opts.nullPage ?? JIT_DEFAULTS.nullPage; // accesses to the first 64 KiB fault (see nullCheck)
     this.x87 = opts.x87 !== false;
     this.chain = opts.chain !== false;
@@ -2113,7 +2175,17 @@ class Emitter {
     if (m && m.base === 4 && m.index < 0 && !m.a16 && m.seg !== SEG.FS && m.seg !== SEG.GS) return;
     bytes ??= m && m.size > 0 ? m.size : 1;
     const c = this.c;
-    c.get(L_TA).i32(12).shr_u(); this.smcFlag();
+    let g = null;
+    if (this.smcPlan && !this.spec) {
+      const gm = this.smcPlan.member.get(insn);
+      if (gm && !gm.broken && gm.done && bytes <= gm.members.get(insn)) { this.stats.smcGrouped = (this.stats.smcGrouped ?? 0) + 1; return; } // (covered by its leader)
+      g = this.smcPlan.lead.get(insn) ?? null;
+      if (g && (g.broken || g.done || bytes > g.leadBytes)) { g.broken = true; g = null; }
+    }
+    if (g) { c.get(L_TA); if (g.lo !== g.leadDisp) c.i32((g.lo - g.leadDisp) | 0).add(); c.i32(12).shr_u(); } // (the span's first page)
+    else c.get(L_TA).i32(12).shr_u();
+    this.stats.smcChecks = (this.stats.smcChecks ?? 0) + 1;
+    this.smcFlag();
     const i = c.hint(false).if_();
     // (a plain store: a page never mapped takes the same exit, with the instruction's start — Jit.run undoes the store
     // and raises the fault there, see NC_STORE_SMC)
@@ -2127,6 +2199,19 @@ class Emitter {
     if (nullStore) c.get(L_STATE).i32(insn.addr).i32store(ST.EXIT_PC);
     this.exitCode(EXIT.SMC, insn.next); // (the instruction's own flags are in the lazy state: see binArith, deadFlagsExit)
     c.end(); void hit;
+    if (g) {
+      // (the group's span, from its first page: translated code, a watch or a page never mapped there or, when the span
+      // crosses into the next page, there — leave after the leader; the rest of the block is checked from its new entry)
+      const M = SMC_CODE | SMC_WATCH | SMC_NULL;
+      c.get(L_TA); if (g.lo !== g.leadDisp) c.i32((g.lo - g.leadDisp) | 0).add(); c.set(L_T5);
+      c.get(L_T5).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(M).and();
+      c.get(L_T5).i32(0xfff).and().i32(0x1000 - (g.hiEnd - g.lo)).gt_u();
+      const cross = c.if_(T.i32); c.get(L_T5).i32(12).shr_u().i32load8u(SMC_MAP_BASE + 1).i32(M).and(); c.else_(); c.i32(0); c.end(); void cross;
+      c.or();
+      const span = c.if_(); this.count(PF.smcGroupExit); this.exitTo(insn.next); c.end(); void span;
+      g.done = true;
+      this.stats.smcGroups = (this.stats.smcGroups ?? 0) + 1;
+    }
     c.end(); void i;
   }
 
@@ -2423,6 +2508,7 @@ class Emitter {
     this.g24Mask = 0; // x87 locals known to hold a value whose significand fits in 24 bits (translate-x87.js narrow)
     this.tagSet = this.tagClr = 0; // pending tag word changes (see applyTags)
     this.c1Clear = false; // the status word's C1 known clear (translate-x87.js: cleared once per block)
+    this.mmClean = false; // (see mmxTopOnce)
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
     this.fcmp = null; // a float compare whose condition the next instruction evaluates directly (see pushFcmpCond)
     this.xsValid = this.xsDirty = this.xdValid = this.xdDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
@@ -2444,6 +2530,7 @@ class Emitter {
     this.fpcStatic = this.fpcAssume; // (entries and in-region transfers are checked: see fpuModeGuard)
     const ifc = this.ifcvt && b.term === TERM_JCC ? this.ifcvtPlan(b) : null;
     this.ncPlan = this.nullPage ? planNullChecks(b.insns, this.smc, this.nullPage) : null;
+    this.smcPlan = this.smcGroup ? planSmcGroups(b.insns) : null;
     for (const insn of b.insns) {
       this.insnIdx++;
       if (ifc && this.insnIdx === b.insns.length) { this.emitIfcvt(insn, b, ifc); this.c.site = -1; return; } // (it jumps to the merge)
@@ -2567,14 +2654,18 @@ class Emitter {
       if (this.spec) this.specCheck = this.nullPage === true && (insn.nchk || nullChecks(insn)).length > 0; // (arms only load)
       else { const p = this.ncPlan?.[this.insnIdx - 1]; if (p) this.nullCheck(insn, p); }
     }
+    if (FPU_OPS.has(insn.op)) this.mmClean = false; // (x87 instructions, EMMS, FXRSTOR...: TOP and the tags may change)
     if (h) { this.stats.native++; h(this, insn, b); }
     else this.fallback(insn);
+    // (a leader whose handler did not check its store through smcCheck: its group's stores check themselves)
+    if (this.smcPlan) { const g = this.smcPlan.lead.get(insn); if (g && !g.done) g.broken = true; }
     this.specCheck = false;
   }
 
   /** Execute one instruction with the interpreter. */
   fallback(insn) {
     this.stats.fallback++;
+    this.mmClean = false; // (the interpreter may change TOP and the tag word)
     if (FPU_MODE_WRITERS.has(insn.op)) this.fpcStatic = null;
     const c = this.c;
     this.materialize();
@@ -2899,6 +2990,43 @@ HANDLERS[OP.IMUL] = (E, insn, b) => {
   E.storeOpFrom(d, L_LZRES, insn);
   E.setLazy(LZ.IMUL, size);
 };
+/**
+ * 32-bit DIV / IDIV (opts.divFast), divisor in L_T4 (non-zero). Compilers divide 32-bit values as `cdq ; idiv` and
+ * `xor edx, edx ; div`: the dividend EDX:EAX then fits 32 bits (EDX the sign extension of EAX, or 0), the quotient
+ * always fits too — except -2^31 / -1, whose 2^31 raises #DE —, and one 32-bit division gives it (V8: one idiv / div
+ * r32) where the general case divides 64 bits twice (i64.div and i64.rem, each a 64-bit idiv with V8's own -1 and
+ * zero tests). Tested at run time (any instruction may set EDX): the general case keeps the 64-bit division, once.
+ * Both take the remainder as EAX - quotient * divisor in 32 bits (the true remainder fits 32 bits, so its low half is
+ * it). The general signed case also raises #DE for EDX:EAX = -2^63 divided by -1, which trapped in WebAssembly before.
+ * #DE leaves the region before the instruction (registers untouched), as the interpreter does.
+ */
+function divFast32(E, insn, signed) {
+  const c = E.c;
+  if (signed) { c.get(L_REG + 2).get(L_REG).i32(31).shr_s().eq(); } else c.get(L_REG + 2).eqz();
+  const fits = c.hint(true).if_();
+  if (signed) {
+    c.get(L_REG).i32(0x80000000 | 0).eq().get(L_T4).i32(-1).eq().and();
+    const o = c.hint(false).if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void o;
+    c.get(L_REG).get(L_T4).div_s().set(L_T5);
+  } else c.get(L_REG).get(L_T4).div_u().set(L_T5);
+  c.else_();
+  c.get(L_REG + 2).extend_u().i64(32n).i64shl().get(L_REG).extend_u().i64or().set(L_I64A);
+  if (signed) {
+    // (-2^63 / -1 would trap in i64.div_s; its quotient does not fit 32 bits either)
+    c.get(L_T4).i32(-1).eq().get(L_REG + 2).i32(0x80000000 | 0).eq().and().get(L_REG).eqz().and();
+    const m = c.hint(false).if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void m;
+    c.get(L_I64A).get(L_T4).extend_s().i64div_s().set(L_I64B);
+    c.get(L_I64B).get(L_I64B).wrap().extend_s().i64ne();
+  } else {
+    c.get(L_I64A).get(L_T4).extend_u().i64div_u().set(L_I64B);
+    c.get(L_I64B).i64(0xffffffffn).i64gt_u();
+  }
+  const j = c.hint(false).if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void j;
+  c.get(L_I64B).wrap().set(L_T5);
+  c.end(); void fits;
+  c.get(L_REG).get(L_T5).get(L_T4).mul().sub().set(L_REG + 2);
+  c.get(L_T5).set(L_REG);
+}
 function divOp(signed) {
   return (E, insn) => {
     const c = E.c; const s = insn.ops[0]; const size = s.size;
@@ -2908,6 +3036,7 @@ function divOp(signed) {
     // divide by zero -> #DE
     c.get(L_T4).eqz();
     const i = c.hint(false).if_(); E.exitCode(EXIT.FAULT, insn.addr, 0); c.end(); void i;
+    if (size === 4 && (E.opts.divFast ?? JIT_DEFAULTS.divFast)) { divFast32(E, insn, signed); return; }
     if (size === 4) {
       // dividend edx:eax as i64
       c.get(L_REG + 2).extend_u().i64(32n).i64shl().get(L_REG).extend_u().i64or().set(L_I64A);
@@ -3161,7 +3290,9 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
     c.get(L_TV).i32(t2s).eq(); const i = c.hint(true).if_(); E.t2Tail(t2s, E.insnIdx); c.end(); void i;
     c.get(L_TV); E.exitToStack(); return;
   }
-  E.loadOp(t); if (insn.opsize === 2) E.c.i32(0xffff).and();
+  if (E.apiInline && insn.opsize === 4 && !insn.jtab) { E.loadOp(t); E.c.set(L_T4); emitFastThunk(E, insn, b, true); E.c.get(L_T4); } // (an import stub `jmp [slot]` to a thunk with a fast path)
+  else E.loadOp(t);
+  if (insn.opsize === 2) E.c.i32(0xffff).and();
   if (insn.jtab && insn.jtab.targets.some((a) => E.byEip.has(a))) { E.jumpTable(insn); return; }
   E.count(PF.indirect);
   if (globalThis.ORTHROS_SITE_PROF) { E.c.set(L_TV); E.siteProf(insn.addr, 'ijmp'); E.c.get(L_TV); }
@@ -3196,6 +3327,7 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   }
   E.loadOp(t); c.set(L_T4);
   c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
+  if (E.apiInline && insn.opsize === 4) emitFastThunk(E, insn, b, false); // (a thunk with a fast path: run here, see emitFastThunk)
   // a call through an import slot holding a tier-2 function: that function called, guarded by the slot's value
   const t2s = insn.opsize === 4 ? E.t2Slot(t) : -1;
   if (t2s >= 0) { c.get(L_T4).i32(t2s).eq(); const i = c.hint(true).if_(); E.t2Call(t2s, insn.next, b.insns.length); c.end(); void i; }
@@ -3205,6 +3337,50 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   E.exitToStack();
   if (api) c.end(); // done: the block continues after the call
 };
+/**
+ * An indirect CALL / JMP whose target (L_T4) turns out to be an API thunk with a WASM fast path (opts.apiInline): the
+ * runtime module's fastApi runs from the region instead of from the dispatcher — a COM method of the Direct3D device
+ * recorded in the deferred queue, AddRef / Release, a surface's GetDesc, the timers... (runtime.js FAST_TABLE), reached
+ * through a register or a vtable slot, which the translation cannot tell at translation time (the calls through an
+ * import slot it can are run inline: emitInlineApi). Before, each such call left the region (the registers and flags
+ * written back), went through the dispatcher's loop, which ran the same fastApi, and entered the region of the return
+ * site anew (its prologue, a hash probe and an indirect call). fastApi reads ESP and the stack, writes EAX, ESP and EIP
+ * (the return address it pops) and nothing else of the state: ESP is written to the state block before, EAX and ESP read
+ * back after; a CALL then goes on at its return site (locally when the region holds it), a JMP (an import stub reached by
+ * a call) returns as RET does. Not handled (fastApi returns 0: a parked call being resumed, an argument its path does not
+ * cover), or a return address that is the dispatcher's stop address: the region is left as before, the state untouched.
+ * The guest work is the same instructions: only where the fast path runs from changes.
+ */
+function emitFastThunk(E, insn, b, viaJmp) {
+  const c = E.c;
+  c.get(L_T4).i32(THUNK_BASE).sub().i32(THUNK_END - THUNK_BASE).lt_u();
+  const thunk = c.if_();
+  c.get(L_T4).i32(THUNK_BASE).sub().i32(4).shr_u().tee(L_T5).i32load8u(FAST_TABLE).tee(L_T3);
+  if (THUNK_SIZE !== 16) throw new Error('emitFastThunk: THUNK_SIZE');
+  // (a CALL's return address the stop address: the dispatcher must see it)
+  if (!viaJmp) c.get(L_STATE).i32load(ST.STOP_AT).i32(insn.next).ne().and();
+  const fast = c.if_();
+  c.get(L_STATE).get(L_REG + 4).i32store(ST.GPR + 16);
+  c.get(L_T3).get(L_STATE).get(L_T5).call(IMP_FASTAPI);
+  const handled = c.if_();
+  c.get(L_STATE).i32load(ST.GPR).set(L_REG); c.get(L_STATE).i32load(ST.GPR + 16).set(L_REG + 4);
+  E.count(PF.apiInline);
+  if (E.prof) c.get(L_T3).i32(2).shl().get(L_T3).i32(2).shl().i32load(FAST_PROF).i32(1).add().i32store(FAST_PROF);
+  if (!viaJmp) E.jumpTo(insn.next, b.insns.length);
+  else {
+    // (returning: the address it popped, to a return site of the region locally, else out as RET leaves)
+    c.get(L_STATE).i32load(ST.EIP).set(L_TV);
+    for (const site of E.retSitesOf[E.cur] ?? []) {
+      c.get(L_TV).i32(site).eq();
+      const i = c.if_(); E.count(PF.retLocal); E.inRet = true; E.jumpTo(site, E.insnIdx); E.inRet = false; c.end(); void i;
+    }
+    E.count(PF.ret);
+    c.get(L_TV); E.exitToStack();
+  }
+  c.end(); void handled;
+  c.end(); void fast;
+  c.end(); void thunk;
+}
 /**
  * The dispatcher's fast path (runtime.js fastApi) of API `fid` on the register locals: stdcall arguments at [esp]
  * (no return address pushed), popped; result in eax; `slow` taken for the cases left to the JavaScript handler
@@ -3403,8 +3579,12 @@ function strOp(kind) {
     };
     const isCmp = kind === 'scas' || kind === 'cmps';
     const writes = kind === 'movs' || kind === 'stos';
-    if (writes) c.get(L_REG + 7).set(L_T6); // EDI before: the written range is checked for translated code afterwards
-    if (!insn.rep) { body(); if (isCmp) E.lz = { kind: LZ.SUB, sz: SZLOG[size] }; if (writes) E.smcRange(L_T6, insn); return; }
+    // a single MOVS / STOS (opts.strSmcOne): it writes `size` bytes at the EDI before it whatever the direction — the
+    // ordinary store's check of one map byte (smcCheck through L_TA, which the body leaves alone) instead of the range's
+    // page loop with its direction selects
+    const one = writes && !insn.rep && (E.opts.strSmcOne ?? JIT_DEFAULTS.strSmcOne);
+    if (writes) c.get(L_REG + 7).set(one ? L_TA : L_T6); // EDI before: the written range is checked for translated code afterwards
+    if (!insn.rep) { body(); if (isCmp) E.lz = { kind: LZ.SUB, sz: SZLOG[size] }; if (one) E.smcCheck(insn, size); else if (writes) E.smcRange(L_T6, insn); return; }
     // (every REP MOVS/STOS checks its range for translated code, word/dword STOS included)
     if (writes) { repStore(E, insn, kind, size, fsBase >= 0, body); E.lz = null; E.smcRange(L_T6, insn); return; }
     if (isCmp) E.materialize();

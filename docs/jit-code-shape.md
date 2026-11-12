@@ -1427,6 +1427,111 @@ own heat already covers 70 % of the lent bytes gets nothing lent (`OWN_ENOUGH`, 
 served its own data again (live learn data: RotWK 2.02 37 743 entries served, 37 435 own; BFME 1.08 34 807, all own;
 AotR 31 474, 31 367 own); a first session (own 0 %) keeps the whole loan. Defaults: code share on (server), MP3 host off, every hot* option off.
 
+## Targeted fixes and API exits (2026-11-12, plan.md ranks 5 and 6)
+
+Five local changes, each a `JIT_DEFAULTS` key (`ORTHROS_JIT_DEFAULTS` / `?jitopts` / `dbg:ORTHROS_JIT_AB`), exact against the
+reference interpreter (tests/jit-fixes.test.js: randomized programs per option, whole and time-sliced, under the VM's SMC
+handling; the full depth runs the option off as well). Unlike the variants above (region shapes, transitions, code
+placement), none changes what a region holds or where it ends: each shortens the code of one instruction pattern, so
+they cannot trade fewer instructions for more transitions — the trap of `dedup`, tier 2 and `hotOwn`.
+
+- **`strSmcOne` — MOVS / STOS without REP.** A single string store writes `size` bytes at the EDI before it whatever DF
+  says; it now takes the ordinary store's check (one SMC map byte, Emitter.smcCheck through L_TA) instead of the range
+  check written for REP (two direction selects for the range's ends and a loop over its pages).
+- **`divFast` — 32-bit DIV / IDIV.** When EDX is the sign extension of EAX (IDIV) or 0 (DIV) — compilers' `cdq ; idiv`,
+  `xor edx, edx ; div`, tested at run time since any instruction may set EDX —, one 32-bit division (V8: one `idiv r32`);
+  otherwise one 64-bit division (it was `i64.div` and `i64.rem`: two 64-bit divides, each with V8's zero and −1 tests).
+  The remainder is EAX − quotient × divisor in 32 bits in both cases. #DE exactly where x86 raises it, before any register
+  changes: a zero divisor, a quotient that does not fit, −2^31 / −1 (32-bit path), and −2^63 / −1, which used to trap in
+  WebAssembly (an imprecise fault).
+- **`mmxTopOnce` — MMX.** Every MM access re-bases the x87 stack on TOP = 0 and sets the tag word (x87SetTop0: a test of
+  TOP whose arm writes the eight stack locals back and reloads them) — two or three times per MMX instruction. Once done in
+  a block, the block's next MM accesses skip it until an x87 instruction (FPU_OPS: EMMS, FXRSTOR... included) or an
+  interpreter fallback runs (`mmClean`, reset at each block's start: a block is entered from anywhere).
+- **`smcGroup` — stores of one structure share their SMC check.** Stores of a block through the same base and index
+  registers (unchanged between them) whose bytes all lie within 4 KiB (translate.js planSmcGroups) are checked once, after
+  the first of them, on the span of the whole group: one SMC map byte read at r + lo (lo the group's lowest displacement),
+  whose SMC_NEXT bit covers the second page a 4 KiB span can touch (the page below the null area at the top of the user
+  space now carries SMC_NEXT too, jit.js clearTables). Its cold path first decides for the leader's own store as before,
+  then, if the span touches translated code, a watch or a page never mapped, leaves the region right after the leader
+  (`exitTo(insn.next)`; the rest of the block runs from a region entered there, where its stores are checked again).
+  Exact because nothing translates while a region runs, so pages clean after the leader stay clean until the block's last
+  store. Different from the fine-mask attempt above (which added code to every store's cold path): fewer checks, the cold
+  path once per group. A leader whose handler does not check its store through smcCheck breaks its group (the members
+  check themselves).
+- **`apiInline` — fast-path APIs reached through a register or a vtable**, run from the region (an imported call to the
+  runtime module's `fastApi`, ESP written before, EAX and ESP read back, the CALL going on at its return site locally)
+  instead of a region exit, the dispatcher's loop and a region entry at the return site. Off: see the measurements.
+
+API exits in play (`startbench --jit-profile --api-hist`, which now prints each phase's calls per frame, `[apiphase]`):
+RotWK 2.02 play (1 399 frames) — the dispatcher's fast paths 7.2 k calls per frame (deferred COM 6 607, AddRef / Release
+150, D3DX 132, GetParameterDesc 83, timers 117), JavaScript ~820 (Sleep 112, vertex / index buffer Lock + Unlock 252,
+WaitForSingleObject 85, ID3DXEffect::BeginPass 23, ApplyParameterBlock 15); AotR 10 play — fast paths 23.8 k per frame
+(deferred COM 22 410, AddRef / Release 1 157), JavaScript ~1 250 (ReadFile 214, IDirect3DTexture9::Release 203, buffer
+locks 242, WaitForSingleObject 105, Sleep 89). Menus add DirectInput's Acquire + GetDeviceData (RotWK 2 249 each per frame,
+AotR 1 005), loading screens surface LockRect / UnlockRect (RotWK 7 167 each per frame in its load). The JavaScript calls
+left in play are a few hundred per frame at ~0.3 µs (under 2 % of a frame); the fast ones are the volume, hence `apiInline`.
+
+**Measured** (Node 24, EPYC 7402P, load average 10-40 from other sessions).
+
+Kernels (tools/bench/fixes-bench.mjs: `--perf` host instructions of the loop's region per iteration — perf samples of the
+`r_*` functions, deterministic to ~1 % —; without, median ns per iteration of 7 alternated runs; off → on; the empty
+loop is 12.9 instructions):
+
+| loop (one iteration) | host instructions | ns |
+|---|---|---|
+| 8 × `movsd` (ESI / EDI reset) | 309.6 → 142.7 | 18.67 → 8.75 |
+| 8 × `stosd` | 277.5 → 129.8 | 16.58 → 8.46 |
+| 8 × `movsb` | 334.9 → 145.0 | 20.79 → 9.37 |
+| 4 × (`mov eax, ecx ; cdq ; idiv ebx ; add esi, edx`) | 71.0 → 40.0 | 34.49 → 6.91 |
+| 4 × (`mov eax, ecx ; xor edx, edx ; div ebx ; add esi, edx`) | 33.0 → 23.9 | 13.95 → 6.99 |
+| 4 × (`cdq ; idiv dword [edi]`, a divisor in memory) | 116.0 → 81.0 | 21.08 → 16.88 |
+| 4 × MMX pixel (`movq ; punpcklbw ; pmullw ; psrlw ; packuswb ; movd`) | 225.8 → 165.0 | 18.17 → 16.22 |
+| `mov [edi+4k], eax`, k = 1..8 | 70.4 → 36.0 | 8.10 → 5.98 |
+| a structure: 2 × (3 stores, one `add [edi+12], ebx`, a byte store) | 73.0 → 36.0 | 8.77 → 6.14 |
+| 8 × (`mov [edi+4], eax ; mov edx, [esi+0x100]`) | 69.0 → 40.0 | 10.05 → 8.69 (−13 %, two runs; one run under load +71 %) |
+| 4 × (`mov eax, thunk ; call eax`), `apiInline` | — | 81.36 → 63.30 |
+
+Games (`tools/bench/ab-virtual.mjs --perf-phase`, tools/scenarios/fixes-*.txt, both arms at once on the same
+virtual-clock work, `--no-liftoff`; per guest instruction of the phase: host instructions (i/g) and cycles (c/g) of the
+translated regions and of the whole process, guest ns per instruction and the emulator thread's CPU per frame;
+off = the four fixes off, on = `strSmcOne` + `divFast` + `mmxTopOnce` + `smcGroup`):
+
+| phase (guest instructions) | regions i/g | regions c/g | process i/g | process c/g | guest ns | CPU / frame |
+|---|---|---|---|---|---|---|
+| RotWK 2.02 play (6 131 M) | 7.21 → 7.02 (−2.6 %) | 4.94 → 4.77 | 14.89 → 14.33 | 9.68 → 9.35 | 2.572 → 2.470 (−4.0 %) | −3.4 % |
+| AotR 10 play (7 442 M) | 6.59 → 6.39 (−3.0 %) | 4.25 → 4.10 | 10.44 → 10.21 | 6.72 → 6.56 | 1.761 → 1.702 (−3.3 %) | −2.8 % |
+| BFME 1.08 play (6 305 M) | 6.00 → 5.82 (−3.0 %) | 3.42 → 3.29 | 13.19 → 12.62 | 7.61 → 7.30 | 2.105 → 2.003 (−4.8 %) | −4.1 % |
+| Vice City drive (7 549 M) | 6.55 → 6.26 (−4.4 %) | 3.74 → 3.60 | 17.98 → 17.26 | 9.93 → 9.59 | 2.780 → 2.696 (−3.0 %) | −3.2 % |
+
+Same runs, other phases (guest ns per instruction): BFME1 map load (127 241 M) 1.745 → 1.680 (−3.7 %), menu −4.4 %; Vice
+City load −9.6 %, cutscene −5.7 %; RotWK menu −6.6 %, load −6.5 %, loading screen −6.7 %; AotR menu −6.0 %, loading
+screen −6.5 % (its load phases do 1-4 % different guest work between arms). A second pair without perf (V8's default
+tiers, arms in the other order): RotWK play −7.4 % guest ns (CPU per frame −6.7 %), AotR play −2.8 % (−1.3 %); their
+short menu / setup phases swung ±10-48 % in both directions between the two pairs (seconds of work on a loaded machine).
+
+By item (instruction counts compare across batches; time only within one):
+- `smcGroup` alone, RotWK play: regions 7.24 → 7.05 i/g, process 14.91 → 14.52 — nearly all of the play gain.
+- The three others together (`strSmcOne` + `divFast` + `mmxTopOnce`): RotWK map load (load + loading screen, 4 303 M)
+  regions 6.67 → 6.52 i/g, 3.43 → 3.33 c/g, process 65.83 → 64.58 i/g (the load is JavaScript and API work), guest ns
+  −0.4 %, CPU per frame −2.0 %; BFME1 map load regions 6.28 → 6.21 i/g, time ±0.1 % — the study's "−0.3 instruction per
+  guest instruction" for MOVS was a reading of the hottest regions, not of the whole load; play −0.7 %. Exact, fewer
+  instructions where they apply, no loss anywhere: on with the group.
+- `apiInline` alone, RotWK play: regions 7.24 → **7.42** i/g, process 14.91 → **15.51** (+4 %), every phase slower than the
+  `smcGroup` arm run with it (play +6 %, menu +26 %, map load +31 %). A call in the region function, even on a path
+  rarely taken, makes V8 spill the region's live values around it (as noted for the x87 kernels), and every indirect call
+  site carries the thunk test and that path; the dispatcher round trip it saves costs ~4 ns in the kernel (20 → 16 ns a
+  call). **Off**, kept for measurement. What the exits cost in play is not the dispatcher's loop but the region exit and
+  entry, which only a call that does not leave the region and does not sit in its code could save.
+
+Defaults: `strSmcOne`, `divFast`, `mmxTopOnce`, `smcGroup` on (all four games faster in play, −3 to −5 % guest time per
+instruction, −2.6 to −4.4 % host instructions in the regions, loads and menus faster too); `apiInline` off. The
+translated-code cache keys on JIT_DEFAULTS: the first session after the change translates again. Not measured: Chrome
+(the play figures above are the translated code's own; docs "Chrome against Node" found the same code in both), BFME2.
+Seen while testing, not investigated: a randomized program whose stores turned its own code into an endless mix of
+INC / DEC and stack instructions ended differently in the JIT and the interpreter with every option off as well (the
+test's stores now keep the code well-formed).
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
