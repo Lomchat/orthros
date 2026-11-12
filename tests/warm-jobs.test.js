@@ -1,10 +1,10 @@
-// Warm jobs (src/server/warm-jobs.js): one job at a time, a publish before a learn, the default language, a queue that keeps kinds apart.
+// Warm jobs (src/server/warm-jobs.js): one job at a time, a publish before a learn, the players' languages first, a queue that keeps kinds apart.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Warmer, defaultLanguage, learnScenario, learnScenarios, LearnedScenarios, LEARN_TRIES } from '../src/server/warm-jobs.js';
+import { Warmer, defaultLanguage, warmLanguages, learnArgs, learnScenario, learnScenarios, LearnedScenarios, LEARN_TRIES } from '../src/server/warm-jobs.js';
 import { SnapshotQueue } from '../src/server/snapshot-store.js';
 
 test('warmer queues one job at a time: publish first, learn once the snapshot is there, nothing when both are', async () => {
@@ -61,5 +61,25 @@ test('learn scenarios: one played is done, one that never reaches its end is giv
     assert.deepEqual(l.doneIds('a').sort(), ['map:111111111111', 'menu:000000000000']);
     l.add('a', [], ['menu:000000000000']);
     assert.ok(l.done('a', 'menu:000000000000'), 'a played one stays played');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('players\' languages: every version\'s first one (its snapshot, then its learn job in it) before any second one', async () => {
+  assert.deepEqual(warmLanguages({ languages: ['en', 'fr'] }, { fr: 5 }), ['fr', 'en']);
+  assert.deepEqual(warmLanguages({ languages: ['en', 'fr', 'de'] }, { en: 7, fr: 2, it: 9 }), ['en', 'fr'], 'undeclared and unused languages left out');
+  assert.deepEqual(warmLanguages({ languages: ['en', 'fr'] }, { en: 7 }, ['fr']), ['fr', 'en'], '--warm-langs first');
+  assert.deepEqual(warmLanguages({}), [null]);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'warm-'));
+  try {
+    const jobs = new SnapshotQueue(path.join(dir, 'queue.json')), snaps = new Set(), learned = new Set();
+    const w = new Warmer({
+      versions: () => [{ name: 'a', man: { languages: ['en', 'fr'] } }, { name: 'b', man: { languages: ['en', 'fr'] } }],
+      fetchVersion: async (n) => ({ manifest: { name: n }, tree: { files: {} } }), sources: () => ({ hash: 'h' }),
+      snapshotReady: (n, l) => snaps.has(`${n}/${l}`), hasLearned: (n) => learned.has(n), langUse: (n) => (n === 'a' ? { fr: 5 } : {}), jobs,
+    });
+    const order = [];
+    for (let j; (j = await w.tick());) { order.push(`${j.kind} ${j.name} ${j.lang}`); (j.kind === 'publish' ? snaps : learned).add(j.kind === 'publish' ? `${j.name}/${j.lang}` : j.name); }
+    assert.deepEqual(order, ['publish a fr', 'learn a fr', 'publish b en', 'learn b en', 'publish a en']);
+    assert.deepEqual(learnArgs('/r', 'a', 1, '/o', null, { lang: 'fr' }).slice(-2), ['--game-lang', 'fr']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

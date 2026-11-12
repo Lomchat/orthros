@@ -25,7 +25,7 @@
   {"name": "rotwk-heroes", "title": "Rise of the Witch-king 2.02: the main menu, MY HEROES (Create-a-Hero)", "manifests": ["rotwk-202"], "file": "learn-rotwk-heroes.txt", "coords": [1024, 768], "maxSeconds": 900},
   {"name": "rotwk-skirmish-learn", "title": "Rise of the Witch-king: the bench suite's skirmish start (rotwk-short)", "manifests": ["rotwk-202", "rotwk-201"], "file": "rotwk-short.txt", "coords": [800, 600], "maxSeconds": 1500},
   {"name": "bfme2-skirmish-learn", "title": "BFME II: the bench suite's skirmish start (bfme2-short)", "manifests": ["bfme2", "bfme2-106"], "file": "bfme2-short.txt", "coords": [800, 600], "maxSeconds": 1500},
-  {"name": "bfme1-108-skirmish-learn", "title": "BFME 1.08: the bench suite's skirmish start (bfme1-108-short)", "manifests": ["bfme1-108"], "file": "bfme1-108-short.txt", "coords": [800, 600], "maxSeconds": 1500},
+  {"name": "bfme1-108-skirmish-learn", "title": "BFME 1.08: a skirmish start (bfme1-108-short's steps, spaced for a slow software GPU)", "manifests": ["bfme1-108"], "file": "learn-bfme1-108-skirmish.txt", "coords": [800, 600], "maxSeconds": 1500},
   {"name": "bfme1-skirmish-learn", "title": "BFME: a skirmish start (bfme1-skirmish)", "manifests": ["bfme-vanilla"], "file": "bfme1-skirmish.txt", "coords": [800, 600], "maxSeconds": 1500}
  ],
  "suites": [

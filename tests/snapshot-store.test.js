@@ -9,6 +9,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { createServer } from '../src/server/server.js';
 import { toBase64 } from '../src/shared/profile-seed.js';
+import { SnapshotStore } from '../src/server/snapshot-store.js';
 
 const KEY = 'a'.repeat(32), KEY2 = 'b'.repeat(32), KEY3 = 'c'.repeat(32);
 const snap = (n) => { const b = Buffer.alloc(n, 7); b.writeUInt32BE(0x4f534e50, 0); return b; };
@@ -68,4 +69,15 @@ test('a sandboxed server only queues the publishing sessions (their tokens in a 
     assert.equal((await post(q[0].token)).status, 204);
     assert.equal((await fetch(u(`/api/snapshot/g?key=${KEY}&lang=fr`))).status, 200);
   } finally { s.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a later snapshot of the same key posted while the first is still compressed: both kept in turn, the last one stays', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'snapstore-'));
+  try {
+    const store = new SnapshotStore(dir), src = (n) => { const f = path.join(dir, `up-${n}`); fs.writeFileSync(f, snap(n)); return f; };
+    const recs = await Promise.all([store.put('g', 'fr', KEY, src(300000)), store.put('g', 'fr', KEY, src(1000))]);
+    assert.deepEqual(recs.map((r) => r.bytes), [300000, 1000]);
+    assert.equal(store.meta('g', 'fr', KEY).bytes, 1000);
+    assert.equal(zlib.gunzipSync(fs.readFileSync(store.base('g', 'fr', KEY) + '.gz')).length, 1000);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
