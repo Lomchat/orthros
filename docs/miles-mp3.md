@@ -236,7 +236,8 @@ runs that went 6 minutes further into the skirmish decoded 26 600-28 300.
 In three runs of intermediate versions, the scenario's anchor (the first frame with 400 draws) came about 5 minutes
 late. In two of them, `seek(-2)` kept the bytes fetched ahead, which plays stale input after mss32 has moved its
 source; the third was stopped after a minute. docs/jit-code-shape.md reports that this anchor also flakes with the
-guest's decoder. With the final code, the three host runs met it on time: load screen 11.9, 15.3 and 12.0 s, against
+guest's decoder. (Explained 2026-11-12: not the decoder — the skirmish's random start position; the left marker of
+Harlindon stays under 400 draws per frame for minutes. The scenarios now pick the right marker: docs/aotr-play.md.) With the final code, the three host runs met it on time: load screen 11.9, 15.3 and 12.0 s, against
 11.3, 14.1 and 11.0 s for the guest runs started with them. One of those host runs logged its events: the same
 opens and attribute queries as the guest's decoder.
 

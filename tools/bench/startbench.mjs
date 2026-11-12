@@ -27,6 +27,8 @@ import { NodeScenario } from './node-scenario.mjs';
 import { installNodeGfx, programsLine } from './node-gfx.mjs';
 import { LearnedHeat, RangeHeat } from '../../src/cpu/jit/heat.js';
 import { acct, C as ACCT, catsObject } from '../../src/core/frame-acct.js';
+import { VMem } from '../../src/win32/vmem.js';
+import { resHeapStats } from '../../src/win32/res-mem.js';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -373,8 +375,10 @@ const cpuProfTick = () => {
   else if (p.on && s >= p.to) { p.done = true; p.session.post('Profiler.stop', (err, r) => { if (!err) fs.writeFileSync(p.file, JSON.stringify(r.profile)); console.log(`[cpuprof] ${err ? 'failed: ' + err.message : 'written ' + p.file}`); }); }
 };
 // (`v`: the machine whose thread called the thunk — the root, or with --child a child process)
+let memTick = null; // (--mem: every machine's API calls, the root's and with --child the game's)
 const onThunk = (v, t, i) => {
   if (cpuProf) cpuProfTick();
+  if (memTick) memTick();
   if (learnedHeat && v === vm && vm.proc.moduleList.length !== heatModules) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
   const th = v.api.thunk(i);
   if (args.includes('--d3d-log') && performance.now() - d3dLog > 5000) { d3dLog = performance.now(); const d = vm.d3dDevice; console.log(`[d3d] t=${((d3dLog - t0) / 1000).toFixed(0)}s frames=${d?.frames ?? '-'} draws=${d?.draws ?? '-'} insns=${(vm.guestInsns / 1e6).toFixed(0)}M`); }
@@ -442,21 +446,27 @@ if (stopOn) { const log = vm.log.bind(vm); vm.log = (kind, msg) => { if (typeof 
 // --mem <s>: every <s> seconds of wall time, the process's memory (heap used, external and array buffers, resident) and
 // the emulator's own counts that grow with a session (live translations, the function table, guest frames and draws) —
 // a long session's growth seen (--heap-at <s1,s2,...>: a V8 heap snapshot at those seconds, in --save's directory or
-// the current one, for tools/dev/heapsnap.mjs)
+// the current one, for tools/dev/heapsnap.mjs). A second line, [vmem], is the guest address space of the machine the
+// run follows (VMem.summary: reserved MiB, the largest free run, by tag; the resource heap) and the allocations that
+// found no hole since the start (`no room`: VirtualAlloc / HeapAlloc / a resource's memory failing, what the guest sees
+// as ERROR_NOT_ENOUGH_MEMORY or E_OUTOFMEMORY) — a long session's endurance (docs/address-space.md)
 if (opt('mem')) {
   const every = Number(opt('mem')) * 1000, heapAt = (opt('heap-at') ?? '').split(',').filter(Boolean).map(Number);
   const v8 = await import('node:v8');
-  let next = every, h = 0;
+  let next = every, h = 0, noRoom = 0, lastD = [0, 0];
+  const findFree = VMem.prototype.findFree;
+  VMem.prototype.findFree = function (size, topDown, minAddr) { const b = findFree.call(this, size, topDown, minAddr); if (!b && (minAddr ?? 0) <= this.lowest) noRoom++; return b; };
   const memLine = () => {
-    const m = process.memoryUsage(), j = vm.jit, d = vm.d3dDevice, MB = (x) => (x / 1048576).toFixed(1);
-    console.log(`[mem] t=${((performance.now() - t0) / 1000).toFixed(0)}s heap ${MB(m.heapUsed)}/${MB(m.heapTotal)} MB, external ${MB(m.external)} MB (array buffers ${MB(m.arrayBuffers)}), rss ${MB(m.rss)} MB; jit live ${j?.regions.length ?? '-'} regions (${j?.stats.regions ?? '-'} made, ${j?.stats.dropped ?? '-'} dropped), table ${j?.table?.length ?? '-'}, blockMap ${j?.blockMap?.size ?? '-'}; frames ${d?.frames ?? '-'}, insns ${(vm.guestInsns / 1e6).toFixed(0)}M`);
+    const m = process.memoryUsage(), j = vm.jit, d = vm.d3dDevice, MB = (x) => (x / 1048576).toFixed(1), el = ((performance.now() - t0) / 1000).toFixed(0);
+    console.log(`[mem] t=${el}s heap ${MB(m.heapUsed)}/${MB(m.heapTotal)} MB, external ${MB(m.external)} MB (array buffers ${MB(m.arrayBuffers)}), rss ${MB(m.rss)} MB; jit live ${j?.regions.length ?? '-'} regions (${j?.stats.regions ?? '-'} made, ${j?.stats.dropped ?? '-'} dropped), table ${j?.table?.length ?? '-'}, blockMap ${j?.blockMap?.size ?? '-'}; frames ${d?.frames ?? '-'} (${d ? ((d.draws - lastD[1]) / Math.max(1, d.frames - lastD[0])).toFixed(0) : '-'} draws per frame since the last line), insns ${(vm.guestInsns / 1e6).toFixed(0)}M`);
+    if (d) lastD = [d.frames, d.draws];
+    if (vm.proc?.vmem) console.log(`[vmem] t=${el}s ${vm.proc.vmem.summary(6)}; ${resHeapStats(vm.proc)}; no room ${noRoom}`);
+    const pl = gfx?.kind === 'backend' ? programsLine(gfx) : null; if (pl) console.log(`[mem] t=${el}s ${pl}`); // (--gfx backend --programs: the programs a draw built, not learned)
   };
-  const tick = vm.dispatchThunk;
-  vm.dispatchThunk = (t, i) => {
+  memTick = () => {
     const el = performance.now() - t0;
     if (el >= next) { next += every; memLine(); }
     if (h < heapAt.length && el >= heapAt[h] * 1000) { const f = path.join(keepDir ?? '.', `heap-${heapAt[h]}s.heapsnapshot`); v8.writeHeapSnapshot(f); console.log(`[mem] heap snapshot ${f}`); h++; }
-    return tick(t, i);
   };
 }
 vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
