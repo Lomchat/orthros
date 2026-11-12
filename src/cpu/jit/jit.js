@@ -471,7 +471,10 @@ export class Jit {
     if (fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * fnIdx, 0); // (no next version yet)
     if (!version) {
       this.byEntry.set(eip, region);
-      for (const b of blocks) { if (this.libLive === null || !this.libLive.has(b.eip)) this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); } // (a kernel's entry keeps its kernel)
+      // (a block at a library kernel's entry — a direct call into it translated with its caller — leaves its hash entry
+      // to the kernel: the calls through the hash table run it)
+      const lib = this.libKernelsOn();
+      for (const b of blocks) { if (!lib || !this.libKernel(b.eip)) this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
     }
     // mark code pages for SMC detection (and the page before each: a store crossing into a code page, see smcCheck)
     for (const p of region.pages) {

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { GuestMemory } from '../../src/cpu/memory.js';
 import { PeImage, mapImage, PE_DIR } from '../../src/loader/pe.js';
-import { LIB_KERNELS, libFingerprint } from '../../src/cpu/jit/libkernels.js';
+import { LIB_KERNELS, libFingerprint, libQuick } from '../../src/cpu/jit/libkernels.js';
 
 const file = process.argv[2];
 if (!file) { console.error('usage: node tools/gen/libkernel-sigs.mjs <dll>'); process.exit(2); }
@@ -34,7 +34,7 @@ for (const d of LIB_KERNELS) {
   const entry = mod.exports.get(fn);
   if (entry === undefined) { console.log(`${d.name}: no such export`); continue; }
   const rel = relocs.filter((a) => d.ranges.some(([o, n]) => a >= entry + o && a + 4 <= entry + o + n)).map((a) => a - entry).sort((x, y) => x - y);
-  const h = libFingerprint(mem.u8, entry, { ...d, relocs: rel });
-  const same = JSON.stringify(rel) === JSON.stringify(d.relocs) && h[0] === d.hash[0] && h[1] === d.hash[1];
-  console.log(`${d.name}: entry 0x${entry.toString(16)}${entry !== d.ref ? ` (table: 0x${d.ref.toString(16)})` : ''} first 0x${mem.u8[entry].toString(16)} relocs: [${rel.map((x) => '0x' + x.toString(16)).join(', ')}], hash: [0x${h[0].toString(16)}, 0x${h[1].toString(16)}]${same ? ' (as in the table)' : ' (table differs)'}`);
+  const h = libFingerprint(mem.u8, entry, { ...d, relocs: rel }), q = libQuick(mem.u8, entry, { ...d, relocs: rel });
+  const same = JSON.stringify(rel) === JSON.stringify(d.relocs) && h[0] === d.hash[0] && h[1] === d.hash[1] && q === d.quick;
+  console.log(`${d.name}: entry 0x${entry.toString(16)}${entry !== d.ref ? ` (table: 0x${d.ref.toString(16)})` : ''} first 0x${mem.u8[entry].toString(16)} relocs: [${rel.map((x) => '0x' + x.toString(16)).join(', ')}], hash: [0x${h[0].toString(16)}, 0x${h[1].toString(16)}], quick: 0x${q.toString(16)}${same ? ' (as in the table)' : ' (table differs)'}`);
 }

@@ -170,6 +170,15 @@ test('library kernels: floor, ceil, fabs, memcmp, memcpy against the interpreter
     assert.deepEqual(snapshot(B, c, data), snapshot(A, c, data));
     assert.ok(!B.jit.libLive.has(entry), 'changed code not recognised');
   }
+  // a direct call into a kernel's function, translated with its caller: the kernel still gets the entry's hash entry
+  {
+    const E = machine(img, img.imageBase, {}), entry = E.mod.exports.get('fabs'), CALLER = 0x00500000;
+    const rel = (entry - (CALLER + 5)) | 0;
+    E.mem.writeBytes(CALLER, [0xe8, rel & 0xff, (rel >> 8) & 0xff, (rel >> 16) & 0xff, (rel >>> 24) & 0xff]);
+    E.cpu.esp = STACK - 0x400; E.cpu.eip = CALLER;
+    E.jit.run({ stopAt: CALLER + 5, maxInsns: 100000 });
+    assert.ok(E.jit.libLive?.has(entry), 'installed when a region holding its entry is registered');
+  }
   // never outside a library
   const C = machine(img, img.imageBase, { libScope: () => false }), entry = C.mod.exports.get('floor');
   C.cpu.esp = STACK - 0x400; C.mem.write32(C.cpu.esp, RET); C.cpu.eip = entry;

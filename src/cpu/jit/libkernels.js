@@ -34,7 +34,8 @@ const LOGIC32 = (LZ.LOGIC << 2) | 2;
 
 /**
  * Kernel definitions. `ranges`: [offset from the entry, length] of the bytes the kernel depends on; `relocs`: offsets
- * from the entry of the absolute addresses among them; `hash`: their fingerprint (libFingerprint); `ref`: the entry in
+ * from the entry of the absolute addresses among them; `hash`: their fingerprint (libFingerprint); `first`, `quick`: the
+ * first byte and a hash of the first bytes (libQuick), probes before the fingerprint; `ref`: the entry in
  * the reference build (msvcr71.dll 7.10.3052.4, preferred base 0x7c340000; documentation, and the offsets below are
  * written from it); `k`: the kernel's constants. tools/gen/libkernel-sigs.mjs prints the relocs and hashes of a DLL.
  */
@@ -43,13 +44,13 @@ export const LIB_KERNELS = Object.freeze([
   // compare with the argument (an inexact result with the precision exception unmasked raises: not this path),
   // _ctrlfp(caller's control word), the result pushed
   {
-    name: 'msvcr71!floor', kind: 'round', ref: 0x7c34539f, first: 0x83,
+    name: 'msvcr71!floor', kind: 'round', ref: 0x7c34539f, quick: 0x7672dea5, first: 0x83,
     ranges: [[0, 0x11f], [0x7c377361 - 0x7c34539f, 0xd3], [0x7c375c77 - 0x7c34539f, 0x24], [0x7c377650 - 0x7c34539f, 0x11], [0x7c3824b0 - 0x7c34539f, 0x50]],
     relocs: [0x2, 0x48, 0x61, 0xe5, 0xff, 0x108, 0x110, 0x31fd1, 0x32031], hash: [0x6d20c56d, 0xd50f6b6a],
     k: { sse2: 0x7c38b300 - 0x7c34539f, cwg: 0x7c390bc8 - 0x7c34539f, ret: 0x7c377407 - 0x7c34539f, rc: 1, n: 85 },
   },
   {
-    name: 'msvcr71!ceil', kind: 'round', ref: 0x7c345284, first: 0x83,
+    name: 'msvcr71!ceil', kind: 'round', ref: 0x7c345284, quick: 0x877cf24d, first: 0x83,
     ranges: [[0, 0x11b], [0x7c37728e - 0x7c345284, 0xd3], [0x7c375c77 - 0x7c345284, 0x24], [0x7c377650 - 0x7c345284, 0x11], [0x7c382460 - 0x7c345284, 0x50]],
     relocs: [0x2, 0x48, 0x61, 0xe5, 0xfa, 0x103, 0x10c, 0x32019, 0x32079], hash: [0x9365b624, 0x75fb52c5],
     k: { sse2: 0x7c38b300 - 0x7c345284, cwg: 0x7c390bc4 - 0x7c345284, ret: 0x7c377334 - 0x7c345284, rc: 2, n: 85 },
@@ -57,20 +58,20 @@ export const LIB_KERNELS = Object.freeze([
   // memcmp: the byte loop (a pointer not 4-aligned), or repz cmpsd and the tail's byte tests; the bytes compared and
   // the result, ecx / edx as the last compare left them, the instructions of the loops' iterations
   {
-    name: 'msvcr71!memcmp', kind: 'memcmp', ref: 0x7c343234, first: 0x8b,
+    name: 'msvcr71!memcmp', kind: 'memcmp', ref: 0x7c343234, quick: 0x69c5fee, first: 0x8b,
     ranges: [[0, 0xb8]], relocs: [], hash: [0x61345d54, 0xd0825227],
     k: {},
   },
   // memcpy (a memmove): the forward copy to a 4-aligned destination; its jump tables are among the bytes fingerprinted
   {
-    name: 'msvcr71!memcpy', kind: 'memcpy', ref: 0x7c342ebb, first: 0x55,
+    name: 'msvcr71!memcpy', kind: 'memcpy', ref: 0x7c342ebb, quick: 0xc6748697, first: 0x55,
     ranges: [[0, 0x7c343056 - 0x7c342ebb]], relocs: [0x38, 0x50, 0x57, 0x5e, 0x65, 0x69, 0x6d, 0x96, 0xb9, 0xd6, 0xe5, 0xe9, 0xed, 0xf1, 0xf5, 0xf9, 0xfd, 0x101, 0x14b, 0x151, 0x155, 0x159, 0x15d],
     hash: [0x3d056856, 0xf18432d],
     k: {},
   },
   // fabs: _ctrlfp(0x133f), the sign bit cleared through the frame, _ctrlfp(caller's control word), the result pushed
   {
-    name: 'msvcr71!fabs', kind: 'fabs', ref: 0x7c374dc3, first: 0x55,
+    name: 'msvcr71!fabs', kind: 'fabs', ref: 0x7c374dc3, quick: 0x464f3c66, first: 0x55,
     ranges: [[0, 0xb1], [0x7c375c77 - 0x7c374dc3, 0x24]],
     relocs: [0x46], hash: [0xbee672fa, 0xd3255eb6],
     k: { ret: 0x7c374e6b - 0x7c374dc3, n: 64 },
@@ -102,12 +103,23 @@ export function libFingerprint(u8, entry, def) {
   return [h1 >>> 0, h2 >>> 0];
 }
 
+/**
+ * The quick probe of `def` at `entry`: FNV-1a of the first QUICK bytes of its code, the bytes of absolute addresses left
+ * out (`quick` in the table) — looked at for every block the JIT registers, before the whole fingerprint.
+ */
+export function libQuick(u8, entry, def) {
+  let h = 0x811c9dc5 | 0;
+  for (let o = 0; o < QUICK; o++) if (!def.relocs.some((r) => o >= r && o < r + 4)) h = Math.imul(h ^ u8[entry + o], 0x01000193);
+  return h >>> 0;
+}
+const QUICK = 12;
 /** The kernel definition whose fingerprint the code at `eip` has, or null. */
 export function matchLibKernel(u8, eip) {
   if (!BY_FIRST.size) for (const d of LIB_KERNELS) { let l = BY_FIRST.get(d.first); if (!l) BY_FIRST.set(d.first, (l = [])); l.push(d); }
   const l = BY_FIRST.get(u8[eip]);
-  if (!l) return null;
+  if (!l || eip > 0x7fffff00) return null;
   for (const d of l) {
+    if (libQuick(u8, eip, d) !== d.quick) continue;
     const h = libFingerprint(u8, eip, d);
     if (h && h[0] === d.hash[0] && h[1] === d.hash[1]) return d;
   }
