@@ -134,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: false, x87Bounds: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -996,7 +996,11 @@ export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect'
   // cold path (a result the hot tests sent aside), and the calls of the cold-path kernels (fpmath-x87cold.js)
   'x87Arith', 'x87ColdEntry', 'x87ColdCall',
   // jump tables (opts.jumpTables): the jumps that stayed in their region (the others count as `indirect`)
-  'jtabLocal'];
+  'jtabLocal',
+  // 24-bit precision truncating (translate-x87.js roundTowardZero24): arithmetic run, results on the 24-bit grid (the
+  // exactness test), those of the arithmetic on bounded narrow values (roundTowardZeroBounded); FST m32 under a static
+  // directed 24-bit mode of a value not known to be a float
+  'x87DirArith', 'x87DirGrid', 'x87DirBounded', 'x87DirSt32'];
 /** state block offset of profiling counter k */
 export const profOffset = (k) => (k < 16 ? ST.PROF + 4 * k : ST.PROF2 + 4 * (k - 16));
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
@@ -1115,6 +1119,9 @@ class Emitter {
     // instead of a round trip through a general register (false: the earlier code, for measurement): see
     // translate-x87.js pushCut24
     this.x87VecMask = !!(opts.x87VecMask ?? JIT_DEFAULTS.x87VecMask);
+    // truncating 24-bit arithmetic on narrow values whose exponent bounds are known skips the exponent test (see
+    // translate-x87.js rngOf, roundTowardZeroBounded)
+    this.x87Bounds = !!(opts.x87Bounds ?? JIT_DEFAULTS.x87Bounds);
     // only the x87 stack registers the region's code touches are loaded at its entry (and after fallbacks) and written
     // back at its exits: see x87LiveSites
     this.x87Live = !!(opts.x87Live ?? JIT_DEFAULTS.x87Live);
@@ -1124,7 +1131,7 @@ class Emitter {
     /** planned x87 shift at each block's entry (x87EntryPlan), null: every block entered at shift 0 */
     this.x87Plan = null;
     this.stShift = 0;
-    this.f32Mask = this.g24Mask = 0; // (per block, see emitBlock)
+    this.f32Mask = this.g24Mask = this.rngMask = 0; // (per block, see emitBlock)
   }
 
   run(entry) {
@@ -1468,10 +1475,10 @@ class Emitter {
    * the rotation has moved.
    */
   x87Normalize(target = 0) {
-    const saved = { shift: this.stShift, f32: this.f32Mask, g24: this.g24Mask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty, xd: this.xdDirty };
+    const saved = { shift: this.stShift, f32: this.f32Mask, g24: this.g24Mask, rng: this.rngMask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty, xd: this.xdDirty };
     this.materializeF32();
     this.f32Mask = 0;
-    this.g24Mask = 0; // (the locals rotate: what was known of their values is dropped, as the f32 shadows are)
+    this.g24Mask = this.rngMask = 0; // (the locals rotate: what was known of their values is dropped, as the f32 shadows are)
     this.xmmShadowSync(this.xsDirty); // (XMM lane-0 shadows: the same discipline, see xsValid)
     this.xmmShadowSync64(this.xdDirty);
     this.xsDirty = this.xdDirty = 0;
@@ -1524,7 +1531,7 @@ class Emitter {
    */
   x87ExitState() {
     // (g24: the narrow values known on the path that continues past the exit — the locals are not rotated here)
-    const saved = { shift: this.stShift, f32: this.f32Mask, g24: this.g24Mask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty, xd: this.xdDirty };
+    const saved = { shift: this.stShift, f32: this.f32Mask, g24: this.g24Mask, rng: this.rngMask, tagSet: this.tagSet, tagClr: this.tagClr, xs: this.xsDirty, xd: this.xdDirty };
     if (this.x87ExitRotate) { this.x87Normalize(); return saved; } // (measurement: the earlier exits)
     this.materializeF32();
     this.f32Mask = 0;
@@ -1536,7 +1543,7 @@ class Emitter {
     return saved;
   }
   /** Back to the static x87 state returned by x87Normalize (after an exit emitted on a conditional path). */
-  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.g24Mask = saved.g24; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; this.xsDirty = saved.xs; this.xdDirty = saved.xd; }
+  x87Restore(saved) { this.stShift = saved.shift; this.f32Mask = saved.f32; this.g24Mask = saved.g24; this.rngMask = saved.rng; this.tagSet = saved.tagSet; this.tagClr = saved.tagClr; this.xsDirty = saved.xs; this.xdDirty = saved.xd; }
   // ---- XMM lane-0 shadows. Scalar single-precision code (MOVSS / ADDSS / MULSS / CVTSI2SS / COMISS...) keeps lane 0
   // of an XMM register in an f32 local L_XS0+r: xsValid bit r = the shadow holds lane 0; xsDirty bit r (a subset) =
   // the v128 local's lane 0 is stale. A chain of scalar operations then runs on f32 values (the host's mulss /
@@ -1684,7 +1691,7 @@ class Emitter {
     c.i32(0).set(L_TOP);
     this.loadX87Regs(); this.loadX87Tags();
     c.end(); void i;
-    this.f32Mask = this.g24Mask = 0; // the f64 locals were written back (x87Normalize) and possibly reloaded
+    this.f32Mask = this.g24Mask = this.rngMask = 0; // the f64 locals were written back (x87Normalize) and possibly reloaded
   }
 
   // ------------------------------------------------------------------ exits & jumps
@@ -2421,6 +2428,7 @@ class Emitter {
     this.stShift = this.planOf(b.index); // pending static rotation of the x87 locals (see stLocal), x87 regions
     this.f32Mask = 0; // x87 locals whose value is in the f32 shadow (see materializeF32)
     this.g24Mask = 0; // x87 locals known to hold a value whose significand fits in 24 bits (translate-x87.js narrow)
+    this.rngMask = 0; // x87 locals whose exponent bounds are known (translate-x87.js rngOf)
     this.tagSet = this.tagClr = 0; // pending tag word changes (see applyTags)
     this.c1Clear = false; // the status word's C1 known clear (translate-x87.js: cleared once per block)
     this.insnIdx = 0; // instructions of the block emitted so far (charged to the budget at an exit)
@@ -2594,7 +2602,7 @@ class Emitter {
     this.reloadAll();
     this.lz = { kind: LZ.NONE, sz: 2 };
     this.stValid = 0;
-    this.f32Mask = this.g24Mask = 0; // x87 values reloaded as f64, nothing known of them
+    this.f32Mask = this.g24Mask = this.rngMask = 0; // x87 values reloaded as f64, nothing known of them
     this.tagSet = this.tagClr = 0; // (applied by x87Normalize before the flush, the tag word reloaded)
     this.c1Clear = false; // (the interpreter may have set C1: FPREM's quotient bit)
     // did the instruction branch?

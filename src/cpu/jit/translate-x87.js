@@ -45,11 +45,11 @@ function loadST(E, i) { const k = slot(E, i); if ((E.f32Mask >> k) & 1) E.c.get(
  * the f64 local of ST(i), about to be written with an f64 value (the f32 shadow no longer holds it; nothing known of its
  * significand: the handler marks it narrow afterwards when it is, see narrow)
  */
-function stW(E, i) { const k = slot(E, i); E.f32Mask &= ~(1 << k); E.g24Mask &= ~(1 << k); return L_ST0 + k; }
+function stW(E, i) { const k = slot(E, i); E.f32Mask &= ~(1 << k); E.g24Mask &= ~(1 << k); E.rngMask &= ~(1 << k); return L_ST0 + k; }
 /** ST(i) back in its f64 local (before code that writes the f64 local conditionally) */
 function toF64(E, i) { const k = slot(E, i); if ((E.f32Mask >> k) & 1) { E.c.get(L_S32 + k).f64promote().set(L_ST0 + k); E.f32Mask &= ~(1 << k); } }
 /** f32 on the stack (an exact float) -> ST(i) held in the f32 shadow, marked valid (and narrow) */
-function storeST32Stack(E, i) { const k = slot(E, i); E.c.set(L_S32 + k); E.f32Mask |= 1 << k; E.g24Mask |= 1 << k; tagValid(E, i); }
+function storeST32Stack(E, i) { const k = slot(E, i); E.c.set(L_S32 + k); E.f32Mask |= 1 << k; E.g24Mask |= 1 << k; E.rngMask |= 1 << k; rngs(E)[k] = RNG_F32; tagValid(E, i); }
 /**
  * Narrow values (Emitter.g24Mask, bit k for local L_ST0+k): ST(i) is known, at this point of the block, to hold a value
  * whose significand fits in 24 bits — every finite f64 whose 29 low significand bits are clear, any exponent — or a
@@ -60,8 +60,43 @@ function storeST32Stack(E, i) { const k = slot(E, i); E.c.set(L_S32 + k); E.f32M
  * grid is exact.
  */
 function narrow(E, i) { return ((E.g24Mask >> slot(E, i)) & 1) === 1; }
-/** mark ST(i) narrow (or not) */
-function setNarrow(E, i, on) { const b = 1 << slot(E, i); if (on) E.g24Mask |= b; else E.g24Mask &= ~b; }
+/** mark ST(i) narrow (or not), and its exponent bounds `rng` known (or not: RNG_UNK; see rngOf) */
+function setNarrow(E, i, on, rng = RNG_UNK) {
+  const k = slot(E, i), b = 1 << k;
+  if (on) E.g24Mask |= b; else E.g24Mask &= ~b;
+  if (rng !== RNG_UNK) { E.rngMask |= b; rngs(E)[k] = rng; } else E.rngMask &= ~b;
+}
+/**
+ * Exponent bounds of x87 values (Emitter.x87Rng[k], known where Emitter.rngMask bit k is set — dropped with the narrow
+ * values; opts.x87Bounds): packed `hi << 16 | lo` — every finite non-zero value v the register can hold has
+ * 2^-lo <= |v| <= 2^hi (it may also be a zero, an infinity, or a NaN — for a narrow value one whose 29 low significand
+ * bits are clear: an m32 operand's, quieted, or the default NaN). An m32 operand: 128 / 149 (the float range, denormals
+ * included); a 16-bit integer: 16 / 0, a 32-bit one 32 / 0; a product adds its operands' bounds; a sum or difference has
+ * hi = max + 1 and lo = max + 23 for narrow operands (multiples of 2^(-lo-23)), max + 52 otherwise. Set for the results
+ * of truncating 24-bit arithmetic only: truncation never moves a value out of them (|RZ(x)| <= |x| and
+ * |RZ(x)| >= 2^floor(log2 |x|)). Known bounds within the f64 normal range let a truncating instruction on narrow operands
+ * skip its exponent test (roundTowardZero24, `bounded`): its f64 result is then a zero, an infinity from an infinite
+ * operand, a NaN, or a normal value whose 24-bit grid is the top of its significand.
+ */
+const RNG_UNK = 0x0fff0fff, RNG_F32 = (128 << 16) | 149;
+const rngs = (E) => (E.x87Rng ??= new Int32Array(8).fill(RNG_UNK));
+/** ST(i)'s bounds (RNG_UNK: not known) */
+function rngOf(E, i) { const k = slot(E, i); return (E.rngMask >> k) & 1 ? rngs(E)[k] : RNG_UNK; }
+/** the bounds of a constant (a float: see setNarrow) */
+function rngConst(v) {
+  if (v === 0 || !Number.isFinite(v)) return 0;
+  const e = Math.floor(Math.log2(Math.abs(v)));
+  return (Math.max(0, e + 1) << 16) | Math.max(0, -e);
+}
+/** the bounds of the result of `op` (0 add, 1 mul, 4 sub, 5 subr) on values of bounds ra, rb (RNG_UNK: none), narrow or not */
+function rngArith(op, ra, rb, narrowOps) {
+  if (ra === RNG_UNK || rb === RNG_UNK) return RNG_UNK;
+  const ha = ra >>> 16, la = ra & 0xffff, hb = rb >>> 16, lb = rb & 0xffff;
+  const [hi, lo] = op === 1 ? [ha + hb, la + lb] : op === 0 || op === 4 || op === 5 ? [Math.max(ha, hb) + 1, Math.max(la, lb) + (narrowOps ? 23 : 52)] : [0x0fff, 0x0fff];
+  return hi >= 0x0fff || lo >= 0x0fff ? RNG_UNK : (hi << 16) | lo;
+}
+/** bounds within which every f64 result of the operation is exact-range normal (exponent field in [2, 0x7fe]) or zero */
+const rngInF64 = (r) => r !== RNG_UNK && (r >>> 16) <= 1023 && (r & 0xffff) <= 1021;
 /** 24-bit precision, round to nearest, known statically: register values may be kept as floats */
 function f32Mode(E) { return E.fpcStatic === 0 && !globalThis.ORTHROS_NO_F32; }
 /**
@@ -136,12 +171,12 @@ function pushRC(E) { if (E.fpcStatic !== null) E.c.i32(E.fpcStatic >> 10); else 
 function pushFloatRangeTest(c, bits) {
   return c.get(bits).i64(31n).i64shr_u().wrap().i32(0x38100000 * 2).sub().i32((0x47e00000 - 0x38100000) * 2);
 }
-function roundPC(E, op, insn, narrowOps = false) {
+function roundPC(E, op, insn, narrowOps = false, bounded = false) {
   const c = E.c;
   // mode known statically (region specialized for it): 53/64-bit precision rounds nothing; 24-bit precision
   // with rounding to nearest keeps only the result tests
   if (E.fpcStatic !== null && (E.fpcStatic & 0x300) !== 0) return;
-  if (E.fpcStatic !== null && E.fpcStatic !== 0) { roundDirected24(E, op, insn, E.fpcStatic >> 10, narrowOps); return; }
+  if (E.fpcStatic !== null && E.fpcStatic !== 0) { roundDirected24(E, op, insn, E.fpcStatic >> 10, narrowOps, bounded); return; }
   if (E.fpcStatic === 0) {
     c.set(L_F64C);
     const done = c.block();
@@ -222,10 +257,10 @@ function roundPC(E, op, insn, narrowOps = false) {
  * carrying the whole register state to the region's exit block: a truncating vertex transform ran 2.5x slower than the
  * round-to-nearest one (tools/bench/x87loop-bench.mjs xform).
  */
-function roundDirected24(E, op, insn, rc, narrowOps = false) {
+function roundDirected24(E, op, insn, rc, narrowOps = false, bounded = false) {
   const c = E.c;
   c.set(L_F64C);
-  if (rc === 3) { roundTowardZero24(E, op, insn, narrowOps); return; }
+  if (rc === 3) { if (bounded) roundTowardZeroBounded(E, op, insn); else roundTowardZero24(E, op, insn, narrowOps); return; }
   // L_F64D = s with its significand cut to 24 bits (toward zero), plus the step for down-negative / up-positive: an
   // i64 add (a carry into the exponent lands on the next binade's grid point); the bits stay in L_I64A for the grid test
   c.get(L_F64C).i64reinterpret_f64().tee(L_I64A).i64(~0x1fffffffn).i64and();
@@ -274,6 +309,7 @@ function roundTowardZero24(E, op, insn, narrowOps) {
   const pushOutOfRange = () => { c.get(L_I64A).i64(31n).i64shr_u().wrap().i32(2 << 21).sub().i32((0x7ff - 2) * (1 << 21) | 0).ge_u(); };
   const pushMasked = () => { pushCut24(E, L_F64C, L_I64A); c.set(L_F64D); };
   const exactProduct = narrowOps && (op === 1 || op === 6 || op === 7);
+  E.count(PF.x87DirArith);
   if (exactProduct) {
     pushOutOfRange(); c.hint(false).br_if(cold);
     pushMasked();
@@ -287,6 +323,7 @@ function roundTowardZero24(E, op, insn, narrowOps) {
     pushMasked();
     c.br(done);
     c.end(); // grid: s on the 24-bit grid — a zero as computed (+0 for x - x), or itself when in range and exact
+    E.count(PF.x87DirGrid);
     c.get(L_F64C).set(L_F64D);
     c.get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done);
     pushOutOfRange(); c.hint(false).br_if(cold);
@@ -294,6 +331,50 @@ function roundTowardZero24(E, op, insn, narrowOps) {
   }
   c.end(); // cold
   if (exactProduct) c.get(L_F64C).set(L_F64D).get(L_I64A).i64(1n).i64shl().i64eqz().br_if(done); // a zero as computed
+  E.stepExit(insn);
+  c.end(); // done
+  c.get(L_F64D);
+}
+/**
+ * roundTowardZero24 for narrow operands with known bounds (see rngOf: every f64 result s is a zero, an infinity from an
+ * infinite operand, a NaN with its 29 low significand bits clear, or normal with an exponent field in [2, 0x7fe]) —
+ * add, subtract or multiply, the operands in L_F64A / L_F64B, s in L_F64C; the result on the stack, no exponent test:
+ * - a product (op 1) is exact: masked unless it is a NaN (an operand's, or 0 x inf), which the interpreter settles
+ *   (stepExit) — a NaN test on the XMM register instead of the integer pattern's range test;
+ * - a sum or difference off the 24-bit grid (its pattern's 29 low bits not all clear: no zero, infinity or such NaN)
+ *   is masked; on the grid, s itself when exact — tested by subtracting each operand back, `s - x == y && s - y == x`
+ *   (exact iff s = x + y: Fast2Sum's s - x is exact for the larger of the two, so an inexact s fails that side; NaNs
+ *   and infinities fail both), which also covers zeros (x - x = +0 when truncating, -0 + -0 = -0) — else the
+ *   interpreter.
+ * Machine code per instruction (TurboFan): product `vucomisd ; jp ; vmovddup ; vpand`, sum off the grid `vmovq ; test ;
+ * jz ; vmovddup ; vpand`, where the exponent test took `vmovq ; shr ; sub ; cmp ; jnc` more and an on-grid sum the
+ * zero and range tests plus TwoSum's five operations.
+ */
+function roundTowardZeroBounded(E, op, insn) {
+  const c = E.c;
+  E.count(PF.x87DirArith); E.count(PF.x87DirBounded);
+  const done = c.block();
+  if (op === 1) {
+    const nan = c.block();
+    c.get(L_F64C).get(L_F64C).f64ne().hint(false).br_if(nan);
+    if (!E.x87VecMask) c.get(L_F64C).i64reinterpret_f64().set(L_I64A);
+    pushCut24(E, L_F64C, L_I64A); c.set(L_F64D);
+    c.br(done);
+    c.end(); // nan
+  } else {
+    // the cut first, on every path (on the grid it is s itself: one value whichever way, no move to merge them)
+    c.get(L_F64C).i64reinterpret_f64().set(L_I64A);
+    pushCut24(E, L_F64C, L_I64A); c.set(L_F64D);
+    c.get(L_I64A).wrap().i32(0x1fffffff).and().br_if(done);
+    E.count(PF.x87DirGrid);
+    // s - x == y && s - y == x, for s = x + y with y = B (add), -B (sub: written x - s == B, s + B == x), and x = B, y = -A (subr)
+    // — as (s - x) - y and (s - y) - x both +0 (a - b is +0 iff a == b, for any finite a, b; a NaN or an infinity
+    // gives a NaN): their bit patterns ORed, one integer branch where two f64 compares took four branches
+    const [x, y] = op === 0 || op === 4 ? [L_F64A, L_F64B] : [L_F64B, L_F64A];
+    if (op === 0) { c.get(L_F64C).get(x).f64sub().get(y).f64sub(); c.i64reinterpret_f64(); c.get(L_F64C).get(y).f64sub().get(x).f64sub(); }
+    else { c.get(x).get(L_F64C).f64sub().get(y).f64sub(); c.i64reinterpret_f64(); c.get(L_F64C).get(y).f64add().get(x).f64sub(); }
+    c.i64reinterpret_f64().i64or().i64eqz().hint(true).br_if(done);
+  }
   E.stepExit(insn);
   c.end(); // done
   c.get(L_F64D);
@@ -319,15 +400,37 @@ function roundPCExcludesNaN(E) { return E.fpcStatic !== null && (E.fpcStatic & 0
  * step (the integer pattern +-1, through zero to the smallest denormal) when it went the wrong way; overflow to
  * infinity steps back to the largest float when rounding toward zero or away from that infinity. NaNs: as demoted.
  */
-function pushF32Directed(E, rc) {
+function pushF32Directed(E, rc, narrowV = false) {
   const c = E.c;
   // 24-bit precision: a value that is already a float (every result in the float range) is stored as is — one compare
   // instead of the magnitudes' (two absolute values, their constants loaded in the hot path); under 53 / 64-bit
   // precision the values rarely are, the compare would only add to the store
   const pc24 = E.fpcStatic !== null && (E.fpcStatic & 0x300) === 0;
   let exact = null;
+  if (pc24 && narrowV && E.x87Bounds) {
+    // a narrow value (24 significant bits at most, see narrow) demotes exactly when the float is normal above the lowest
+    // binade (exponent field in [2, 254]: the value itself is then at least 2^-126, where every 24-bit value is a
+    // float) — tested on the float's bits, one integer branch where the round trip took two conversions, an f64 compare
+    // and two branches; anything else (zeros, the lowest binade, denormals, infinities, NaNs) takes the compare below
+    c.get(L_F64A).f32demote().tee(L_F32C).i32reinterpret_f32().i32(1).shl().i32(2 << 24).sub().i32(253 << 24).lt_u();
+    exact = c.hint(true).if_(T.f32); c.get(L_F32C); c.else_();
+    c.get(L_F32C).f64promote().get(L_F64A).f64eq(); const ex2 = c.if_(T.f32); c.get(L_F32C); c.else_(); c.get(L_F32C);
+    pushF32Adjust(E, rc);
+    c.end(); void ex2;
+    c.end(); // (exact)
+    return;
+  }
   if (pc24) { c.get(L_F64A).f32demote().tee(L_F32C).f64promote().get(L_F64A).f64eq(); exact = c.hint(true).if_(T.f32); c.get(L_F32C); c.else_(); c.get(L_F32C); }
   else c.get(L_F64A).f32demote().tee(L_F32C);
+  pushF32Adjust(E, rc);
+  if (exact !== null) c.end(); // (exact)
+}
+/**
+ * pushF32Directed's step: the float t (f32.demote of L_F64A, also in L_F32C) on the stack -> t moved one step toward the
+ * directed rounding's side when the round to nearest went the wrong way
+ */
+function pushF32Adjust(E, rc) {
+  const c = E.c;
   if (rc === 3) c.f64promote().f64abs().get(L_F64A).f64abs().f64gt();
   else if (rc === 1) c.f64promote().get(L_F64A).f64gt();
   else c.f64promote().get(L_F64A).f64lt();
@@ -348,7 +451,6 @@ function pushF32Directed(E, rc) {
   }
   c.f32reinterpret_i32();
   c.else_(); c.get(L_F32C); c.end(); void adj;
-  if (exact !== null) c.end(); // (exact)
 }
 /**
  * i32 1 when the f64 result in L_F64C (on the 24-bit grid) of operation `op` on L_F64A / L_F64B is exact: both
@@ -479,16 +581,17 @@ HANDLERS[OP.FLD] = (E, insn) => {
   if (f32Mode(E) && !f32Off('m32', insn.addr) && o.t === OT.MEM && o.size === 4) { E.c.f32load(E.eaOff(o), 0); push(E); storeST32Stack(E, 0); return; }
   if (o.t === OT.ST && isF32(E, o.r)) { E.c.get(L_S32 + slot(E, o.r)); push(E); storeST32Stack(E, 0); return; }
   const nw = o.t === OT.ST ? narrow(E, o.r) : o.t === OT.MEM && o.size === 4; // (see narrow)
+  const rng = o.t === OT.ST ? rngOf(E, o.r) : nw ? RNG_F32 : RNG_UNK;
   loadFpOperand(E, o); // value on the WASM stack survives the rotation of the locals
-  push(E); storeSTStack(E, 0); setNarrow(E, 0, nw);
+  push(E); storeSTStack(E, 0); setNarrow(E, 0, nw, rng);
 };
-HANDLERS[OP.FILD] = (E, insn) => { loadIntOperand(E, insn.ops[0]); push(E); storeSTStack(E, 0); setNarrow(E, 0, insn.ops[0].size === 2); };
+HANDLERS[OP.FILD] = (E, insn) => { const sz = insn.ops[0].size; loadIntOperand(E, insn.ops[0]); push(E); storeSTStack(E, 0); setNarrow(E, 0, sz === 2, (sz * 8) << 16); };
 /** scratch locals of the inline m80 conversions (fpmath-f80.js) */
 const F80_LOAD = { m: L_I64A, se: L_T4, e: L_T5, r: L_F64A }, F80_STORE = { b: L_I64A, exp: L_T4, sg: L_T5 };
 function fstore(E, insn, doPop) {
   const c = E.c; const o = insn.ops[0];
   if (o.t === OT.ST) {
-    if (isF32(E, 0)) { c.get(L_S32 + slot(E, 0)); storeST32Stack(E, o.r); } else { const nw = narrow(E, 0); loadST(E, 0); storeSTStack(E, o.r); setNarrow(E, o.r, nw); }
+    if (isF32(E, 0)) { c.get(L_S32 + slot(E, 0)); storeST32Stack(E, o.r); } else { const nw = narrow(E, 0), rng = rngOf(E, 0); loadST(E, 0); storeSTStack(E, o.r); setNarrow(E, o.r, nw, rng); }
     if (doPop) pop(E);
     return;
   }
@@ -508,7 +611,7 @@ function fstore(E, insn, doPop) {
     // result in the float range) is stored as is, anything else through the f32rc kernel (denormals, overflow)
     addr();
     if (E.fpcStatic !== null && (E.fpcStatic & 0xc00) === 0) c.get(L_F64A).f32demote();
-    else if (E.fpcStatic !== null) pushF32Directed(E, E.fpcStatic >> 10); // (no call: see pushF32Directed)
+    else if (E.fpcStatic !== null) { E.count(PF.x87DirSt32); pushF32Directed(E, E.fpcStatic >> 10, narrow(E, 0)); } // (no call: see pushF32Directed)
     else {
       c.get(L_F64A).f32demote().tee(L_F32C).f64promote().get(L_F64A).f64eq();
       const exact = c.if_(T.f32); c.get(L_F32C); c.else_();
@@ -550,7 +653,7 @@ HANDLERS[OP.FISTTP] = (E, insn) => istore(E, insn, true, true);
 // ---- constants
 const constant = (v) => (E, insn) => {
   if (f32Mode(E) && !f32Off('const', insn.addr) && Math.fround(v) === v) { E.c.f32c(v); push(E); storeST32Stack(E, 0); return; }
-  E.c.f64c(v); push(E); storeSTStack(E, 0); setNarrow(E, 0, Math.fround(v) === v);
+  E.c.f64c(v); push(E); storeSTStack(E, 0); setNarrow(E, 0, Math.fround(v) === v, rngConst(v));
 };
 HANDLERS[OP.FLD1] = constant(1); HANDLERS[OP.FLDZ] = constant(0); HANDLERS[OP.FLDPI] = constant(Math.PI);
 HANDLERS[OP.FLDL2E] = constant(Math.LOG2E); HANDLERS[OP.FLDL2T] = constant(Math.log2(10)); HANDLERS[OP.FLDLG2] = constant(Math.LOG10E * Math.LN2); HANDLERS[OP.FLDLN2] = constant(Math.LN2);
@@ -665,15 +768,17 @@ function arith(op, doPop, integer) {
         return;
       }
     }
-    let narrowOps;
+    let narrowOps, rng;
     if (insn.ops.length === 2 && insn.ops[0].t === OT.ST && insn.ops[1].t === OT.ST) {
       dst = insn.ops[0].r;
       narrowOps = narrow(E, dst) && narrow(E, insn.ops[1].r);
+      rng = rngArith(op, rngOf(E, dst), rngOf(E, insn.ops[1].r), narrowOps);
       loadST(E, dst); c.set(L_F64A);
       loadST(E, insn.ops[1].r); c.set(L_F64B);
     } else {
       const o = insn.ops[insn.ops.length - 1];
       narrowOps = narrow(E, 0) && (o.t === OT.ST ? narrow(E, o.r) : o.t === OT.MEM && (integer ? o.size === 2 : o.size === 4));
+      rng = rngArith(op, rngOf(E, 0), o.t === OT.ST ? rngOf(E, o.r) : o.t !== OT.MEM ? RNG_UNK : integer ? (o.size * 8) << 16 : o.size === 4 ? RNG_F32 : RNG_UNK, narrowOps);
       loadST(E, 0); c.set(L_F64A);
       if (o.t === OT.ST) loadST(E, o.r);
       else if (integer) loadIntOperand(E, o);
@@ -691,7 +796,9 @@ function arith(op, doPop, integer) {
     if (f32Mode(E) && !f32Off('round')) { roundF32(E, insn, op); c.get(L_F32C); storeST32Stack(E, dst); }
     else {
       const noNaN = roundPCExcludesNaN(E);
-      roundPC(E, op, insn, narrowOps); c.set(L_F64C);
+      // (truncating, narrow operands whose bounds keep every f64 result normal: no exponent test, see rngOf)
+      const bounded = E.x87Bounds && E.fpcStatic === 0xc00 && narrowOps && rngInF64(rng);
+      roundPC(E, op, insn, narrowOps, bounded); c.set(L_F64C);
       // a NaN result follows the x87 rule (operand NaN / larger significand / IE and the indefinite): the
       // x87NanArith kernel on the hinted-unlikely path (emitNanF64 inline with x87Cold 'inline')
       E.count(PF.x87Arith);
@@ -707,7 +814,8 @@ function arith(op, doPop, integer) {
       c.get(L_F64C); storeSTStack(E, dst);
       // (24-bit precision with a static directed rounding: every result that stays in the region is on its 24-bit grid,
       // or a zero)
-      if (noNaN) setNarrow(E, dst, true);
+      // (the result's bounds: known for truncating 24-bit arithmetic whether or not this one took the bounded path)
+      if (noNaN) setNarrow(E, dst, true, E.x87Bounds && E.fpcStatic === 0xc00 && rngInF64(rng) ? rng : RNG_UNK);
     }
     if (doPop) pop(E);
   };
@@ -766,8 +874,8 @@ HANDLERS[OP.FXAM] = (E) => {
 HANDLERS[OP.FTST] = (E) => { const c = E.c; loadST(E, 0); c.set(L_F64A); c.f64c(0).set(L_F64B); compareCC(E); };
 
 // ---- unary / stack
-HANDLERS[OP.FCHS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32neg(); storeST32Stack(E, 0); } else { const nw = narrow(E, 0); loadST(E, 0); E.c.f64neg(); storeSTStack(E, 0); setNarrow(E, 0, nw); } };
-HANDLERS[OP.FABS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32abs(); storeST32Stack(E, 0); } else { const nw = narrow(E, 0); loadST(E, 0); E.c.f64abs(); storeSTStack(E, 0); setNarrow(E, 0, nw); } };
+HANDLERS[OP.FCHS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32neg(); storeST32Stack(E, 0); } else { const nw = narrow(E, 0), rng = rngOf(E, 0); loadST(E, 0); E.c.f64neg(); storeSTStack(E, 0); setNarrow(E, 0, nw, rng); } };
+HANDLERS[OP.FABS] = (E) => { if (isF32(E, 0)) { E.c.get(L_S32 + slot(E, 0)).f32abs(); storeST32Stack(E, 0); } else { const nw = narrow(E, 0), rng = rngOf(E, 0); loadST(E, 0); E.c.f64abs(); storeSTStack(E, 0); setNarrow(E, 0, nw, rng); } };
 // FSQRT of a negative operand is an invalid arithmetic operand (IE, the indefinite); a NaN operand
 // follows the x87 rule (nanOutcome, D034) like the transcendentals; sqrt(-0) = -0
 HANDLERS[OP.FSQRT] = (E, insn) => {
@@ -980,8 +1088,11 @@ HANDLERS[OP.FXCH] = (E, insn) => {
     c.get(L_S32 + ka).get(L_S32 + kb).set(L_S32 + ka).set(L_S32 + kb);
     E.f32Mask = (E.f32Mask & ~((1 << ka) | (1 << kb))) | (ma << kb) | (mb << ka);
   }
-  const na = (E.g24Mask >> ka) & 1, nb = (E.g24Mask >> kb) & 1; // (narrow values move with them too)
+  const na = (E.g24Mask >> ka) & 1, nb = (E.g24Mask >> kb) & 1; // (narrow values move with them too, their bounds as well)
   E.g24Mask = (E.g24Mask & ~((1 << ka) | (1 << kb))) | (na << kb) | (nb << ka);
+  const qa = (E.rngMask >> ka) & 1, qb = (E.rngMask >> kb) & 1;
+  E.rngMask = (E.rngMask & ~((1 << ka) | (1 << kb))) | (qa << kb) | (qb << ka);
+  const R = rngs(E), ra = R[ka]; R[ka] = R[kb]; R[kb] = ra;
   tagValid(E, 0); tagValid(E, i);
 };
 HANDLERS[OP.FFREE] = (E, insn) => {

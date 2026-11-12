@@ -232,3 +232,118 @@ test('narrow values survive the exits of a block (x87ExitState keeps g24Mask for
   assert.ok(seen.some(([at]) => at !== 0), 'exits taken with narrow values known');
   for (const [at, after] of seen) assert.equal(after, at, 'g24Mask after the exit\'s restore');
 });
+
+test('bounded narrow arithmetic under truncation (x87Bounds): straight-line programs against the interpreter', () => {
+  // translate-x87.js rngOf / roundTowardZeroBounded: add / sub / subr / mul of narrow values whose exponent bounds keep
+  // every f64 result normal skip the exponent test; a sum on the 24-bit grid is kept only when exact. One block of x87
+  // code (no boundary: the bounds are known across the whole program) over floats chosen for absorption (1 + 2^-30,
+  // 2^24 - 2^-40: inexact sums landing on the grid, both signs), cancellation, zeros of both signs, float denormals, the
+  // float range's ends, infinities, quiet and signaling NaNs; products chained past the bounds' limit (the plain path
+  // again). Compared with the interpreter: every value stored, the condition codes, TOP and IE; whole runs and slices,
+  // the option on and off, and with the path counted (profiling translation) so that it is known to run.
+  const f = Math.fround;
+  const SNAN = 0x7fa00001, QNAN_NEG = 0xffc12345;
+  const special = [1, -1, 2 ** -30, -(2 ** -30), 2 ** -60, -(2 ** -60), 3, 1.5, 2 ** 24, -(2 ** 24) + 1, f(1 / 3), f(-2 / 3), 1e30, -1e30,
+    3.4e38, -3.4e38, 1.1754943508222875e-38, 1e-45, -(2 ** -149), 0, -0, Infinity, -Infinity, NaN, 'snan', 'qnan', 2 ** 100, 2 ** -100,
+    f(1 + 2 ** -23), -f(1 + 2 ** -23), 7, -7];
+  const run = (code, outLen, floats, i16, useJit, slice, opts) => {
+    const mem = new GuestMemory();
+    const cpu = new CpuState(mem, THREAD_STATES_BASE);
+    const I = new Interp(mem, cpu);
+    cpu.reset();
+    floats.forEach((v, k) => { if (v === 'snan') mem.write32(T32 + 4 * k, SNAN); else if (v === 'qnan') mem.write32(T32 + 4 * k, QNAN_NEG); else mem.writeF32(T32 + 4 * k, v); });
+    i16.forEach((v, k) => mem.write16(T16 + 2 * k, v & 0xffff));
+    mem.writeBytes(CODE, code);
+    mem.write16(cpu.base + ST.FPU_CW, 0x0c7f);
+    cpu.eip = CODE; cpu.esp = DATA + 0x10000; cpu.eflags = F.RESERVED1 | F.IF;
+    const end = CODE + code.length - 1;
+    let r, jit = null;
+    if (useJit) { jit = new Jit(mem, I, { smc: true, ...opts }); jit.cpu = cpu; jit.boundaries = new Set([end]); do r = jit.run({ stopAt: end, maxInsns: slice }); while (r === EXIT.TIMESLICE); }
+    else r = I.run({ stopAt: end, maxInsns: 1e7 });
+    assert.equal(r, EXIT.HALT);
+    if (jit?.opts.profile) jit.harvest(cpu.b4);
+    return { out: Buffer.from(mem.bytes(OUT, outLen)).toString('hex') + ' ' + (cpu.eax & 0x7d01).toString(16), bounded: jit?.stats.prof?.x87DirBounded ?? 0 };
+  };
+  let bounded = 0;
+  {
+    // every pair of 14 special operands through add, mul, sub, subr: `fld m32 a ; fop m32 b ; fnstsw m16 ; fnclex ; fst
+    // m32 ; fstp m64` (IE of 0 x inf, inf - inf, the NaN rules; absorption both ways; FST m32 of narrow values out of the
+    // float range and just below its normals: (2 - 2^-23) x 2^-127 = 2^-126 - 2^-150, which f32.demote rounds up to a
+    // normal)
+    const vals = [0, -0, 1, -1, 2 ** -30, -(2 ** -60), 2 ** 24, f(1 + 2 ** -23), -3.4e38, 1e-45, Infinity, NaN, 2 ** -127, f(2 - 2 ** -23)];
+    // (one loop over the pairs, so that the exits re-enter one translation: A[k] at T32, B[k] at T32 + 4096)
+    const P = vals.length ** 2, A = [], B = [];
+    for (const x of vals) for (const y of vals) { A.push(x); B.push(y); }
+    while (A.length < 1024) A.push(0);
+    const b = [0x31, 0xc0, 0xbe, ...le(T32), 0xbf, ...le(T32 + 4096), 0xbb, ...le(OUT)]; // xor eax, eax ; mov esi / edi / ebx
+    const top = b.length;
+    for (const op of [0, 1, 4, 5]) b.push(0xd9, 0x04, 0x86, 0xd8, 0x04 | (op << 3), 0x87, 0xdd, 0x3b, 0xdb, 0xe2, 0xd9, 0x53, 0x02, 0xdd, 0x5b, 0x06, 0x83, 0xc3, 0x0e);
+    b.push(0x40, 0x3d, ...le(P)); // inc eax ; cmp eax, P
+    b.push(0x0f, 0x82, ...le(top - (b.length + 6)), 0xdf, 0xe0, 0xf4); // jb top ; fnstsw ax ; hlt
+    const out = OUT + 14 * 4 * P;
+    const code = Uint8Array.from(b), outLen = out - OUT;
+    const want = run(code, outLen, [...A, ...B], [], false).out;
+    const got = run(code, outLen, [...A, ...B], [], true, 1e7, { x87Bounds: true, profile: true });
+    if (got.out !== want) {
+      for (let k = 0; k < outLen / 14; k++) {
+        const g = got.out.slice(28 * k, 28 * k + 28), w = want.slice(28 * k, 28 * k + 28);
+        assert.equal(g, w, `${A[Math.floor(k / 4)]} op ${[0, 1, 4, 5][k % 4]} ${B[Math.floor(k / 4)]}: status word, values`);
+      }
+    }
+    bounded += got.bounded;
+  }
+  for (const k of [1e30, 1e-30, 3.4e38, 1e-45]) {
+    // products chained in one block past the bounds' limit (1e30: hi grows by 100 a step; 1e-45: lo by 149), then sums:
+    // `fld m32 k ; (fmul m32 k ; fst m64) x 12 ; (fadd st, st(0) ; fst m64) x 4 ; fstp m64 ; fnstsw m16` — the results leave the
+    // double range, which the bounds must see coming (the plain path's exponent test then sends them to the interpreter)
+    const b = [0xd9, 0x05, ...le(T32)];
+    let out = OUT;
+    for (let i = 0; i < 12; i++) { b.push(0xd8, 0x0d, ...le(T32), 0xdd, 0x15, ...le(out)); out += 8; }
+    for (let i = 0; i < 4; i++) { b.push(0xd8, 0xc0, 0xdd, 0x15, ...le(out)); out += 8; }
+    b.push(0xdd, 0x1d, ...le(out), 0xdd, 0x3d, ...le(out + 8), 0xf4); out += 10; // (fnstsw m16: OE / UE as well)
+    const code = Uint8Array.from(b), outLen = out - OUT;
+    assert.equal(run(code, outLen, [f(k)], [], true, 1e7, { x87Bounds: true }).out, run(code, outLen, [f(k)], [], false).out, `chain of ${k}`);
+  }
+  for (let seed = 1, n = depth(400, 8); seed <= n; seed++) {
+    const R = rng(seed * 7919);
+    const pick = (k) => Math.floor(R() * k);
+    // mostly ordinary floats (a NaN or an infinity sends what depends on it to the interpreter), some special ones
+    const floats = [], pSpecial = 0.4 * R();
+    for (let k = 0; k < N_TAB; k++) floats.push(R() < pSpecial ? special[pick(special.length)] : f((R() < 0.5 ? -1 : 1) * (1 + R()) * 2 ** (pick(40) - 20)));
+    const i16 = Array.from({ length: N_TAB }, () => (R() < 0.5 ? pick(16) - 8 : pick(65536) - 32768));
+    const b = [];
+    let d = 0, out = OUT;
+    const tab32 = () => le(T32 + 4 * pick(N_TAB)), tab16 = () => le(T16 + 2 * pick(N_TAB));
+    for (let n = 0; n < 50; n++) {
+      const r = R();
+      if (d === 0 || (d < 6 && r < 0.25)) {
+        const k = pick(8);
+        if (k < 4) b.push(0xd9, 0x05, ...tab32()); // fld m32
+        else if (k === 4) b.push(0xdf, 0x05, ...tab16()); // fild m16
+        else if (k === 5) b.push(0xd9, R() < 0.5 ? 0xe8 : 0xee); // fld1 / fldz
+        else if (d) b.push(0xd9, 0xc0 + pick(d)); // fld st(i)
+        else b.push(0xd9, 0x05, ...tab32());
+        d++;
+        continue;
+      }
+      const op = [0, 0, 1, 1, 4, 5, 6][pick(7)];
+      if (r < 0.6) { const k = pick(4); b.push(k === 3 ? 0xde : 0xd8, (op << 3) | 5, ...(k === 3 ? tab16() : tab32())); } // m32 / m16 operand
+      else if (r < 0.8 && d >= 2) { const i = 1 + pick(d - 1), form = pick(3); b.push([0xd8, 0xdc, 0xde][form], 0xc0 + (op << 3) + i); if (form === 2) d--; }
+      else if (r < 0.84 && d >= 2) b.push(0xd9, 0xc8 + 1 + pick(d - 1)); // fxch
+      else if (r < 0.88) b.push(0xd9, R() < 0.5 ? 0xe0 : 0xe1); // fchs / fabs
+      else if (r < 0.92) { b.push(0xd9, 0x15, ...le(out)); out += 4; } // fst m32
+      else if (r < 0.95) { b.push(0xdd, 0x3d, ...le(out), 0xdb, 0xe2); out += 2; } // fnstsw m16 ; fnclex (IE of what ran since)
+      else { b.push(0xdd, 0x1d, ...le(out)); out += 8; d--; } // fstp m64
+    }
+    while (d--) { b.push(0xdd, 0x1d, ...le(out)); out += 8; }
+    b.push(0xdf, 0xe0, 0xf4); // fnstsw ax ; hlt
+    const code = Uint8Array.from(b), outLen = out - OUT;
+    const want = run(code, outLen, floats, i16, false).out;
+    for (const [slice, opts] of [[1e7, { x87Bounds: true, profile: true }], [3, { x87Bounds: true }], [1e7, { x87Bounds: false }]]) {
+      const got = run(code, outLen, floats, i16, true, slice, opts);
+      assert.equal(got.out, want, `seed ${seed} slice ${slice} ${JSON.stringify(opts)}`);
+      bounded += got.bounded;
+    }
+  }
+  assert.ok(bounded > 0, 'the bounded path ran');
+});
