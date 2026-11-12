@@ -902,6 +902,84 @@ instruction fetch of a large, flat body of translated code, and a jump table add
 Off by default (`JIT_DEFAULTS.jumpTables`); `?jitopts={"jumpTables":true}` or `dbg:ORTHROS_JIT_JTAB_OFF=` (empty: on,
 `=1`: off; both retranslate everything) for measurement.
 
+## Tier 2 by guest function (2026-11-12): prototype behind a gate — no-go, off by default
+
+The study of 2026-11-12 (data/proof/guest-speed-2026-11-12/plan.md, rank 2c) proposed a second tier: the hot core of
+the game translated **once**, by guest function, into one WebAssembly module whose functions call each other with WASM
+calls (no copies, no chained transitions, fewer live values at the boundaries), gated on ≥ 20 % faster on the half of
+the execution it covers. Prototype: src/cpu/jit/tier2.js, `ORTHROS_JIT_AB={"tier2":true}` (off by default; not a
+`JIT_DEFAULTS` key, so the translated-code cache key is unchanged).
+
+- **What it does, automatically at run time** (no per-game data): `{"tier2Profile":true}` or `{"tier2":true}` starts a
+  profile window (`tier2Window` guest instructions, default 1 G): every region is translated again with one execution
+  counter per block *address* (translate.js CountSlots: per-region counters overflowed the counter area with the ~3
+  copies of each block). At its end the hot seeds are the blocks making `tier2Share` (default 0.5) of the counted guest
+  instructions; function entries are the direct call targets of the code that ran plus every `call rel32` target and
+  aligned dword of the loaded images (code and data: vtables, import slots) that is a block that ran; a function is
+  every block that ran reachable from its entry without crossing another entry (cut at 300 blocks); hot seeds no entry
+  reaches become entries. The functions holding the most counted instructions are taken up to the share, then the
+  functions they call or jump to that ran (≤ 6 000 blocks). Each is translated by the region emitters restricted to its
+  blocks (`onlyBlocks`), with: a `call rel32`, or a `call [slot]` whose slot holds a tier-2 function (guarded by the
+  slot's value), as a WASM `call` passing and returning the 8 registers, EFLAGS, the 4 lazy-flag values and the budget
+  (16 values; x87 / XMM caches written back before and reloaded after); a jump to a tier-2 entry (tail jumps, import
+  stubs `jmp [slot]`) a WASM `return_call`; a RET a return of the popped address, which the caller compares with its
+  return site — equal, it goes on; else (SEH, longjmp, a replaced return address) it leaves as a jump there. Every other
+  exit (cold block, indirect transfer, API thunk, fault, budget, nesting deeper than 48) returns up the WASM calls to the
+  function's region-signature entry, which leaves as a region does (chained); budget checked at every call (a recursion
+  has no back edge). Every block of every function gets the hash entry (tier-1 regions translated afterwards stop at
+  them: discovery boundaries); an x87 function is specialized for its tier-1 region's x87 mode and, entered under
+  another, leaves (`EXIT_T2MODE`) and hands its entries back to tier 1. A store into a tier-2 page drops all of tier 2.
+  Exact against the reference interpreter: tests/jit-tier2.test.js (random programs of functions — direct calls, calls
+  through slots and import stubs, tail jumps, recursion deeper than the nesting bound, loops, early returns, a callee
+  moving its return address, flags read after a call, x87 under a precision switched every iteration, SSE,
+  interpreter fallbacks — built in the middle of the run, time slices of 5 000 / 97 / 7 instructions; SMC on a tier-2
+  page). The whole JIT suite passes unchanged.
+- **Measured** (RotWK 2.02 skirmish, Node, `tools/bench/ab-virtual.mjs --perf-phase` with
+  tools/scenarios/rotwk-tier2-ab.txt: the same virtual-clock play in both arms, a 2 G-instruction profile window in
+  both, then 50 s of play = 7 873 M guest instructions counted by `perf record` only during it, `--no-liftoff`, symbols
+  by `--perf-basic-prof`; 2 runs per arm, run together; host instructions (i/g) and cycles (c/g) per guest instruction
+  of the phase):
+
+  | | tier-1 regions | tier-2 functions | all translated code | process | guest ns / insn |
+  |---|---|---|---|---|---|
+  | A (tier 1) | 6.97 / 6.96 i/g, 4.78 / 4.70 c/g, IPC 1.47 | — | 6.97 i/g, 4.74 c/g | 10.44 / 10.22 c/g | 2.849 / 2.790 |
+  | B (tier 2, 0.5) | 4.83 / 4.89 i/g, 3.56 / 3.76 c/g, IPC 1.33 | 3.37 / 3.35 i/g, 1.61 / 1.66 c/g, IPC 2.06 | 8.22 i/g (+18 %), 5.29 c/g (+12 %) | 10.62 / 10.94 c/g (+4 %) | 2.918 / 3.001 (+5 %) |
+
+  Tier 2 built 268 functions (29 x87), 2 405 blocks, 783 KB of WASM, 429 direct-call and 10 tail-call sites, in 60 ms
+  of translation (+0.7 s of selection, mostly the image scan); it ran **51.8 %** of the phase's guest instructions
+  (counted run, ORTHROS_TIER2_COUNT=1: 4 081 M of 7 873 M), entered 56.8 M times from tier 1 (one entry per 72 guest
+  instructions run in it; left by a top-level RET 38.8 M, a jump 18.0 M), with 94.4 M WASM calls (one per 43) of which
+  6.9 M came back elsewhere than their return site (an exit unwinding them). On what it covers: **3.16 cycles and 6.49
+  host instructions per guest instruction** (IPC 2.06, instruction-cache fills per 1 000 host instructions 26 from L2
+  and 7 from beyond, against 32 and 14 in tier-1 code). The same half in tier 1: A's translated code minus B's tier-1
+  code = **2.08 c/g, 4.07 i/g** — as the study's hottest regions (RotWK play 2.12 c/g, 4.39 i/g at IPC 2.07). So tier 2
+  is **~50 % slower** on the half it covers, not ≥ 20 % faster. Earlier variants: only the hot blocks in functions
+  (everything else an exit; 177 functions of 1.6 blocks): +24 % guest time; the 0.9 share (6 010 blocks, 65 % of the
+  instructions run in tier 2): translated code +19 % cycles.
+- **Why.** (1) A tier-1 region already inlines its callees (a call and a RET to an in-region return site cost a push, a
+  branch, a pop and a compare): `call f1 → call f2` in a loop costs 3.3 ns per iteration in tier 1 and 14.6 ns with
+  the tier-2 WASM calls (~7 ns per call/return pair: 16 values each way, the callee's prologue and dispatch `br_table`,
+  not inlined by V8 — functions are large); one call per 43 guest instructions makes that ~0.5 c/g. (2) The covered half
+  is not closed: tier-1 code enters and leaves it every ~70 guest instructions (a chained transition plus the entry's
+  call and its 16 values each time) — the half that runs is spread over hundreds of functions called from the other
+  half. (3) The footprint gain is real but small where tier 2 runs: the hottest half already runs from the caches in
+  tier 1 (IPC ~2.1); the fetch-bound flat tail (IPC 1.3-1.4) is the other half, which a 50 % tier 2 does not touch,
+  and its tier-1 code got costlier per instruction (7.6 c/g) with the extra transitions at the boundaries.
+- **What a tier 2 would need to win** (not built): callees inlined into their callers within a function (as tier 1
+  does, a single copy per call tree instead of per region), the boundaries with tier 1 rare (whole call trees, ≥ 90 %
+  of the instructions — the tail is where the fetch stall is), and calls with only the live values (per-function
+  signatures). That is a region former over the call graph rather than a function translator, i.e. weeks of work for
+  an expected gain bounded by the footprint of the tail; the cheaper steps of the plan (hot-only regions, contiguous hot
+  code: plan.md 2a / 2b) attack that tail directly and come first.
+- Not measured: Age of the Ring (tools/scenarios/aotr-tier2-ab.txt, `--until-api ''`: after 18 min and 90 G guest
+  instructions the scenario had not reached the menu's frames — its play runs in game.dat's child process, which this
+  tree's startbench does not follow; stopped), Chrome, the other games.
+- Tools: `ab-virtual.mjs --perf-phase [--perf-label <phase>]` (perf over one scenario phase, `dbg:ORTHROS_PERF_CTL=1/0`
+  through `perf --control`, events by code kind: tier-1 regions `r_*`, tier-2 functions `t2_*` / entries `w2_*`, the
+  rest; per guest instruction of the phase), `ORTHROS_TIER2_COUNT=1` (tier 2's entries, exits, calls, tail calls and
+  guest instructions, printed by startbench at each `ORTHROS_PERF_CTL` switch; the counters cost time), `ORTHROS_TIER2_LOG=1`
+  (the selection and build).
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
