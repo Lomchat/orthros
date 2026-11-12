@@ -1,0 +1,31 @@
+# BFME 1.08 (bfme1-108): bfme1-108-short's menu steps and its skirmish map load, then 10 s of play — the map load as
+# the measured phase of tools/bench/ab-virtual.mjs --perf-phase --perf-label load (ORTHROS_PERF_CTL: perf --control
+# enabled during it only). Coordinates for 800x600.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++20:waitframe:30,100000
+0:mark:menu
+5:click:463,367
+8:move:90,573
+10:click:90,573
+18:move:322,573
+20:click:322,573
+30:move:403,304
+32:click:403,304
+34:text:Orthros
+38:move:340,360
+40:click:340,360
+41:waitframe:170,100000
+0:mark:setup
+3:move:338,573
+4:click:338,573
+5:dbg:ORTHROS_PERF_CTL=1
+5:mark:load
+6:waitframe:360,100000
+0:dbg:ORTHROS_PERF_CTL=0
+0:mark:play
+5:click:400,300
+8:rclick:500,350
+10:mark:end

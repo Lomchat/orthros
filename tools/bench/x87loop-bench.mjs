@@ -100,6 +100,10 @@ const CASES = [
   ['sums of squares', 'd9ee | d90486 d827 d84f04 d95b20 d9448604 d86704 d84f08 d95b24 d9448608 d86708 d84f04' +
     ' d94324 d8c1 d84320 d9c0 d8c9 dec3 ddd8 d94324 d84320 d8e1 d9c0 d8c9 d84328 d95b28 ddd8' +
     ' d94320 d86324 d9c0 d8c2 d9c0 d8c9 d8432c d95b2c ddd8 dee1 d9c0 d8c9 d84330 d95b30 ddd8'],
+  // products accumulated into float memory (the shape of a fitting loop's inner block: `fld st(i) ; fmul m32 ; fadd m32 ;
+  // fstp m32`, values truncated when the code runs under 0xc7f): d = (x - c) * c2; acc0 += st1 * x; acc1 += d * d;
+  // acc2 += d * c (st1 = 3.0 from before the loop)
+  ['mac to memory', 'd94708 | d90486 d86704 d84f08 d9c1 d80c86 d84320 d95b20 d9c0 d8c9 d84324 d95b24 d9c0 d84f04 d84328 d95b28 ddd8'],
   // fld [esi+eax*4] ; fadd qword [edi+0x208] (a float with 24 significant bits, as a double) ; fstp [ebx+eax*4]   (a double operand holding a float: the
   // sums land on 24-bit midpoints often, settled in roundF32's cold path from the operands being floats)
   ['fadd m64 midpoints', 'd90486 dc8708020000 d91c83'],

@@ -53,6 +53,9 @@ const CASES = [
   // fld dword [esi+eax*4] ; fld dword [edi+4] ; fmul st, st(1) ; fadd st(1), st ; fsubrp st(1), st ; fld st(0) ;
   // fdivr st, st(1) ; faddp st(1), st ; fstp dword [ebx+eax*4]   (register operands)
   ['regs', 'd90486 d94704 d8c9 dcc1 dee9 d9c0 d8f9 dec1 d91c83'],
+  // products accumulated into float memory (x87loop-bench's `mac to memory` without its fld before the loop: st(1) is the
+  // caller's): `fld st(i) ; fmul m32 ; fadd m32 ; fstp m32`
+  ['mac', 'd90486 d86704 d84f08 d9c1 d80c86 d84320 d95b20 d9c0 d8c9 d84324 d95b24 d9c0 d84f04 d84328 d95b28 ddd8'],
 ];
 const CWS = (opt('--cw', '0x7f,0x27f,0x37f,0xc7f')).split(',').map((x) => parseInt(x, 16));
 const ONLY = opt('--cases', null)?.split(',');

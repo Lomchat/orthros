@@ -1532,6 +1532,91 @@ Seen while testing, not investigated: a randomized program whose stores turned i
 INC / DEC and stack instructions ended differently in the JIT and the interpreter with every option off as well (the
 test's stores now keep the code well-formed).
 
+## x87 truncation without exponent tests: static exponent bounds (`x87Bounds`, 2026-11-12) — exact, off by default
+
+The guest-speed plan's rank 4 (`data/proof/guest-speed-2026-11-12/plan.md`): x87 precision emulation was 3.4 host
+instructions per guest instruction in BFME1's map load (42 % of its hot regions' instructions), most of it in truncating
+24-bit code (control word 0xc7f). Counters added to profiling translations (`x87DirArith`, `x87DirGrid`,
+`x87DirBounded`, `x87DirSt32`; `startbench --jit-profile`) over `bfme1-108-short`'s map load (35 G guest instructions):
+5.3 G truncating arithmetic instructions (15 % of all), 1.9 G of them with a result on the 24-bit grid (36 %, the
+exactness test), 2.4 G FST m32 under the directed mode — every one of a narrow value. Play runs 3 M of them.
+
+What differs from the earlier x87 work (cold paths as kernels, toward-zero on the bits, the vector cut, narrow values
+for products and quotients — "BFME1's map load", "x87 regions: ..." above): those made each test cheaper; this proves
+most of them unnecessary at translation time. Three changes behind one switch (`x87Bounds`, JIT_DEFAULTS):
+
+- **Exponent bounds per x87 register** (translate-x87.js `rngOf`, Emitter.rngMask / x87Rng, dropped wherever the narrow
+  values are): `2^-lo <= |v| <= 2^hi` for every finite non-zero value — an m32 operand 128 / 149, a 16-bit integer
+  16 / 0, a 32-bit one 32 / 0, constants their own; a product adds the bounds, a sum takes max + 1 / max + 23 (narrow
+  operands are multiples of 2^(-lo-23); 52 otherwise). Kept for the results of truncating 24-bit arithmetic only
+  (truncation never leaves them). An add / sub / subr / mul of narrow operands whose result bounds lie inside the f64
+  normal range (hi <= 1023, lo <= 1021) cannot overflow, underflow or land in the lowest binade, so
+  `roundTowardZeroBounded` drops the exponent test: a product (exact) is cut unless it is a NaN (`vucomisd ; jp`); a sum
+  off the grid is cut (`vmovq ; test ; jnz ; vmovddup ; vpand`, the cut computed before the branch so that no move merges
+  the two paths); a sum on the grid is s itself when `(s - x) - y` and `(s - y) - x` are both +0 — their bit patterns
+  ORed, one integer branch (Fast2Sum: s - x is exact for the larger operand, so an inexact s fails that side; NaNs and
+  infinities give NaNs; zeros included) — else the interpreter. A NaN result of narrow operands has its 29 low bits clear
+  (an m32 NaN quieted, or the default NaN), so it always takes the grid path's test.
+- **FST m32 of a narrow value** under a directed 24-bit mode: the float is exact when its exponent field is in [2, 254]
+  (the value is then at least 2^-126, where every 24-bit value is a float — the lowest binade excluded because f32.demote
+  can round 2^-126 - 2^-150 up into it) — `vmovd ; lea ; cmp ; jae` on the demoted bits where the round trip took
+  `vcvtss2sd ; vucomisd ; jp ; jnz`; anything else takes the round trip and the directed step as before.
+
+Measured (shared server, load average 10-50 from other projects):
+
+- Static, tools/bench/x87-size.mjs at 0xc7f (10 regions, a `mac` case added: `fld st(i) ; fmul m32 ; fadd m32 ; fstp
+  m32`): WASM 24 250 → 22 868 B (−5.7 %), TurboFan machine code 35 564 → 33 936 B (−4.6 %); WASM operations per x87
+  arithmetic instruction xform 77 → 53, mac 81 → 63, fild 78 → 54.
+- Kernels, x87loop-bench 0xc7f `--full --pos` (`mac to memory` added; host instructions per iteration from `perf stat`
+  at two run lengths): sums of squares 378 → 285, xform 315 → 218, mac 155-161 → 131-147. Time against main (7
+  alternated runs, medians): xform 20.32 → 17.75 ns (−12.7 %), fild + fmul + fstp −16.6 %, mac −9.8 %, sums of squares
+  −9.0 %, arith across blocks −6.6 %, recurrence +0.7 %.
+- A replica of the map load's hottest loop (its 65 guest instructions run by the JIT on synthetic data, the branch
+  mostly one way; scratch only, not in the tree): 631 → 497 host instructions per iteration (−21 %), 185 → 153-160
+  cycles (IPC 3.3). The FST m32 test alone: 167 → 159 cycles at equal instructions (8 alternated `perf stat` runs); the
+  ORed exactness test against two f64 compares: 162 / 161 cycles, neutral (kept: one branch instead of four).
+- **BFME1 map load, identical guest work** (`ab-virtual --virtual --perf-phase --perf-label load`, new scenario
+  `tools/scenarios/bfme1-108-load-ab.txt`, 36.8 G guest instructions; two A/B runs, before and after the FST m32
+  change, the same figures within 0.1): region host instructions per guest instruction 7.87 → 7.29 (−7.4 %), region
+  cycles 2.84 → 2.75 (−3.4 %), process cycles
+  −1.8 %, guest ns per instruction −2.1 %; the hottest region (20 % of the load's region cycles) −14.5 % instructions but
+  −4.9 % cycles. The game's IPC in these regions is 2.3 against the replica's 3.3: the map's data, not the arithmetic,
+  bounds them, so the instructions removed buy a third of their count in cycles.
+- **BFME1 map load, real clock** (`bfme1-108-short` with the canonical first-launch profile and the live learned
+  regions / heat, `--cold --gfx recorder`, 5 concurrent pairs, launch order alternated, off → on; load average 10-50):
+
+  | pair | load phase (s) | thread CPU in it (s) | guest ns / insn | play guest ns / insn | play thread CPU (s) |
+  |---|---|---|---|---|---|
+  | 1 | 50.8 → 44.3 | 34.7 → 32.8 | 0.942 → 0.895 | 2.544 → 2.575 | 19.8 → 20.3 |
+  | 2 | 49.8 → 48.8 | 37.0 → 35.2 | 1.005 → 0.958 | 5.564 → 5.663 (a loaded moment) | 25.4 → 24.9 |
+  | 3 | 51.3 → 47.8 | 34.4 → 33.1 | 0.936 → 0.897 | 2.472 → 2.501 | 20.0 → 20.2 |
+  | 4 | 49.8 → 48.8 | 34.2 → 33.6 | 0.936 → 0.918 | 3.027 → 3.049 | 23.2 → 24.1 |
+  | 5 | 50.8 → 47.8 | 34.2 → 33.0 | 0.932 → 0.903 | 2.514 → 2.586 | 19.8 → 19.7 |
+  | mean | 50.5 → 47.5 (−5.9 %) | 34.9 → 33.5 (−3.9 %) | −3.8 % | +1.6 % | +1.0 % |
+
+  The load phase also waits (11-17 s of its ~50 s, every run): the guest time saved, 0.6-1.8 s, is the floor of the gain;
+  the waits moved by −4.7 to +0.7 s. Play is the same code (3 M truncating instructions in 6.2 G); its +1.6 % may be
+  the overlap (the variant on finishes its load first: its play starts while the other still loads), and the
+  identical-work runs disagree (play −2.0 % and +1.0 % in the two `--virtual` A/B above).
+- RotWK 2.02 (`rotwk-short`, `ab-virtual --perf`, identical guest work): JIT instructions +0.05 %, cycles +0.49 % —
+  the same code (no truncating 24-bit arithmetic in that run); per-phase guest ns within ±3 %.
+- Exactness: tests/jit-x87-narrow.test.js "bounded narrow arithmetic under truncation" — every pair of 14 special
+  operands (zeros, ±1, absorption both ways at 2^-30 / 2^-60 against 1 and 2^24, the float range's ends, a denormal,
+  infinity, NaN, 2^-127 x (2 - 2^-23) below the normals) through add / mul / sub / subr in one loop with FNSTSW m16 /
+  FNCLEX / FST m32 / FSTP m64 after each; products chained past the bounds' limit with the whole status word compared;
+  random straight-line programs (option on, off, time slices); the path counted so that it is known to run. Mutations
+  caught: no NaN test on products, on-grid sums accepted, the bounds' limit removed, the FST test's lowest binade
+  accepted. Not caught (left as is, sound): the sums' +23 on `lo` — m32 operands' bound 149 is loose enough that no
+  float program reaches it.
+
+Gate (the plan's: BFME1 1.08 map load ≥ 10 % faster): **not met** — −5.9 % wall (−3.9 % thread CPU) over five pairs,
+−3.4 % region cycles at identical work. The plan's −15-25 % assumed the precision instructions cost their count in
+cycles at the load's IPC; removing them left the regions' data-bound cycles (and the per-operation latency of
+`vaddsd ; vmovddup ; vpand`, unchanged) in place. Off by default (`ORTHROS_JIT_DEFAULTS=
+{"x87Bounds":true}` turns it on): it wins only on BFME1's map load, the one measured game whose hot code truncates at
+24 bits, and the rule is two games. Adding the key changes the translated-code cache's key (JIT_DEFAULTS): one
+retranslation per player after the update, as for any new option.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
