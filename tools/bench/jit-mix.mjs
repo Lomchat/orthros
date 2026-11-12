@@ -200,3 +200,168 @@ export function jitShape(jit, listRegion, max = 4000, over = null) {
   lines.push(`[shape] by instruction (static ops/insn, executed share of operations): ${top.map(([k, e]) => `${k} ${(e.ops / e.n).toFixed(1)}${dynInsns ? ` ${(100 * e.dynOps / Math.max(1, dyn.insn + dyn.blockEnd)).toFixed(1)}%` : ''}`).join(', ')}`);
   return lines.join('\n');
 }
+
+/**
+ * Stack-slot opportunity (2026-11-12, docs/jit-code-shape.md "Guest stack slots in locals"): of the executed guest
+ * memory accesses, those addressed by [esp+d] / [ebp+d] (no index) whose base is known relative to the region's entry
+ * ESP / EBP (ADD/SUB by a constant, PUSH/POP, MOV EBP,ESP, LEA, LEAVE tracked through the region's own jumps and
+ * branches; anything else, a call or a return makes it unknown), and the loads a promotion of frame slots to WASM locals
+ * could serve from a local:
+ * - same block: the slot was read or written earlier in the same block execution (exact for those executions);
+ * - every path: the slot was accessed on every path from the region's entry to the block (must-availability over the
+ *   region's own jumps and branches);
+ * - per region entry: a load of a region-frame slot in a block that runs more often than the region's entry block —
+ *   every execution beyond one per entry (an estimate on the generous side: entries at other blocks are not counted).
+ * Also the stores through other bases (each would need a range check against a promoted window, or end it).
+ * @param {import('../../src/cpu/jit/jit.js').Jit} jit
+ */
+export function stackSlotMix(jit) {
+  const mem = jit.mem;
+  const PURE_STORE = new Set(['MOV', 'FST', 'FSTP', 'FIST', 'FISTP', 'FISTTP', 'FBSTP', 'MOVSS', 'MOVSD', 'MOVQ', 'MOVD', 'MOVAPS', 'MOVUPS', 'MOVAPD',
+    'MOVUPD', 'MOVDQA', 'MOVDQU', 'MOVLPS', 'MOVHPS', 'MOVLPD', 'MOVHPD', 'MOVNTI', 'MOVNTPS', 'MOVNTQ', 'MOVNTDQ', 'FNSTSW', 'FNSTCW', 'FSTSW',
+    'FSTCW', 'POP', 'STOS', 'SETCC']);
+  const NO_ACCESS = new Set(['LEA', 'NOP', 'PREFETCH']);
+  const c = { insns: 0, loads: 0, stores: 0, espL: 0, espS: 0, ebpL: 0, ebpS: 0, frameIdxL: 0, frameUnkL: 0, push: 0, pop: 0, popRed: 0,
+    otherS: 0, blockRed: 0, pathRed: 0, regionRed: 0 };
+  let fresh = 0;
+  const regOf = (o) => (o && o.t === OT.REG && o.size === 4 ? o.r : -1);
+  const eq = (x, y) => (x === y) || (!!x && !!y && x[0] === y[0] && x[1] === y[1]);
+  for (const r of jit.regions) {
+    const counts = jit.blockCounts(r);
+    if (!counts) continue;
+    const byEip = new Map(r.blocks.map((b) => [b.eip, b]));
+    const decoded = new Map();
+    const insnsOf = (b) => {
+      if (decoded.has(b)) return decoded.get(b);
+      const out = []; let a = b.eip;
+      while (a < b.end) { let i; try { i = decode(mem, a); } catch { break; } out.push(i); a = i.next; }
+      decoded.set(b, out); return out;
+    };
+    // one instruction: its memory accesses (visit(op, load, store)) and what it does to the bases
+    const step = (st, insn, visit) => {
+      const name = OP_NAMES[insn.op], o0 = insn.ops[0], o1 = insn.ops[1];
+      if (!NO_ACCESS.has(name)) insn.ops.forEach((m, k) => {
+        if (!m || m.t !== OT.MEM) return;
+        let ld = true, sd = false;
+        if (k === 0 && !READS_FIRST.has(name)) { sd = true; ld = !PURE_STORE.has(name) && !/^SET/.test(name); }
+        visit(m, ld, sd);
+      });
+      const adj = (v, d) => (v ? [v[0], v[1] + d] : null);
+      const val = (rr) => (rr === 4 ? st.esp : rr === 5 ? st.ebp : null);
+      switch (name) {
+        case 'PUSH': visit({ base: -2, off: -4, index: -1 }, false, true); st.esp = adj(st.esp, -4); return;
+        case 'POP': visit({ base: -2, off: 0, index: -1 }, true, false); st.esp = adj(st.esp, 4); if (regOf(o0) === 5) st.ebp = null; return;
+        case 'LEAVE': st.esp = adj(st.ebp, 0); visit({ base: -2, off: 0, index: -1 }, true, false); st.esp = adj(st.esp, 4); st.ebp = null; return;
+        case 'CALL': case 'RET': case 'IRET': case 'ENTER': case 'PUSHA': case 'POPA': case 'PUSHF': case 'POPF': st.esp = null; st.ebp = null; return;
+        default: break;
+      }
+      const w = o0 && !READS_FIRST.has(name) ? regOf(o0) : -1;
+      if (w === 4 || w === 5) {
+        const k = w === 4 ? 'esp' : 'ebp';
+        if ((name === 'ADD' || name === 'SUB') && o1?.t === OT.IMM) st[k] = adj(st[k], name === 'ADD' ? o1.v | 0 : -(o1.v | 0));
+        else if (name === 'MOV' && regOf(o1) >= 0) st[k] = val(regOf(o1));
+        else if (name === 'LEA' && o1.index < 0 && (o1.base === 4 || o1.base === 5)) st[k] = adj(val(o1.base), o1.disp | 0);
+        else st[k] = null;
+      }
+      if ((name === 'XCHG' || name === 'XADD' || name === 'CMPXCHG') && [4, 5].includes(regOf(o1))) st[regOf(o1) === 4 ? 'esp' : 'ebp'] = null;
+    };
+    // the bases at each block's entry, relative to the region's entry (its own jumps and branches)
+    const inState = new Map();
+    const entry = byEip.get(r.entry);
+    if (entry) {
+      inState.set(entry, { esp: ['R', 0], ebp: ['E', 0] });
+      const work = [entry];
+      while (work.length) {
+        const b = work.pop(), st = { ...inState.get(b) };
+        const ins = insnsOf(b);
+        for (const i of ins) step(st, i, () => {});
+        const last = ins[ins.length - 1];
+        if (!last) continue;
+        const nm = OP_NAMES[last.op], succ = [];
+        if (nm !== 'CALL' && nm !== 'RET' && !(nm === 'JMP' && last.ops[0]?.t !== OT.REL)) {
+          if ((nm === 'JMP' || /^J/.test(nm) || /^LOOP/.test(nm)) && last.ops[0]?.t === OT.REL) succ.push(last.ops[0].v);
+          if (nm !== 'JMP') succ.push(last.next);
+        }
+        for (const a of succ) {
+          const t = byEip.get(a); if (!t || t === entry) continue;
+          const old = inState.get(t);
+          const nw = old ? { esp: eq(old.esp, st.esp) ? old.esp : null, ebp: eq(old.ebp, st.ebp) ? old.ebp : null } : { esp: st.esp, ebp: st.ebp };
+          if (!old || !eq(old.esp, nw.esp) || !eq(old.ebp, nw.ebp)) { inState.set(t, nw); work.push(t); }
+        }
+      }
+    }
+    const entryCount = entry ? counts[entry.index] : 0;
+    // the region-frame slots accessed on every path from the region's entry to each block (must-availability: the
+    // intersection over its in-region predecessors; a block entered from outside — its in-region predecessors unknown
+    // here, the entry — starts empty)
+    const keysOut = (b) => {
+      const rs = inState.get(b); if (!rs) return new Set();
+      const st = { esp: rs.esp, ebp: rs.ebp }, out = new Set();
+      for (const i of insnsOf(b)) step(st, i, (m) => {
+        const v = m.base === -2 ? st.esp : (m.base === 4 || m.base === 5) && m.index < 0 ? (m.base === 4 ? st.esp : st.ebp) : null;
+        if (v) out.add(v[0] + ':' + (v[1] + (m.base === -2 ? m.off : m.disp | 0)));
+      });
+      return out;
+    };
+    const preds = new Map(), outs = new Map();
+    for (const b of inState.keys()) {
+      const ins = insnsOf(b), last = ins[ins.length - 1]; if (!last) continue;
+      const nm = OP_NAMES[last.op], succ = [];
+      if (nm !== 'CALL' && nm !== 'RET' && !(nm === 'JMP' && last.ops[0]?.t !== OT.REL)) {
+        if ((nm === 'JMP' || /^J/.test(nm) || /^LOOP/.test(nm)) && last.ops[0]?.t === OT.REL) succ.push(last.ops[0].v);
+        if (nm !== 'JMP') succ.push(last.next);
+      }
+      for (const a of succ) { const t = byEip.get(a); if (t && t !== entry && inState.has(t)) { if (!preds.has(t)) preds.set(t, []); preds.get(t).push(b); } }
+      outs.set(b, keysOut(b));
+    }
+    const avail = new Map(); // block -> Set (null: not computed yet = everything)
+    for (let changed = true, rounds = 0; changed && rounds < 50; rounds++) {
+      changed = false;
+      for (const b of inState.keys()) {
+        let inn = null;
+        if (b === entry || !preds.has(b)) inn = new Set();
+        else for (const p of preds.get(b)) {
+          const pa = avail.get(p); if (pa === undefined) continue; // (top)
+          const po = new Set([...pa, ...(outs.get(p) ?? [])]);
+          inn = inn === null ? po : new Set([...inn].filter((k) => po.has(k)));
+        }
+        if (inn === null) continue;
+        const old = avail.get(b);
+        if (!old || old.size !== inn.size) { avail.set(b, inn); changed = true; }
+      }
+    }
+    for (const b of r.blocks) {
+      const n = counts[b.index]; if (!n) continue;
+      const rs = inState.get(b);
+      const st = rs ? { esp: rs.esp, ebp: rs.ebp } : { esp: ['B' + (fresh++), 0], ebp: ['b' + (fresh++), 0] };
+      const seen = new Set(avail.get(b) ?? []), here = new Set();
+      for (const i of insnsOf(b)) {
+        c.insns += n;
+        step(st, i, (m, ld, sd) => {
+          if (ld) c.loads += n;
+          if (sd) c.stores += n;
+          let v, d;
+          if (m.base === -2) { if (ld) c.pop += n; else c.push += n; v = st.esp; d = m.off; }
+          else if ((m.base === 4 || m.base === 5) && m.index < 0) {
+            if (m.base === 4) { if (ld) c.espL += n; if (sd) c.espS += n; } else { if (ld) c.ebpL += n; if (sd) c.ebpS += n; }
+            v = m.base === 4 ? st.esp : st.ebp; d = m.disp | 0;
+            if (!v && ld) c.frameUnkL += n;
+          } else if (m.base === 4 || m.base === 5) { if (ld) c.frameIdxL += n; return; }
+          else { if (sd) c.otherS += n; return; }
+          if (!v) return;
+          const key = v[0] + ':' + (v[1] + d);
+          if (ld && here.has(key)) { c.blockRed += n; if (m.base === -2) c.popRed += n; }
+          else if (ld && seen.has(key)) c.pathRed += n;
+          else if (ld && rs && v[0].length === 1) c.regionRed += Math.max(0, n - entryCount);
+          seen.add(key); here.add(key);
+        });
+      }
+    }
+  }
+  const pct = (x) => (100 * x / Math.max(1, c.insns)).toFixed(1) + '%';
+  return [
+    `[stack] ${(c.insns / 1e6).toFixed(0)} M guest instructions counted; per guest instruction: memory loads ${pct(c.loads)}, stores ${pct(c.stores)}`,
+    `[stack] [esp+d] loads ${pct(c.espL)}, stores ${pct(c.espS)}; [ebp+d] loads ${pct(c.ebpL)}, stores ${pct(c.ebpS)}; PUSH ${pct(c.push)}, POP ${pct(c.pop)}; frame loads with an index ${pct(c.frameIdxL)}, base unknown ${pct(c.frameUnkL)}; stores through other bases ${pct(c.otherS)}`,
+    `[stack] loads a frame-slot local could serve: same block ${pct(c.blockRed)} (POP of a slot pushed in the block ${pct(c.popRed)}), accessed on every path from the region's entry ${pct(c.pathRed)}, loop iterations beyond one per region entry (estimate) ${pct(c.regionRed)}`,
+  ].join('\n');
+}

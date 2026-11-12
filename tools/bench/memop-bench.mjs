@@ -38,6 +38,12 @@ const CASES = [
   ['8x (mov [esp+8],eax ; mov edx,[esi+0x100])', rep('89442408 8b9600010000')],
   ['8x mov [ebp-8], eax', rep('8945f8')],
   ['8x mov [esp+8], eax', rep('89442408')],
+  // (frame-slot loads, docs/jit-code-shape.md "Guest stack slots in locals": against the register move they would become)
+  ['8x mov edx, eax', rep('89c2')],
+  ['8x mov edx, [esp+8]', rep('8b542408')],
+  ['8x mov edx, [ebp-8]', rep('8b55f8')],
+  ['8x add eax, [esp+8]', rep('03442408')],
+  ['8x add eax, edx', rep('01d0')],
   ['8x add [edi+8], eax', rep('014708')],
   ['8x movups [edi+16], xmm0', rep('0f114710')],
   ['8x fst dword [edi+4]', rep('d95704')],
