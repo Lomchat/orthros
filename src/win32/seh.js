@@ -69,7 +69,30 @@ export class Seh {
     thread.seh = { rec, ctx, frame: m.read32(thread.teb), code, flags, addr, depth: (prev?.depth ?? 0) + 1, spBase: (rec - 0x40) >>> 0, prev };
     this.remember(thread, code, addr, params);
     this.sehLog( `exception ${code.toString(16)} at ${this.vm.proc.symbolize(addr)} (thread ${thread.id}), first frame ${m.read32(thread.teb).toString(16)}`);
+    // the vectored exception handlers first (AddVectoredExceptionHandler), then the frames
+    if (this.vm.proc.vectored?.length && this.callVectored(thread, thread.seh, 'vectored')) { this.readContext(cpu, thread.seh.ctx); thread.seh = prev; return true; }
     return this.next(thread);
+  }
+
+  /**
+   * Call the process's vectored handlers of a list ('vectored': exception handlers, 'vectoredContinue': continue
+   * handlers) with EXCEPTION_POINTERS, each in turn until one returns EXCEPTION_CONTINUE_EXECUTION (-1). They run on the
+   * thread's stack below the dispatch's record and context. A vectored exception handler continuing the execution runs
+   * the continue handlers too, as Windows does. Returns true when one asked to continue.
+   */
+  callVectored(thread, s, list) {
+    const m = this.mem, cpu = thread.cpu;
+    const ep = (s.spBase - 8) >>> 0;
+    for (const v of [...(this.vm.proc[list] ?? [])]) {
+      m.write32(ep, s.rec); m.write32(ep + 4, s.ctx);
+      cpu.esp = (ep - 8) >>> 0;
+      this.sehLog(`  -> ${list === 'vectored' ? 'vectored exception' : 'vectored continue'} handler ${this.vm.proc.symbolize(v.fn)}`);
+      if ((this.vm.callGuest(thread, v.fn, [ep]) | 0) === -1) {
+        if (list === 'vectored' && this.vm.proc.vectoredContinue?.length) this.callVectored(thread, s, 'vectoredContinue');
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Enter the next handler in the chain (or run the unhandled path). */
@@ -150,6 +173,7 @@ export class Seh {
     if (!s) throw new (this.vm.GuestCrash)(this.vm.crashReport(thread, 'SEH: a handler returned without an exception being dispatched'));
     cpu.esp = (ctx.sp + 4 + 16) >>> 0; // pop our return address + 4 args (cdecl)
     if (disp === 0) { // ExceptionContinueExecution
+      if (this.vm.proc.vectoredContinue?.length) this.callVectored(thread, s, 'vectoredContinue');
       this.sehLog( `  <- continue execution at ${m.read32(s.ctx + 0xb8).toString(16)}`);
       this.readContext(cpu, s.ctx);
       thread.seh = s.prev;

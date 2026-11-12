@@ -6,6 +6,10 @@
 //       and print the page URL that starts it in Chrome; --open launches the system Chrome/Chromium on it
 //   orthros serve [--port 8080] [--manifests dir]      the page with every manifest of the directory
 //   orthros cli <game-folder | manifest.json> [...]    headless Node run (no rendering): src/server/cli.js options
+//   orthros scan <folder | file> [--each] [--json] [--verbose]
+//       compatibility scan (docs/compat-scan.md): every executable's format, modules, imports against Orthros' DLLs, C
+//       runtime, interfaces, protections, installers and a verdict; a game folder (manifest.json), a library of them, or
+//       any folder (--each: every entry of the folder apart, e.g. a folder of installers)
 import path from 'node:path';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -16,7 +20,7 @@ import { defaultGameManifest } from '../src/server/game-catalog.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const [cmd, ...rest] = process.argv.slice(2);
-const FLAGS = new Set(['--open']); // options without a value
+const FLAGS = new Set(['--open', '--each', '--json', '--verbose']); // options without a value
 const opt = (name, def) => { const i = rest.indexOf('--' + name); return i >= 0 && i + 1 < rest.length ? rest[i + 1] : def; };
 const positional = [];
 for (let i = 0; i < rest.length; i++) { if (!rest[i].startsWith('--')) positional.push(rest[i]); else if (!FLAGS.has(rest[i])) i++; }
@@ -76,7 +80,17 @@ function cli() {
   child.on('exit', (code) => process.exit(code ?? 1));
 }
 
+async function scan() {
+  const target = positional[0];
+  if (!target) { console.error('usage: orthros scan <folder | file> [--each] [--json] [--verbose]'); process.exit(2); }
+  const { scanFolder, formatScan } = await import('../src/server/compat-scan.js');
+  const results = scanFolder(target, { each: rest.includes('--each') });
+  if (rest.includes('--json')) console.log(JSON.stringify(results, null, 1));
+  else console.log(formatScan(results, { verbose: rest.includes('--verbose') }));
+}
+
 if (cmd === 'run') await run();
+else if (cmd === 'scan') await scan();
 else if (cmd === 'serve') await serve();
 else if (cmd === 'cli') cli();
-else { console.error('usage: orthros run <game-folder | manifest.json> | orthros serve | orthros cli <folder> (see bin/orthros.mjs)'); process.exit(2); }
+else { console.error('usage: orthros run <game-folder | manifest.json> | orthros serve | orthros cli <folder> | orthros scan <folder> (see bin/orthros.mjs)'); process.exit(2); }
