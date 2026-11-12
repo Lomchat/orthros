@@ -28,6 +28,8 @@ import { SMC_MAP_BASE, SMC_CODE, SMC_NEXT } from '../memory.js';
 const MAX_DEPTH = 48;
 /** blocks of one function at most (TurboFan's compile time is superlinear); the rest becomes other functions */
 const MAX_FN_BLOCKS = 300;
+/** blocks of tier 2 at most (the functions chosen, then their callees) */
+const MAX_T2_BLOCKS = 6000;
 
 export class Tier2 {
   /**
@@ -46,6 +48,7 @@ export class Tier2 {
     this.pages = new Set();
     this.marker = { t2: this }; // (in jit.pageRegions: a store into tier-2 code drops tier 2, see Jit.invalidate)
     this.fnIdxs = [];
+    this.fnOf = new Map(); // function entry -> { fnIdx, blocks }
     this.stats = null;
   }
   /** guest instructions run (Jit.run); the window over, the tier is built */
@@ -69,7 +72,7 @@ export class Tier2 {
     jit.t2 = null;
     jit.switchOpts(over, true);
     this.state = 'off';
-    const sel = plan ? { hotBlocks: plan.hot, cover: +plan.cover.toFixed(3), functions: plan.fns.length, entriesFromCalls: plan.entriesFromCalls, entriesFromImages: plan.entriesFromImages, orphans: plan.orphans, countedInsns: plan.counted, selectMs: +(t1 - t0).toFixed(1) } : null;
+    const sel = plan ? { hotBlocks: plan.hot, warmBlocks: plan.warm, cover: +plan.cover.toFixed(3), functions: plan.fns.length, entriesFromCalls: plan.entriesFromCalls, entriesFromImages: plan.entriesFromImages, orphans: plan.orphans, countedInsns: plan.counted, selectMs: +(t1 - t0).toFixed(1) } : null;
     if (!plan || !build) { report({ built: false, ...sel }); return; }
     jit.t2 = this;
     try { this.install(plan); } catch (e) { jit.opts.warn?.(`tier 2: build failed: ${e.message}`); this.discard(); jit.t2 = null; }
@@ -98,16 +101,18 @@ export class Tier2 {
       items.push([a0, w]); weight.set(a0, w); total += w;
     }
     items.sort((x, y) => y[1] - x[1]);
-    const hot = new Set();
+    // the hot seeds: the blocks making `share` of the counted instructions; the functions are made of every block that
+    // ran in the window (a block cut out of a function for being only warm would be an exit taken often)
+    const warm = new Set(weight.keys()), seeds = new Set();
     let acc = 0;
-    for (const [a, w] of items) { if (acc >= this.share * total) break; hot.add(a); acc += w; }
-    // entries: the hot code's direct call targets, then the images' call rel32 targets and dwords
+    for (const [a, w] of items) { if (acc >= this.share * total) break; seeds.add(a); acc += w; }
+    // entries: the direct call targets of the code that ran, then the images' call rel32 targets and dwords
     const entries = new Set();
     let fromCalls = 0, fromImages = 0;
-    for (const a0 of hot) {
+    for (const a0 of warm) {
       for (let a = a0, n = 0; n < 200; n++) {
         let insn; try { insn = dec(a); } catch { break; }
-        if (insn.op === OP.CALL && insn.ops[0].t === OT.REL && hot.has(insn.ops[0].v >>> 0) && !entries.has(insn.ops[0].v >>> 0)) { entries.add(insn.ops[0].v >>> 0); fromCalls++; }
+        if (insn.op === OP.CALL && insn.ops[0].t === OT.REL && warm.has(insn.ops[0].v >>> 0) && !entries.has(insn.ops[0].v >>> 0)) { entries.add(insn.ops[0].v >>> 0); fromCalls++; }
         if (insn.op === OP.JMP || insn.op === OP.JCC || insn.op === OP.CALL || insn.op === OP.RET || insn.op === OP.INVALID) break;
         a = insn.next;
         if (ends.has(a)) break;
@@ -118,33 +123,54 @@ export class Tier2 {
       for (let a = lo; a + 5 <= hi; a++) {
         if (u8[a] === 0xe8) {
           const t = (a + 5 + (u8[a + 1] | (u8[a + 2] << 8) | (u8[a + 3] << 16) | (u8[a + 4] << 24))) >>> 0;
-          if (hot.has(t) && !entries.has(t)) { entries.add(t); fromImages++; }
+          if (warm.has(t) && !entries.has(t)) { entries.add(t); fromImages++; }
         }
       }
-      for (let a = (lo + 3) & ~3; a + 4 <= hi; a += 4) { const v = u32[a >>> 2]; if (hot.has(v) && !entries.has(v)) { entries.add(v); fromImages++; } }
+      for (let a = (lo + 3) & ~3; a + 4 <= hi; a += 4) { const v = u32[a >>> 2]; if (warm.has(v) && !entries.has(v)) { entries.add(v); fromImages++; } }
     }
-    // functions: discovered from each entry within the hot set, stopping at the other entries; the hot blocks no entry
-    // reached become entries in turn (hottest first)
+    // functions: discovered from each entry within the blocks that ran, stopping at the other entries; the hot seeds no
+    // entry reached become entries in turn (hottest first)
     const isEntry = (a) => entries.has(a);
-    const onlyFor = (e) => ({ has: (t) => t === e || (hot.has(t) && !isEntry(t)) });
-    const fns = [], assigned = new Set();
+    const onlyFor = (e) => ({ has: (t) => t === e || (warm.has(t) && !isEntry(t)) });
     const fnOpts = (e) => ({ onlyBlocks: onlyFor(e), maxBlocks: MAX_FN_BLOCKS, maxInsns: 20000, inlineApi: jit.opts.inlineApi, jumpTables: jit.abOpts?.jumpTables });
+    // (the counted instructions of a block: the starts it covers)
+    const lowerBound = (x) => { let l = 0, h = starts.length; while (l < h) { const m = (l + h) >> 1; if (starts[m] < x) l = m + 1; else h = m; } return l; };
+    const wOf = (b) => { let w = 0; for (let i = lowerBound(b.eip); i < starts.length && starts[i] < b.end; i++) w += weight.get(starts[i]) ?? 0; return w; };
+    const byEntry = new Map(), reached = new Set();
     const add = (e) => {
-      const { blocks } = discoverRegion(mem, e, fnOpts(e));
+      if (byEntry.has(e)) return;
+      let blocks;
+      try { ({ blocks } = discoverRegion(mem, e, fnOpts(e))); } catch { return; }
       if (!blocks.length) return;
-      for (const b of blocks) assigned.add(b.eip);
-      fns.push({ entry: e, fpc: null });
+      const f = { entry: e, fpc: null, w: blocks.reduce((n, b) => n + wOf(b), 0), blocks: blocks.length, callees: new Set() };
+      for (const b of blocks) {
+        reached.add(b.eip);
+        for (const insn of b.insns) {
+          const o = insn.ops[0];
+          if ((insn.op === OP.CALL || insn.op === OP.JMP || insn.op === OP.JCC) && o?.t === OT.REL && entries.has(o.v >>> 0)) f.callees.add(o.v >>> 0);
+          if ((insn.op === OP.CALL || insn.op === OP.JMP) && o?.t === OT.MEM && o.base < 0 && o.index < 0) { const v = u32[(o.disp >>> 0) >>> 2]; if ((o.disp & 3) === 0 && entries.has(v)) f.callees.add(v); }
+        }
+      }
+      byEntry.set(e, f);
     };
-    for (const e of [...entries].sort((x, y) => (weight.get(y) ?? 0) - (weight.get(x) ?? 0))) add(e);
+    for (const e of entries) add(e);
     let orphans = 0;
-    for (const [a] of items) {
-      if (!hot.has(a) || assigned.has(a)) continue;
-      entries.add(a); orphans++; add(a);
-      if (!assigned.has(a)) assigned.add(a);
+    for (const [a] of items) { if (seeds.has(a) && !reached.has(a)) { entries.add(a); orphans++; add(a); reached.add(a); } }
+    // the functions holding the most counted instructions up to `share`, then the functions they call or jump to that ran
+    // (a call to a function left out leaves tier 2), up to MAX_T2_BLOCKS blocks
+    const all = [...byEntry.values()].sort((x, y) => y.w - x.w);
+    const chosen = new Set();
+    let cw = 0, nb = 0;
+    for (const f of all) { if (cw >= this.share * total || nb >= MAX_T2_BLOCKS) break; chosen.add(f); cw += f.w; nb += f.blocks; }
+    const queue = [...chosen];
+    while (queue.length && nb < MAX_T2_BLOCKS) {
+      const f = queue.shift();
+      for (const c of f.callees) { const g = byEntry.get(c); if (g && !chosen.has(g) && g.w > 0) { chosen.add(g); cw += g.w; nb += g.blocks; queue.push(g); } }
     }
+    const fns = [...chosen];
     // the x87 mode of each function: its tier-1 region's (x87 functions are specialized for it)
     for (const f of fns) { const k = jit.blockMap.get(f.entry); f.fpc = k ? k.region.fpc ?? null : null; }
-    return { fns, onlyFor, fnOpts, cover: acc / Math.max(1, total), hot: hot.size, entriesFromCalls: fromCalls, entriesFromImages: fromImages, orphans, counted: total };
+    return { fns, onlyFor, fnOpts, cover: cw / Math.max(1, total), hot: seeds.size, warm: warm.size, entriesFromCalls: fromCalls, entriesFromImages: fromImages, orphans, counted: total };
   }
 
   /** translate the plan's functions into one module and enter them in the tables */
@@ -167,8 +193,7 @@ export class Tier2 {
     const t1 = performance.now();
     if (globalThis.ORTHROS_TIER2_DUMP) out.forEach((r, i) => jit.opts.log?.(`tier 2 fn ${fns[i].entry.toString(16)} x87 ${r.usesX87} blocks ${r.blocks.map((b) => `${b.eip.toString(16)}-${b.end.toString(16)}#${b.index}`).join(' ')}`));
     const names = fns.map((f) => f.entry.toString(16));
-    const reg = []; // functions entered from tier 1 (not the x87 ones)
-    out.forEach((r, i) => { if (!r.usesX87) reg.push(i); });
+    const reg = out.map((r, i) => i); // (every function enterable from tier 1, the x87 ones too: see unhash)
     const entryOpts = jit.translateOpts(-1, null);
     const entryCodes = reg.map((i) => emitT2Entry(mem, T2_FIRST_FUNC + i, 0, entryOpts));
     const bytes = buildT2Module(out.map((r) => r.code), names, entryCodes, reg.map((i) => names[i]), jit.shared);
@@ -180,6 +205,7 @@ export class Tier2 {
       jit.table.set(fnIdx, inst.exports['e' + k]);
       this.fnIdxs.push(fnIdx);
       for (const b of out[i].blocks) if (!this.blocks.has(b.eip)) { this.blocks.set(b.eip, { fnIdx, block: b.index }); jit.hashInsert(b.eip, fnIdx, b.index); }
+      this.fnOf.set(fns[i].entry, { fnIdx, blocks: out[i].blocks.map((b) => b.eip) });
     });
     this.bounds = new Set(this.blocks.keys());
     const u8 = mem.u8;
@@ -191,12 +217,31 @@ export class Tier2 {
     }
     const sum = (k) => out.reduce((n, r) => n + (r.stats[k] ?? 0), 0);
     this.stats = {
-      built: true, functions: fns.length, x87Functions: fns.length - reg.length, failed, blocks: out.reduce((n, r) => n + r.blocks.length, 0), hotBlocks: plan.hot,
+      built: true, functions: fns.length, x87Functions: out.filter((r) => r.usesX87).length, failed, blocks: out.reduce((n, r) => n + r.blocks.length, 0), hotBlocks: plan.hot,
       cover: +plan.cover.toFixed(3), entriesFromCalls: plan.entriesFromCalls, entriesFromImages: plan.entriesFromImages, orphans: plan.orphans,
       directCallSites: sum('t2Calls'), tailCallSites: sum('t2Tails'), bytes: bytes.length, translateMs: +(t1 - t0).toFixed(1), compileMs: +(t3 - t2).toFixed(1), pages: this.pages.size,
     };
   }
 
+  /**
+   * An x87 function entered under another x87 mode (EXIT_T2MODE at its entry `eip`): its blocks' hash entries go back to
+   * tier 1 (translated there for the mode met), so that the dispatcher no longer enters it; WASM calls still do.
+   */
+  unhash(eip) {
+    const jit = this.jit, e0 = this.blocks.get(eip);
+    // (`eip`: the function's entry or the block the dispatcher entered it at)
+    let entry = -1;
+    for (const [k, f] of this.fnOf) if (k === eip || (e0 && f.fnIdx === e0.fnIdx)) { entry = k; break; }
+    const f = this.fnOf.get(entry);
+    if (!f) return;
+    this.fnOf.delete(entry);
+    for (const a of f.blocks) {
+      const e = this.blocks.get(a); if (!e || e.fnIdx !== f.fnIdx) continue;
+      this.blocks.delete(a); this.bounds?.delete(a);
+      jit.hashRemove(a); const k = jit.blockMap.get(a); if (k) jit.hashInsert(a, k.region.fnIdx, k.block);
+    }
+    if (jit.t2Stats) jit.t2Stats.unhashed = (jit.t2Stats.unhashed ?? 0) + 1;
+  }
   /** does tier 2 hold the hash entry of `eip`? */
   owns(eip) { return this.blocks.has(eip); }
   /** the hash entry of a tier-2 block, re-inserted (after an eviction); false when not one */

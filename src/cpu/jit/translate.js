@@ -16,7 +16,7 @@ import { inlineDeps } from './code-cache.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { NULL_PAGE_END, USER_END, nullChecks, nullCheckApplies } from '../nullpage.js';
-import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, FAST_TABLE, PROC_CONSTS } from './runtime.js';
+import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, EXIT_T2MODE, FAST_TABLE, PROC_CONSTS } from './runtime.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
@@ -134,7 +134,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, tier2: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -897,6 +897,13 @@ export function buildRegionModule(codes, names = null, shared = false) {
 // ---- tier 2 (tier2.js): guest functions translated once into one module, calling each other with WASM calls
 /** results of a tier-2 function (Emitter.pushT2Results): tV, t2, eax..edi, EFLAGS, the lazy flags, the budget */
 export const T2_RESULTS = Object.freeze(Array(16).fill(T.i32));
+/**
+ * (measurement, ORTHROS_TIER2_COUNT=1) tier-2 counters, u32 at T2_PROF + 4 * k: region-signature entries; their exits as
+ * a jump, a RET, an exit code, an interpreter fault; WASM calls made; calls returning elsewhere than their site (an exit
+ * unwinding them); tail calls made
+ */
+export const T2_PROF = JIT_SCRATCH_BASE + 0xa0000 + 0x8040, T2_PROF_NAMES = ['entries', 'exitJump', 'exitRet', 'exitCode', 'exitFault', 'calls', 'callsLeft', 'tails']; // (+64: an i64, the guest instructions run in tier 2)
+const t2Count = (c, k) => { if (globalThis.process?.env?.ORTHROS_TIER2_COUNT) c.i32(0).i32(0).i32load(T2_PROF + 4 * k).i32(1).add().i32store(T2_PROF + 4 * k); };
 /** WASM function index of the first function a tier-2 module defines (after the region imports) */
 export const T2_FIRST_FUNC = IMP_CHAIN + 1;
 /**
@@ -919,9 +926,15 @@ export function emitT2Entry(mem, fn, depth, opts) {
   const c = E.c;
   E.usesX87 = false; E.xmmMask = 0; E.prof = false;
   c.i32(0).gset(depth);
+  t2Count(c, 0);
   for (let i = 0; i < L_FIRST_DECLARED; i++) c.get(i);
+  c.get(L_ICOUNT).set(L_T4); // (the budget at entry: the guest instructions run in tier 2, counted below)
   c.call(fn);
   E.popT2Results();
+  if (globalThis.process?.env?.ORTHROS_TIER2_COUNT) {
+    c.i32(0).i32(0).i64load(T2_PROF + 64).get(L_T4).get(L_ICOUNT).sub().extend_s().i64add().i64store(T2_PROF + 64); // (which way it left: -1 -> 1, -2 -> 2, -3 -> 4, codes -> 3)
+    c.get(L_T2).i32(0).lt_s(); const i = c.if_(); c.i32(4).i32(0).get(L_T2).sub().get(L_T2).i32(-3).eq().select().i32(2).shl().i32(T2_PROF).add().set(L_TA); c.get(L_TA).get(L_TA).i32load(0).i32(1).add().i32store(0); c.else_(); t2Count(c, 3); c.end(); void i;
+  }
   c.get(L_T2).i32(-3).eq();
   { const i = c.hint(false).if_(); c.i32(0).return_(); c.end(); void i; } // (an interpreter fault: the state block holds it all)
   c.get(L_T2).i32(-2).eq();
@@ -1184,8 +1197,10 @@ class Emitter {
       // (an entry block planned with a non-zero x87 shift loaded the stack for it, a region specialized for the stack
       // top has not loaded it yet: (re)loaded at shift 0 for the exit, which writes it back)
       if (this.x87Plan || this.topAssume !== null) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
-      // (a tier-2 function is entered at its entry by WASM calls only: under another mode it leaves to tier 1 there)
-      if (this.t2) c.i32(entry).set(L_TV).i32(-1).set(L_T2).br(this.exitCodeL);
+      // (a tier-2 function: under another mode it leaves at its entry for tier 1 to take it — its entries leave the hash
+      // table, see Jit.run EXIT_T2MODE; it is entered at its entry by WASM calls, by the dispatcher at any block: the
+      // mode is tested whatever the block)
+      if (this.t2) c.i32(entry).get(L_STATE).i32load(ST.EIP).get(L_BLK).eqz().select().set(L_TV).i32(EXIT_T2MODE).set(L_T2).br(this.exitCodeL); // (block 0: a call; else ST.EIP, the dispatcher's / a chain's)
       else c.get(L_STATE).i32load(ST.EIP).set(L_TV).i32(EXIT_FPUMODE).set(L_T2).br(this.exitCodeL);
       c.end(); void i;
       if (this.topAssume !== null) { c.i32(this.topAssume).set(L_TOP); this.loadX87Tags(); this.loadX87Regs(); }
@@ -1816,6 +1831,7 @@ class Emitter {
     c.gget(t2.depth).i32(1).add().gset(t2.depth);
     c.i32(0); // (the entry block: first in the layout)
     for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
+    t2Count(c, 5);
     c.call(t2.calls.get(target));
     this.popT2Results();
     c.gget(t2.depth).i32(1).sub().gset(t2.depth);
@@ -1824,6 +1840,7 @@ class Emitter {
     this.fpcStatic = null; // (the callee may have changed the x87 mode: the return site's guard tests it)
     c.get(L_T2).i32(-2).eq().get(L_TV).i32(ret).eq().and();
     { const i = c.hint(true).if_(); this.stats.t2Calls = (this.stats.t2Calls ?? 0) + 1; this.jumpTo(ret, 0); c.end(); void i; }
+    t2Count(c, 6);
     c.get(L_T2).i32(-2).eq();
     { const i = c.if_(); c.i32(-1).set(L_T2); c.end(); void i; }
     c.br(this.exitCodeL);
@@ -1838,6 +1855,7 @@ class Emitter {
     { const i = c.hint(false).if_(); this.exitTo(target, 0); c.end(); void i; }
     const s = this.x87Normalize(0);
     this.flushFpu(false); this.flushXmm();
+    t2Count(c, 7);
     c.i32(0);
     for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
     c.return_call(this.t2.calls.get(target));

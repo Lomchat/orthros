@@ -12,7 +12,7 @@ import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
-import { depth } from './depth.js';
+import { depth, FULL } from './depth.js';
 
 const CODE = 0x20000000, DATA = 0x10000000, SLOTS = DATA + 0x400;
 const ARITH = F.CF | F.PF | F.AF | F.ZF | F.SF | F.OF;
@@ -45,11 +45,13 @@ const alu = (a) => {
 
 /** functions F0..Fn-1 (Fi calls only Fj, j > i, or itself under the EBP bound), main calling F0 in a loop on EDI */
 function gen(smc = false) {
-  const a = new Asm(), n = 3 + rnd(4), x87 = rnd(3) === 0 ? 1 + rnd(n - 1) : -1, sse = rnd(3) === 0 ? 1 + rnd(n - 1) : -1;
+  const a = new Asm(), n = 3 + rnd(4), x87 = rnd(3) !== 0 ? 1 + rnd(n - 1) : -1, sse = rnd(3) === 0 ? 1 + rnd(n - 1) : -1;
   const slotOf = (j) => SLOTS + 4 * j;
   // main: L: mov ebp, 56 ; call F0 ; [jc/jo on its flags] ; dec edi ; jnz L ; hlt
   a.label('main'); a.raw(0xbd, ...le(56)); a.raw(0xe8).ref('F0');
   { const s = a.fresh(); a.raw(0x0f, 0x82).ref(s); a.raw(0x83, 0xc3, 3); a.label(s); }
+  // (the x87 precision switched every iteration: x87 functions entered under both modes)
+  a.raw(0x66, 0x81, 0x35, ...le(DATA + 0x600), 0x00, 0x02, 0xd9, 0x2d, ...le(DATA + 0x600)); // xor word [cw], 0x200 ; fldcw [cw]
   if (smc) { a.raw(0x50, 0xa1).ref('slot0', true); a.raw(0xa3).ref('slot0', true); a.raw(0x58); } // push eax ; mov eax, [slot0] ; mov [slot0], eax ; pop eax
   a.raw(0x4f, 0x0f, 0x85).ref('main'); a.label('end'); a.raw(0xf4);
   for (let i = 0; i < n; i++) {
@@ -89,6 +91,7 @@ function setup(g) {
   mem.fill(CODE, 0x4000, 0xcc); mem.writeBytes(CODE, g.code);
   mem.fill(DATA, 0x1000, 0);
   g.fns.forEach((f, i) => mem.write32(SLOTS + 4 * i, f));
+  mem.write16(DATA + 0x600, 0x27f);
   mem.write32(DATA + 0x100 + 8, 0x3f800000); mem.write32(DATA + 0x100 + 12, 0x3e000000); mem.write32(DATA + 0x100 + 16, 0x40000000); mem.write32(DATA + 0x100 + 20, 0x3c000000);
   cpu.reset();
   cpu.eax = 0x1234567; cpu.ecx = 0x89abcdef; cpu.edx = 5; cpu.ebx = 0x7f; cpu.edi = 80; cpu.esi = DATA + 0x100; cpu.esp = DATA + 0xf00; cpu.eip = CODE;
@@ -117,7 +120,7 @@ function runJit(g, slice, window, hook = null) {
 }
 
 test('tier 2: random programs of functions match the interpreter, built mid-run, whole slices and short ones', () => {
-  let built = 0, x87 = 0;
+  let built = 0, x87 = 0, unhashed = 0;
   for (let t = 0, n = depth(48, 8); t < n; t++) {
     const g = gen();
     const ref = setup(g);
@@ -126,11 +129,11 @@ test('tier 2: random programs of functions match the interpreter, built mid-run,
     for (const slice of [5000, 97, 7]) {
       const { s, jit } = runJit(g, slice, 800);
       assert.equal(s, want, `program ${t} slice ${slice}: ${Buffer.from(g.code).toString('hex')}`);
-      if (jit.t2Stats?.built) { built++; x87 += jit.t2Stats.x87Functions; }
+      if (jit.t2Stats?.built) { built++; x87 += jit.t2Stats.x87Functions; unhashed += jit.t2Stats.unhashed ?? 0; }
     }
   }
   assert.ok(built > depth(48, 8) * 2, `tier 2 built in ${built} runs`);
-  assert.ok(x87 > 0, 'x87 functions translated');
+  if (FULL) assert.ok(x87 > 0 && unhashed > 0, `x87 functions translated, entered under another mode: ${x87} ${unhashed}`);
 });
 
 test('tier 2: a store into a tier-2 page (SMC) drops it, the run still matches the interpreter', () => {

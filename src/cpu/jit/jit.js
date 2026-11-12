@@ -4,7 +4,7 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, FID_SURF_LOCK, FID_SURF_UNLOCK, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_FX_XFORM, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, EXIT_T2MODE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, FID_SURF_LOCK, FID_SURF_UNLOCK, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_FX_XFORM, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
@@ -330,10 +330,10 @@ export class Jit {
     this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
     // tier 2 (tier2.js): {"tier2": true} profiles then builds it, {"tier2Profile": true} profiles only unless tier2 is on
     // (the control arm of an A/B: the same window and retranslation); tier2Window / tier2Share tune it
-    if (!internal && (over?.tier2 || over?.tier2Profile)) this.t2 = new Tier2(this, { window: over.tier2Window, share: over.tier2Share });
+    if (!internal && (over?.tier2 || over?.tier2Profile)) this.t2 = new Tier2(this, { window: over.tier2Window ?? JIT_DEFAULTS.tier2Window, share: over.tier2Share ?? JIT_DEFAULTS.tier2Share });
   }
   /** is tier 2 built at the end of a profile window (opts.tier2, ORTHROS_JIT_AB / ORTHROS_JIT_DEFAULTS)? */
-  tier2Opt() { return this.abOpts?.tier2 ?? this.opts.tier2 ?? JIT_DEFAULTS.tier2; }
+  tier2Opt() { return this.abOpts?.tier2 ?? this.opts.tier2 ?? JIT_DEFAULTS.tier2 ?? false; } // (not a JIT_DEFAULTS key: the code cache keys on those)
   /**
    * The x87 mode to translate a learned region for: as learned (an entry learned by an earlier build has no stack top:
    * translated testing it at run time — assuming one would drop and translate again, on the game's thread, every such
@@ -899,6 +899,10 @@ export class Jit {
         else s = this.interp.step();
         this.stats.steps = (this.stats.steps ?? 0) + 1;
         if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
+        continue;
+      }
+      if (r === EXIT_T2MODE) { // (a tier-2 x87 function under another x87 mode: tier 1 takes its entries; see tier2.js)
+        this.t2?.unhash(cpu.eip >>> 0);
         continue;
       }
       if (r === EXIT_FPUMODE) {
