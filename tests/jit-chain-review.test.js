@@ -138,7 +138,7 @@ test('a WASM trap inside a chained callee reports the entry of the faulting regi
 
 test('invalidating the target of a chain removes it from the hash table (no stale tail call)', () => {
   const { code, L1, L2, end } = crossOnlyLoop();
-  const EJ = makeExec(true);
+  const EJ = makeExec(true, { smcExact: false }); // (page-granular invalidation, as below)
   load(EJ, code);
   assert.equal(EJ.run(end, [L1, L2]), EXIT.HALT);
   assert.ok(EJ.jit.stats.chained > 100);

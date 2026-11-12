@@ -4,7 +4,9 @@
 // process (less sensitive than wall time to other load on a shared machine) and the guest instructions executed.
 // Compares JIT variants: `ORTHROS_JIT_OPTS='{"nestLoops":true}' node tools/bench/startbench.mjs <manifest.json>`.
 //   node tools/bench/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600] [--bg | --cold] [--save <dir>] [--until-insns <M>]
-//     [--input <scenario> [--coords W,H] | --bench <bench name>]
+//     [--input <scenario> [--coords W,H] | --bench <bench name>] [--child]
+// A launcher's game (Age of the Ring: lotrbfme2ep1.exe starts game.dat): --child --until-api none, e.g.
+//   startbench.mjs aotr-10 --games-dir data/games --until-api none --child --input <scenario> --coords 1024,768
 import './node-wasm-flags.mjs'; // (branch hints honoured, as in Chrome)
 import fs from 'node:fs';
 import os from 'node:os';
@@ -90,7 +92,8 @@ const siteReport = () => {
   for (const e of all.slice(0, Number(opt('jit-sites-top', 40)))) console.log(`  ${e.kind} ${sym(e.addr)} ${(e.n / 1e6).toFixed(2)}M changes ${(100 * e.ch / Math.max(1, e.n)).toFixed(1)}% last ${sym(e.last)}`);
 };
 // --log <kinds>: the emulator log kinds printed (default crash; e.g. crash,warn — null-page faults are warnings)
-const vm = new Vm({ vfs, clock, host, logKinds: (opt('log') ?? 'crash').split(','), sharedMemory: bgWanted });
+let vm = new Vm({ vfs, clock, host, logKinds: (opt('log') ?? 'crash').split(','), sharedMemory: bgWanted });
+const rootVm = vm;
 if (bgWanted && vm.jit) {
   const { Worker, MessageChannel, receiveMessageOnPort } = await import('node:worker_threads');
   const ch = new MessageChannel();
@@ -122,11 +125,15 @@ globalThis.__vm = vm; // (wrappers: tools reading the VM after the run)
 // --d3dx-prof: D3DX image work timed by kind of operation (d3dx9.js prof, as the harness's --api-times), printed with
 // the surface lock patterns at each scenario mark ([d3dx] lines); a clock read per API call
 if (args.includes('--d3dx-prof')) vm.apiTimes = new Map();
-if (process.env.ORTHROS_JIT_OPTS && vm.jit) Object.assign(vm.jit.opts, JSON.parse(process.env.ORTHROS_JIT_OPTS));
-// --mix: translations count their blocks' executions; the report adds the dynamic instruction mix (tools/bench/jit-mix.mjs)
-if (args.includes('--mix') && vm.jit) vm.jit.opts.blockCounts = true;
-if (opt('jit-opts') && vm.jit) Object.assign(vm.jit.opts, JSON.parse(opt('jit-opts'))); // (the same, as an option)
-if (vm.jit?.opts.consolidateEvery) vm.jit.consolidateEvery = vm.jit.opts.consolidateEvery; // (read by the constructor)
+const jitSetup = (v) => {
+  if (process.env.ORTHROS_JIT_OPTS && v.jit) Object.assign(v.jit.opts, JSON.parse(process.env.ORTHROS_JIT_OPTS));
+  // --mix: translations count their blocks' executions; the report adds the dynamic instruction mix (tools/bench/jit-mix.mjs)
+  if (args.includes('--mix') && v.jit) v.jit.opts.blockCounts = true;
+  if (opt('jit-opts') && v.jit) Object.assign(v.jit.opts, JSON.parse(opt('jit-opts'))); // (the same, as an option)
+  if (v.jit?.opts.consolidateEvery) v.jit.consolidateEvery = v.jit.opts.consolidateEvery; // (read by the constructor)
+  if (opt('heat-out') && v.jit) v.jit.opts.visit = true;
+};
+jitSetup(vm);
 if (process.env.ORTHROS_JIT_STATS && vm.jit) {
   vm.jit.stepHist = new Map();
   // a few samples per address: control word, ST(0), the memory operand (m64) and the interpreter's result
@@ -145,7 +152,6 @@ vm.registry.seed(manifest.registry);
 // visit flags harvested at the end, merged into that file
 const learnedHeat = opt('heat') && vm.jit ? new LearnedHeat(JSON.parse(fs.readFileSync(opt('heat'), 'utf8'))) : null;
 let heatModules = 0;
-if (opt('heat-out') && vm.jit) vm.jit.opts.visit = true;
 const writeHeat = () => {
   const f = opt('heat-out'); if (!f || !vm.jit) return;
   const pairs = vm.jit.harvestVisits(), byMod = new Map();
@@ -235,7 +241,7 @@ if (threadInsns) {
   const runThread = vm.runThread.bind(vm);
   vm.runThread = (t, o) => { const g0 = vm.guestInsns; try { return runThread(t, o); } finally { if (t.onStack === 0) threadInsns.set(t.id, (threadInsns.get(t.id) ?? 0) + vm.guestInsns - g0); } };
 }
-const dispatch = vm.dispatchThunk.bind(vm);
+const dispatch = (v, t, i) => Vm.prototype.dispatchThunk.call(v, t, i);
 let apiSeq = opt('api-seq') ? (([n, at]) => ({ n: Number(n), at: Number(at ?? 0), list: [], fast: 0 }))(opt('api-seq').split('@')) : null;
 let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
 // --input <file>: a harness scenario played on the headless host (tools/bench/node-scenario.mjs); the run ends after its last
@@ -317,10 +323,11 @@ const cpuProfTick = () => {
   if (!p.on && s >= p.from) { p.on = true; p.session.post('Profiler.enable'); p.session.post('Profiler.setSamplingInterval', { interval: 200 }); p.session.post('Profiler.start'); console.log(`[cpuprof] started at ${p.label}+${s.toFixed(1)} s`); }
   else if (p.on && s >= p.to) { p.done = true; p.session.post('Profiler.stop', (err, r) => { if (!err) fs.writeFileSync(p.file, JSON.stringify(r.profile)); console.log(`[cpuprof] ${err ? 'failed: ' + err.message : 'written ' + p.file}`); }); }
 };
-vm.dispatchThunk = (t, i) => {
+// (`v`: the machine whose thread called the thunk — the root, or with --child a child process)
+const onThunk = (v, t, i) => {
   if (cpuProf) cpuProfTick();
-  if (learnedHeat && vm.proc.moduleList.length !== heatModules) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
-  const th = vm.api.thunk(i);
+  if (learnedHeat && v === vm && vm.proc.moduleList.length !== heatModules) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
+  const th = v.api.thunk(i);
   if (args.includes('--d3d-log') && performance.now() - d3dLog > 5000) { d3dLog = performance.now(); const d = vm.d3dDevice; console.log(`[d3d] t=${((d3dLog - t0) / 1000).toFixed(0)}s frames=${d?.frames ?? '-'} draws=${d?.draws ?? '-'} insns=${(vm.guestInsns / 1e6).toFixed(0)}M`); }
   // --api-seq <n>@<s>: the next n API calls dispatched to JavaScript after s seconds, run-length encoded (thread, name,
   // and, with --jit-profile, the clock reads the dispatcher's fast path ran in between), printed once recorded — e.g.
@@ -351,8 +358,32 @@ vm.dispatchThunk = (t, i) => {
     }
   }
   if (untilInsns && vm.guestInsns >= untilInsns) { report(`${(vm.guestInsns / 1e6).toFixed(0)} M guest instructions`); process.exit(0); }
-  return dispatch(t, i);
+  return dispatch(v, t, i);
 };
+vm.dispatchThunk = (t, i) => onThunk(rootVm, t, i);
+// --child: follow each child process the game starts (a launcher's game: CreateProcess, core/procs.js) — the learned
+// heat, the JIT options and the reports are the newest child's from its start on (its parent keeps running as before)
+if (args.includes('--child')) {
+  const spawn = Vm.prototype.spawnProcess;
+  Vm.prototype.spawnProcess = function (o) {
+    const c = spawn.call(this, o);
+    vm = c; globalThis.__vm = c; jitSetup(c); heatModules = -1; // (the scenario follows the foreground process by itself)
+    c.dispatchThunk = (t, i) => onThunk(c, t, i);
+    console.log(`[child] following ${o?.exePath ?? 'a child process'}`);
+    return c;
+  };
+}
+// with a scenario, each phase's JIT churn: regions translated, dropped, invalidations (SMC) per second ([jitchurn] lines)
+if (scenario) {
+  let last = null;
+  (scenario.phaseReports ??= []).push((label) => {
+    const j = vm.jit; if (!j) return;
+    // (smcKept: SMC exits that overlapped no translated code — a data store on a code page, Jit.invalidate)
+    const cur = { t: performance.now(), jit: j, regions: j.stats.regions, dropped: j.stats.dropped, inv: j.stats.invalidations, smcKept: j.stats.smcKept ?? 0, ms: j.stats.translateMs };
+    if (last && last.jit === j) { const s = (cur.t - last.t) / 1000, r = (k) => ((cur[k] - last[k]) / s).toFixed(1); console.log(`[jitchurn] ${label} ${s.toFixed(1)} s: regions ${r('regions')}/s, dropped ${r('dropped')}/s, invalidations ${r('inv')}/s, data stores on code pages kept ${r('smcKept')}/s, translation ${(100 * (cur.ms - last.ms) / (cur.t - last.t)).toFixed(1)} % of wall; live ${j.regions.length}, blockMap ${j.blockMap.size}`); }
+    last = cur;
+  });
+}
 vm.host.waitEvent = (ms) => { scenario?.tick(); const p = acct.enter(ACCT.wait); try { return clock.sleep(Math.min(ms, scenario ? 5 : 50)); } finally { acct.leave(p); } }; // (pacing: not guest time)
 // --stop-on <text>: stop once a log message of any kind contains that text (as the harness's --stop-on), e.g. the end of
 // a game's first-launch computation
