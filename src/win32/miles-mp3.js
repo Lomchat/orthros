@@ -178,7 +178,8 @@ export function registerMilesMp3(api, vm) {
       this.sent = []; // frames sent to the session, not wholly read back
       this.headDone = 0; // samples of sent[0] already read
       this.sentSamples = 0; this.readSamples = 0; // (of the session)
-      this.skipBytes = 0; // PCM of the session to drop first (frames sent again: what was read of the first one)
+      this.skipBytes = 0; // PCM of the session to drop first (frames sent again: what was read of the first one; frames not decodable)
+      this.resv = 0; this.decodable = false; // (of the session: main data bytes sent so far, a frame decodable sent)
       this.ended = false; // the session was told its end (the input ran dry when its PCM was needed)
       this.prefs = {};
       this.openBytes = null; // what open read, until the first process call reads the start again (see recheckStart)
@@ -216,6 +217,16 @@ export function registerMilesMp3(api, vm) {
     return h;
   }
 
+  /**
+   * A Layer III frame's main_data_begin (how many bytes of its data lie in the frames before it: the bit reservoir) and
+   * the bytes of main data it carries (ISO 11172-3 2.4.1.7; 13818-3 for the lower sampling frequencies).
+   */
+  function mainData(b, i, h) {
+    const crc = h.crc ? 2 : 0, p = i + 4 + crc, mono = h.channels === 1;
+    const side = h.version === 1 ? (mono ? 17 : 32) : (mono ? 9 : 17);
+    return { begin: h.version === 1 ? (b[p] << 1) | (b[p + 1] >> 7) : b[p], bytes: h.bytes - 4 - crc - side };
+  }
+
   /** whole frames out of inBuf into `parsed` */
   function parse(s) {
     const b = s.inBuf;
@@ -227,7 +238,8 @@ export function registerMilesMp3(api, vm) {
       // (finding the stream — its start, or after bytes that are no frame: a header followed by another one, as a
       // header's 11 sync bits occur in frame data too; a reader started mid-stream would decode noise from a false one)
       if (!s.synced) { if (i + h.bytes + 4 > b.length) break; if (!frameAt(s, b, i + h.bytes)) { i++; continue; } s.synced = true; }
-      s.parsed.push({ bytes: b.slice(i, i + h.bytes), samples: h.samples, end: s.inPos + i + h.bytes, bitrate: h.bitrate });
+      const m = mainData(b, i, h);
+      s.parsed.push({ bytes: b.slice(i, i + h.bytes), samples: h.samples, end: s.inPos + i + h.bytes, bitrate: h.bitrate, mdb: m.begin, main: m.bytes });
       i += h.bytes;
     }
     if (i) { s.inBuf = b.slice(i); s.inPos += i; }
@@ -239,12 +251,12 @@ export function registerMilesMp3(api, vm) {
     const d = decoders();
     if (!d) return null;
     s.session = d.open(s.fmt.rate, s.fmt.ch);
-    s.sentSamples = 0; s.readSamples = 0; s.ended = false;
+    s.sentSamples = 0; s.readSamples = 0; s.ended = false; s.resv = 0; s.decodable = false;
     if (s.sent.length) {
-      const skip = s.headDone;
+      const skip = s.headDone, head = s.sent[0];
       s.parsed = s.sent.concat(s.parsed); s.sent = []; s.headDone = 0;
       send(s, Infinity);
-      s.skipBytes = skip * bps(s); s.readSamples = skip; s.headDone = skip;
+      if (s.sent[0] === head) { s.skipBytes += skip * bps(s); s.headDone = skip; } // (unless the frame being read is not decodable now: skipped whole)
     }
     return s.session;
   }
@@ -257,7 +269,14 @@ export function registerMilesMp3(api, vm) {
     if (!n) return 0;
     const frames = s.parsed.splice(0, n), bytes = new Uint8Array(len), list = [];
     let at = 0;
-    for (const f of frames) { bytes.set(f.bytes, at); list.push([s.sentSamples, at, f.bytes.length]); at += f.bytes.length; s.sentSamples += f.samples; s.sent.push(f); }
+    for (const f of frames) {
+      bytes.set(f.bytes, at); list.push([s.sentSamples, at, f.bytes.length]); at += f.bytes.length; s.sentSamples += f.samples;
+      // (a session starting mid-stream — a buffer switched since open, a seek, a restored machine: the frames whose
+      // data begins before the session's first byte are not heard, as the original skips them; they still go to the
+      // decoder, which keeps their data for the next frames)
+      if (!s.decodable && (f.mdb ?? 0) > s.resv) { s.skipBytes += f.samples * bps(s); s.pos = f.end; s.resv += f.main ?? 0; continue; }
+      s.decodable = true; s.sent.push(f);
+    }
     ses.send(bytes, list);
     decoders().stats.frames += n;
     return n;
@@ -343,7 +362,7 @@ export function registerMilesMp3(api, vm) {
     if (!ses) return 0;
     const dst = mem.u8.subarray(buf, buf + n);
     for (;;) {
-      if (s.skipBytes) s.skipBytes -= ses.skip(s.skipBytes);
+      if (s.skipBytes) { const k = ses.skip(s.skipBytes); s.skipBytes -= k; s.readSamples += k / B; }
       if (!s.skipBytes) { const k = ses.take(dst.subarray(got), n - got); if (k) { got += k; consumed(s, k / B); } }
       if (got >= n) break;
       const state = ses.state();
@@ -403,7 +422,7 @@ export function registerMilesMp3(api, vm) {
   function hostAttribute(c) {
     const s = st.streams.get(c.arg(0)), name = provOf().tokens[c.arg(1)];
     if (!s) return 0xffffffff;
-    const { rate, ch, version } = s.fmt;
+    const { rate, ch, version } = s.fmt, pos = (s.headDone > 0 && s.sent.length ? s.sent[0].end : s.pos) >>> 0; // (as the original's: past the frame being read)
     switch (name) {
       case 'Input bit rate': return s.bitrate;
       case 'Input sample rate': case 'Output sample rate': return rate;
@@ -411,8 +430,8 @@ export function registerMilesMp3(api, vm) {
       case 'Input channels': case 'Output channels': return ch;
       case 'Output bit rate': return rate * ch * 16;
       case 'Output sample width': return 16;
-      case 'Position': return s.pos >>> 0;
-      case 'Percent done': { if (!s.pos || !s.total) return 0; f32[0] = (s.pos >>> 0) * 100 / (s.total >>> 0); return f32u[0]; }
+      case 'Position': return pos;
+      case 'Percent done': { if (!pos || !s.total) return 0; f32[0] = pos * 100 / (s.total >>> 0); return f32u[0]; }
       case 'Minimum input block size': return 0x1000;
       case 'MPEG version': return version === 1 ? 1 : 2;
       case 'MPEG layer': return 3;

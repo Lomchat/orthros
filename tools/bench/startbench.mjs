@@ -70,7 +70,7 @@ if (args.includes('--mp3-host') || process.env.ORTHROS_MP3_HOST === '1') {
   const { Mp3Host } = await import('../../src/media/mp3-host.js');
   host.mp3 = new Mp3Host(() => { const w = new NodeWorker(new URL('../../src/media/mp3-helper.js', import.meta.url)); w.unref(); return w; }, (m) => console.log(`[mp3] ${m}`));
   globalThis.ORTHROS_MP3_HOST ??= 1;
-  process.on('exit', () => { const s = host.mp3.stats; console.log(`[mp3] host decoding: ${s.sessions} sessions, ${s.frames} frames, ${s.waits} waits (${s.waitMs.toFixed(0)} ms), ${s.failures} failures`); });
+  process.on('exit', () => { const s = host.mp3.stats, m = vm?.milesMp3Stats?.(); console.log(`[mp3] host decoding: ${s.sessions} sessions, ${s.frames} frames, ${s.waits} waits (${s.waitMs.toFixed(0)} ms), ${s.failures} failures${m ? `; streams: ${m.opens} opened, ${m.process} reads (${(m.bytes / 1048576).toFixed(1)} MB of PCM), ${m.fetches} fetches (${(m.fetchBytes / 1048576).toFixed(1)} MB), ${m.seeks} seeks, ${m.restarts} restarts at the first read` : ''}`); });
 }
 if (opt('mp3-capture')) {
   const dir = opt('mp3-capture'); fs.mkdirSync(dir, { recursive: true });

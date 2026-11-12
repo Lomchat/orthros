@@ -63,7 +63,13 @@ What a trace of the original shows (RotWK, `ORTHROS_MP3_HOST=trace`, `ORTHROS_MP
   returns 0, as the original does. Otherwise it returns an opaque handle and starts decoding at once: the bytes
   already read are parsed into frames and sent.
 - Frames are found by their header (sync, Layer III, the first header's version and sample rate) and their length.
-  The bytes that follow are kept until the frame is whole.
+  The bytes that follow are kept until the frame is whole. When the reader is not yet in step with the stream (at its
+  start, or after bytes that are not a frame), a header counts only if another one follows it: the 11 sync bits also
+  occur inside frame data.
+- A session that starts in the middle of a stream (a buffer switched since `open`, a seek, a restored machine) cannot
+  decode its first frames when their `main_data_begin` points into the bit reservoir of earlier frames it never
+  received. The original skips them: its output starts one or two frames later. Here they are still sent to the
+  decoder (it keeps their data for the frames that follow), but their PCM is skipped when read.
 - **Ahead of the reader**: frames are sent while the PCM sent and not yet read stays under 0.35 s and fits the ring.
   Nothing is sent until half of that has been read, so each stream costs about 6 messages per second, not one per
   frame. `fetch` is called again (4 KiB at a time, at most twice per `process` call) when no parsed frames are left.
@@ -79,12 +85,12 @@ What a trace of the original shows (RotWK, `ORTHROS_MP3_HOST=trace`, `ORTHROS_MP
   yet read are decoded again by a new session (the original keeps the rest of its decoded frame and parses on from its
   input position). Any other offset drops everything and reads from that offset.
 - The attributes are computed from the headers, as the original computes them: Position is the input offset after
-  the last frame wholly read, Percent done is `float(position) * 100 / total`, and Input sample width is
+  the frame being read, Percent done is `float(position) * 100 / total`, and Input sample width is
   `16 / max(1, rate * channels * 16 / bitrate)`.
 - Snapshots: an `Mp3Stream` (registered class `mss.Mp3Stream`) holds everything the guest gave and the MP3 bytes not
   yet heard: frames sent and not wholly read, frames parsed, bytes after them. Only the decoder session is the
   host's (`skip: ['session']`). A restored machine sends the unread frames to a new session and drops what had been
-  read of the first one. That first frame decodes without its bit reservoir: a few milliseconds may differ.
+  read of the first one. Frames that cannot be decoded without the bit reservoir are skipped, as above.
 
 ## The helper and its ring (src/media/mp3-helper.js, mp3-host.js, mp3-ring.js)
 
@@ -116,12 +122,38 @@ What a trace of the original shows (RotWK, `ORTHROS_MP3_HOST=trace`, `ORTHROS_MP
 
 ## Is the sound the same? (tools/dev/mp3-compare.mjs)
 
-`startbench rotwk-202 --bench rotwk-quick --mp3-capture <dir>` recorded the streams of the menu and two minutes of
-play as the guest decoded them (music, voices, sounds). `mp3-compare.mjs <dir> --browser` decoded them again through
-the shipped path (Mp3Host and the helper with WebCodecs, in Chromium) and compared the results. Two captures gave 15
-streams:
+`startbench <version> --bench <bench> --mp3-capture <dir>` records every stream as the guest decoder decoded it:
+its MP3 input, as fetched since the decoder's last read from offset 0, and its PCM output. `mp3-compare.mjs <dir>
+--browser` decodes the same input again through the shipped path (Mp3Host and the helper with WebCodecs, in a
+Chromium page) and compares the two: lengths, the lag that aligns them best (whole frames tried first), the
+signal-to-error ratio over the aligned samples (per second with `--blocks`), and the largest difference (16-bit
+units). The comparison covers 22 streams: two RotWK 2.02 captures (`rotwk-quick`: menu music, then two minutes of
+play with music, voices and sounds; 15 streams with output) and one Vice City capture (`vc-quick`: cutscene and drive,
+mp3dec.asi from MSS 6; 7 streams).
 
-RESULTS_PCM
+| | streams | lag | signal / error | largest difference |
+|---|---|---|---|---|
+| RotWK, from the file's start | 13 | 0 | 61.7-77.3 dB | 5-99 |
+| RotWK, joined mid-file (stream 8: 1.3 s, stream 11: 0.2 s) | 2 | 0 | 22.3 dB (21 in the first second, 49 after), 11.5 dB | 597, 679 |
+| Vice City | 3 | 0 | 54.1-67.1 dB | 1-299 |
+| Vice City, a clip of 4 silent frames | 1 | — | identical | 0 |
+| Vice City | 3 | 0 | 30.8, 39.8, 40.7 dB (per second 31-46) | 17 422, 6 860, 2 358 |
+
+- **Length**: where the game played a stream to its end (RotWK 1 and 9, Vice City 104 and 107), the host gives
+  exactly the guest's sample count. Every other stream was stopped by the game earlier (closed while playing), so
+  the guest's output is shorter there.
+- **Joined mid-file**: some streams start in the middle of the file (a buffer switched between `open` and the first
+  `process` call). The original then skips the first frames, whose data begins in the bit reservoir of bytes it never
+  read (1 or 2 frames: the guest's output starts 1 152 or 2 304 samples later). The host skips them too: their
+  `main_data_begin` is larger than the main data the session has received so far. They are still sent to the
+  decoder for their data, but their PCM is not read. Before this rule the lag was 1 152 / 2 304 on every such
+  stream. Right after the join, the two decoders still differ for about a second (or for the whole of a 0.2 s
+  clip), then they converge (49 dB).
+- **Vice City's decoder** (MSS 6) is further from WebCodecs' than MSS 7's: three streams are at 31-46 dB per second.
+  The differences are spread over the whole stream, about 35-40 dB under the signal. That is below the MP3 coding
+  noise itself, and it does not shift the timing.
+- The Node stand-in (ffmpeg) compares at 42-77 dB on the RotWK streams, with a lag of −1 152: ffmpeg drops the first
+  frame, and its output has no time stamps to place it by. Players never use this path.
 
 ## What it saves
 

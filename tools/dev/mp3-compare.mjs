@@ -38,7 +38,8 @@ function frames(b) {
     if (i + h.bytes > b.length) break;
     if (!synced) { if (i + h.bytes + 4 > b.length || !at(i + h.bytes)) { i++; continue; } synced = true; }
     fmt ??= { version: h.version, rate: h.rate, ch: h.channels };
-    out.push([i, h.bytes, h.samples]); i += h.bytes;
+    const crc = h.crc ? 2 : 0, q = i + 4 + crc, mono = h.channels === 1, side = h.version === 1 ? (mono ? 17 : 32) : (mono ? 9 : 17);
+    out.push([i, h.bytes, h.samples, h.version === 1 ? (b[q] << 1) | (b[q + 1] >> 7) : b[q], h.bytes - 4 - crc - side]); i += h.bytes;
   }
   return { fmt, frames: out };
 }
@@ -69,7 +70,10 @@ async function decodeWith(host, s, ST_DONE, ST_FAILED, sleep) {
     if (!n) { if (ses.state() === ST_DONE && ses.available() <= 0) break; await sleep(2); }
   }
   ses.close();
-  return { pcm: new Int16Array(out.buffer, 0, got >> 1), ch: fmt.ch, rate: fmt.rate };
+  // (as miles-mp3.js: the first frames whose data begins before the stream's first byte are not heard)
+  let skip = 0, resv = 0;
+  for (const f of fr) { if (f[3] <= resv) break; skip += f[2]; resv += f[4]; }
+  return { pcm: new Int16Array(out.buffer, skip * B, Math.max(0, (got >> 1) - skip * fmt.ch)), ch: fmt.ch, rate: fmt.rate, skipped: skip };
 }
 
 /** the best lag (samples, test against ref) within ±maxLag on the first channel, and the signal-to-error ratio there */
@@ -84,7 +88,7 @@ function compare(ref, test, ch) {
     return { lag, snr: err ? 10 * Math.log10(sig / err) : Infinity, maxd };
   };
   // candidates: whole frames (a decoder dropping a priming frame) and the best correlation over the loudest 4 s
-  const lags = new Set([0, -1152, 1152, -576, 576]);
+  const lags = new Set([0, -576, 576, -1152, 1152, -2304, 2304, -3456, 3456]); // (a decoder starting mid-stream may skip the frames whose bit reservoir it lacks)
   let loud = 0, best = -1, w = Math.min(n - 2 * maxLag, 44100 * 4);
   if (w > 1000) {
     for (let a = maxLag; a + w < n - maxLag; a += w >> 1) { let e = 0; for (let i = a; i < a + w; i += 7) e += ref[i * ch] * ref[i * ch]; if (e > best) { best = e; loud = a; } }
@@ -107,9 +111,9 @@ let decoded;
 if (!browser) decoded = []; else decoded = await decodeInBrowser(streams);
 for (let i = 0; i < streams.length; i++) {
   const s = streams[i], d = browser ? decoded[i] : await decodeNode(s);
-  const fr = s.parsed.frames.length, exp = s.parsed.frames.reduce((k, f) => k + f[2], 0);
+  const fr = s.parsed.frames.length, exp = s.parsed.frames.reduce((k, f) => k + f[2], 0) - (d.skipped ?? 0);
   const c = compare(s.pcm, d.pcm, d.ch);
-  console.log(`stream ${s.id}: ${s.mp3.length} MP3 bytes, ${fr} frames, ${d.rate} Hz ${d.ch} ch; guest ${s.pcm.length / d.ch} samples, host ${d.pcm.length / d.ch} (frames hold ${exp}); best lag ${c.lag}, SNR ${c.snr.toFixed(1)} dB, max |diff| ${c.maxd}${c.blocks ? `\n  per second: ${c.blocks}` : ''}`);
+  console.log(`stream ${s.id}: ${s.mp3.length} MP3 bytes, ${fr} frames, ${d.rate} Hz ${d.ch} ch; guest ${s.pcm.length / d.ch} samples, host ${d.pcm.length / d.ch} (frames hold ${exp}${d.skipped ? `, ${d.skipped} not decodable skipped` : ''}); best lag ${c.lag}, SNR ${c.snr.toFixed(1)} dB, max |diff| ${c.maxd}${c.blocks ? `\n  per second: ${c.blocks}` : ''}`);
 }
 
 async function decodeInBrowser(list) {
@@ -141,10 +145,10 @@ async function decodeInBrowser(list) {
         const d = await decodeWith(host, { mp3, parsed }, ST_DONE, ST_FAILED, (ms) => new Promise((res) => setTimeout(res, ms)));
         host.terminate();
         let s = ''; const u8 = new Uint8Array(d.pcm.buffer, d.pcm.byteOffset, d.pcm.byteLength); for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-        return { b64: btoa(s), ch: d.ch, rate: d.rate };
+        return { b64: btoa(s), ch: d.ch, rate: d.rate, skipped: d.skipped };
       }, { b64: Buffer.from(s.mp3).toString('base64'), parsed: s.parsed, src: decodeWith.toString() });
       const buf = Buffer.from(r.b64, 'base64');
-      out.push({ pcm: new Int16Array(buf.buffer, buf.byteOffset, buf.length >> 1), ch: r.ch, rate: r.rate });
+      out.push({ pcm: new Int16Array(buf.buffer, buf.byteOffset, buf.length >> 1), ch: r.ch, rate: r.rate, skipped: r.skipped });
     }
     return out;
   } finally { await b.close(); server.close(); }
