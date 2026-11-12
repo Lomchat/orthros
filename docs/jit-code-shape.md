@@ -1217,9 +1217,10 @@ their content (DECISIONS.md D122): a library is recognised, never a game.
   by page (its fingerprinted ranges span helpers and constants, not blocks).
 
 Not done here: `ldexp` (`_decomp` / `_set_exp`, ~90 instructions with the frame they leave), `modf` (SSE2 path and the
-integer part stored through a pointer), `strncpy` (the magic-bits word loop), the MP3 decoder (a later step), and the
-next lever the per-call figures show — a kernel called from the caller's region at its `call [slot]` (as the inline
-fast APIs are) instead of through two chained transitions.
+integer part stored through a pointer), `strncpy` (the magic-bits word loop), the MP3 decoder (not a kernel: its
+stream functions are the host's, decoding off the thread — docs/miles-mp3.md), and the next lever the per-call
+figures show — a kernel called from the caller's region at its `call [slot]` (as the inline fast APIs are) instead of
+through two chained transitions.
 
 ## The four 2026-11-12 branches combined, measured against main
 
