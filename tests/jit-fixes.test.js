@@ -51,7 +51,7 @@ function snap(E, code, r) {
   // computed, a documented inexactness of the JIT, translate.js NC_RMW_SMC)
   return [cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esp, cpu.ebp, cpu.esi, cpu.edi, cpu.eip, r === EXIT.FAULT ? 0 : cpu.eflags & 0xcd5].map((x) => (x >>> 0).toString(16)).join(' ') +
     ' | fpu ' + hex(mem.bytes(cpu.base + ST.FPU_CW, 8)) + ' ' + hex(mem.bytes(cpu.base + ST.FPR, 64)) + ' mm ' + hex(mem.bytes(cpu.base + ST.MM, 64)) +
-    ' | data ' + hex(mem.bytes(DATA, 0x200)) + ' | code ' + hex(mem.bytes(CODE, code.length));
+    ' | null ' + hex(mem.bytes(0, 16)) + ' | data ' + hex(mem.bytes(DATA, 0x200)) + ' | code ' + hex(mem.bytes(CODE, code.length));
 }
 /** The program against the interpreter under every option value and slice size. */
 // (the quick depth: the option on only, three slice sizes; tests/depth.js FULL: off as well, four)
@@ -309,6 +309,9 @@ test('smcGroup: a store of the group reaches code its first store does not (span
     // leader on the page after FN2's (no code there nor after: its map byte is 0), the member (the group's lowest
     // displacement) into FN2 at the end of its page: the first page tested is the span's, not the leader's
     ['lowest displacement on the code page', FN2, FN2 + 4, [0xc6, 0x43, 12, 0x46], [0xc6, 0x43, 0, 0x47]],
+    // a null pointer with a negative field: r + lo below 0 (the span's first page wrapped: a precise null-page fault at
+    // the leader, not a trap after the null page was written)
+    ['null pointer, negative field', FN, 0, [0xc7, 0x43, 4, 1, 1, 1, 1], [0xc7, 0x43, 0xfc, 2, 2, 2, 2]],
   ];
   for (const [name, fn, p, leader, member] of cases) {
     const main = [0xe8, ...le(fn - (CODE + 5)), 0xbb, ...le(p), ...leader, ...member];
@@ -320,6 +323,21 @@ test('smcGroup: a store of the group reaches code its first store does not (span
       E.mem.write8(CODE + 0x3fd0, 0xc3); E.mem.fill(FN2, 14, 0x42); E.mem.write8(FN2 + 14, 0xeb); E.mem.write8(FN2 + 15, (0x3fd0 - 0x4000) & 0xff);
     }, 'smcGroup', [true, false], [0]);
   }
+});
+
+test('smcGroup: a write watch on the page a member reaches is hit as without groups', () => {
+  // mov ebx, W - 8 ; mov [ebx+12], 1 (leader, on the watched page W) ; mov [ebx+0], 2 (member, on the page before:
+  // the group's span starts there, a page that holds no code: its SMC_NEXT bit tells the watch) ; hlt
+  const W = DATA + 0x2000, code = Uint8Array.from([0xbb, ...le(W - 8), 0xc7, 0x43, 12, ...le(1), 0xc7, 0x43, 0, ...le(2), 0xf4]);
+  const hits = (on) => {
+    const E = makeExec({ smcGroup: on }); E.cpu.reset(); E.mem.writeBytes(CODE, code); E.cpu.eip = CODE; E.cpu.esp = DATA + 0x1800;
+    E.jit.watchWrites(W + 4, 4, 'w'); // (the leader's bytes: the span's first page is the one before, unwatched)
+    let n = 0;
+    for (let r; (r = E.jit.run({ stopAt: CODE + code.length - 1, maxInsns: 1e6 })) === EXIT.SMC;) { if (E.jit.watchHit(E.cpu.exitArg, E.cpu.eip, 16)) n++; else E.jit.invalidate(E.cpu.exitArg, 16); }
+    return n;
+  };
+  assert.equal(hits(true), hits(false));
+  assert.ok(hits(false) >= 1);
 });
 
 test('apiInline: calls through registers, vtables and import stubs to fast-path thunks match the dispatcher', () => {

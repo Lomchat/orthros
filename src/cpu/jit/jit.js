@@ -755,14 +755,21 @@ export class Jit {
     for (let p = addr >>> 12; p <= (addr + len - 1) >>> 12; p++) {
       if (this.mem.u8[SMC_MAP_BASE + p] & (SMC_CODE | SMC_WATCH)) continue;
       this.mem.u8[SMC_MAP_BASE + p] |= SMC_WATCH;
+      if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] |= SMC_NEXT; // (as below translated code: grouped SMC checks, smcCheck)
       this.watches.set(p, { label, hits: 0, max, sites: new Map(), lo: addr >>> 0, hi: (addr + len) >>> 0 });
     }
   }
   unwatch(label) {
     if (!this.watches) return [];
     const report = [];
-    for (const [p, w] of this.watches) if (w.label === label) { this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_WATCH; this.watches.delete(p); report.push(...w.sites); }
+    for (const [p, w] of this.watches) if (w.label === label) { this.unwatchPage(p); report.push(...w.sites); }
     return report;
+  }
+  /** Remove page `p`'s write watch (and the SMC_NEXT bit of the page before it unless `p` holds translated code). */
+  unwatchPage(p) {
+    const u8 = this.mem.u8;
+    u8[SMC_MAP_BASE + p] &= ~SMC_WATCH; this.watches.delete(p);
+    if (p > 0 && !(u8[SMC_MAP_BASE + p] & SMC_CODE)) u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT;
   }
   /**
    * SMC exit on a watched page: record the writer; returns true when handled (nothing to invalidate). A page that
@@ -780,7 +787,7 @@ export class Jit {
     let key = eip;
     if (thread) { const sp = thread.cpu.esp, n = globalThis.ORTHROS_WATCH_STACK || 5; key = `t${thread.id}:` + [eip, ...Array.from({ length: n }, (_, i) => this.mem.read32(sp + 4 * i))].map((x) => (x >>> 0).toString(16)).join('/'); }
     w.sites.set(key, (w.sites.get(key) ?? 0) + 1);
-    if (++w.hits >= w.max) { this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_WATCH; this.watches.delete(p); this.watchDone?.(w); }
+    if (++w.hits >= w.max) { this.unwatchPage(p); this.watchDone?.(w); }
     return true;
   }
 
@@ -842,7 +849,7 @@ export class Jit {
   dropPages(r) {
     for (const p of r.pages) {
       const s = this.pageRegions.get(p);
-      if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_CODE; if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT; } }
+      if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_CODE; if (p > 0 && !(this.mem.u8[SMC_MAP_BASE + p] & SMC_WATCH)) this.mem.u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT; } }
     }
   }
 

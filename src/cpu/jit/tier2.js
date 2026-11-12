@@ -22,7 +22,7 @@
 // Code written over (SMC) on a page holding tier-2 code drops all of tier 2 (tier 1 takes over).
 import { decode, OP, OT } from '../decoder.js';
 import { CountSlots, discoverRegion, translateT2, emitT2Entry, buildT2Module, T2_FIRST_FUNC } from './translate.js';
-import { SMC_MAP_BASE, SMC_CODE, SMC_NEXT } from '../memory.js';
+import { SMC_MAP_BASE, SMC_CODE, SMC_NEXT, SMC_WATCH } from '../memory.js';
 
 /** nested tier-2 calls at most (the WASM stack), deeper calls leave to tier 1 */
 const MAX_DEPTH = 48;
@@ -262,7 +262,7 @@ export class Tier2 {
     for (const eip of this.blocks.keys()) { jit.hashRemove(eip); const k = jit.blockMap.get(eip); if (k) jit.hashInsert(eip, k.region.fnIdx, k.block); }
     for (const p of this.pages) {
       const s = jit.pageRegions.get(p);
-      if (s) { s.delete(this.marker); if (!s.size) { jit.pageRegions.delete(p); u8[SMC_MAP_BASE + p] &= ~SMC_CODE; if (p > 0) u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT; } }
+      if (s) { s.delete(this.marker); if (!s.size) { jit.pageRegions.delete(p); u8[SMC_MAP_BASE + p] &= ~SMC_CODE; if (p > 0 && !(u8[SMC_MAP_BASE + p] & SMC_WATCH)) u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT; } }
     }
     if (jit.t2Stats) jit.t2Stats.dropped = (jit.t2Stats.dropped ?? 0) + 1;
     this.discard();

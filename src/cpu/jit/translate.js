@@ -2182,7 +2182,7 @@ class Emitter {
       g = this.smcPlan.lead.get(insn) ?? null;
       if (g && (g.broken || g.done || bytes > g.leadBytes)) { g.broken = true; g = null; }
     }
-    if (g) { c.get(L_TA); if (g.lo !== g.leadDisp) c.i32((g.lo - g.leadDisp) | 0).add(); c.i32(12).shr_u(); } // (the span's first page)
+    if (g) { c.get(L_TA); if (g.lo !== g.leadDisp) c.i32((g.lo - g.leadDisp) | 0).add().i32(0x7fffffff).and(); c.i32(12).shr_u(); } // (the span's first page; r + lo below 0 — a null pointer with a negative field — wraps to the never-mapped pages above USER_END)
     else c.get(L_TA).i32(12).shr_u();
     this.stats.smcChecks = (this.stats.smcChecks ?? 0) + 1;
     this.smcFlag();
@@ -2203,7 +2203,7 @@ class Emitter {
       // (the group's span, from its first page: translated code, a watch or a page never mapped there or, when the span
       // crosses into the next page, there — leave after the leader; the rest of the block is checked from its new entry)
       const M = SMC_CODE | SMC_WATCH | SMC_NULL;
-      c.get(L_TA); if (g.lo !== g.leadDisp) c.i32((g.lo - g.leadDisp) | 0).add(); c.set(L_T5);
+      c.get(L_TA); if (g.lo !== g.leadDisp) c.i32((g.lo - g.leadDisp) | 0).add().i32(0x7fffffff).and(); c.set(L_T5);
       c.get(L_T5).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(M).and();
       c.get(L_T5).i32(0xfff).and().i32(0x1000 - (g.hiEnd - g.lo)).gt_u();
       const cross = c.if_(T.i32); c.get(L_T5).i32(12).shr_u().i32load8u(SMC_MAP_BASE + 1).i32(M).and(); c.else_(); c.i32(0); c.end(); void cross;
