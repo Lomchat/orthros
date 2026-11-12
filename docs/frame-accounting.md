@@ -196,7 +196,7 @@ starts from the `call rel32` targets, the exports and the 16-byte-aligned starts
 minute (m00 60-120 s, 1 732 frames) against the peak (m10 180-240 s, ~1 000 frames: the phase's 16.7 fps): translated
 guest code 6.1 → 14.2 ms per frame (+8.0), the JavaScript API and Direct3D side 1.71 → 2.41 ms (+0.70). The guest growth
 is spread over the whole game: the three functions that grow most explain 3.9 + 3.8 + 2.9 = 10.7 % of it, the top 25 34
-%, and half needs 62 functions (81 in a second pair of windows, m00 120-180 against m10 120-180, whose top three are
+%, and half needs 62 functions (81 in a second pair of windows, m00 180-240 against m10 120-180, whose top three are
 other functions and explain 7.4 %); 1 805 guest functions have time at the peak. (Wall-time profiles on the shared
 machine: the guest ns per instruction of the windows moved between 1.1 and 2.7 with the load — two m10 windows were
 taken during a spike — so the figures are ±20 %; the ranking and the spread are what the comparison shows.) By address
