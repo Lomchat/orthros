@@ -8,6 +8,8 @@ import { LIGHT_DIR, isVideoFile, isLightPicture, treeLookup, treeStat, treeReadd
 import { decodePcm, PCM_MAGIC } from './pcm-codec.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
+/** A block's key in the block store (opfs-store.js): the file's path, size and date as listed, the block's index. */
+export const storeKey = (path, size, mtime, index) => `${path}#${size}#${mtime}#${index}`;
 /**
  * The read fast path (on by default; ?dbg=ORTHROS_READ_FAST=0 turns it off, read at each read: in-session A/B): an
  * HttpFile keeps the block of its last read in hand (no `path#index` key, cache lookup or LRU move for the reads inside
@@ -1578,7 +1580,7 @@ export class HttpBackend {
     let b = this.cache.get(key);
     if (b) { this.cache.delete(key); this.cache.set(key, b); return b; }
     // persistent store (the key names the file version: size and mtime of the listing)
-    const skey = `${path}#${size}#${mtime}#${index}`;
+    const skey = storeKey(path, size, mtime, index);
     b = this.store?.get(skey);
     // (a stored block must have the block's length: the whole block, or the file's tail for the last one)
     if (b && b.length === Math.min(BLOCK, size - index * BLOCK)) { this.cache.set(key, b); this.evict(); return b; }

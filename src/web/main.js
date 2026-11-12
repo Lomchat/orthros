@@ -37,6 +37,7 @@ const lang = pickLang();
 const TEXT = {
   en: {
     cannotRun: 'Orthros cannot run here', noBench: 'This measurement cannot run',
+    localGone: 'This game is no longer in this browser: pick its folder again.', localPartial: 'This game’s copy is incomplete: pick its folder again.',
     exited: (t) => `${t} has exited`, exitCode: (c, r) => `exit code ${c}${r ? ` (${r})` : ''}`,
     crashed: (t) => `${t} stopped on an emulation error`, crashDetail: 'the report below describes the state at the fault',
     noEngine: 'The emulator could not start', noEngineDetail: 'its code did not load (Orthros may have just been updated): reload the page',
@@ -66,6 +67,7 @@ const TEXT = {
   },
   fr: {
     cannotRun: 'Orthros ne peut pas fonctionner ici', noBench: 'Cette mesure ne peut pas être lancée',
+    localGone: 'Ce jeu n’est plus dans ce navigateur : choisis à nouveau son dossier.', localPartial: 'La copie de ce jeu est incomplète : choisis à nouveau son dossier.',
     exited: (t) => `${t} s’est arrêté`, exitCode: (c, r) => `code de sortie ${c}${r ? ` (${r})` : ''}`,
     crashed: (t) => `${t} s’est arrêté sur une erreur d’émulation`, crashDetail: 'le rapport ci-dessous décrit l’état au moment de l’erreur',
     noEngine: 'L’émulateur n’a pas pu démarrer', noEngineDetail: 'son code ne s’est pas chargé (Orthros vient peut-être d’être mis à jour) : recharge la page',
@@ -217,8 +219,13 @@ async function start(name, language = null) {
   if (!params.has('benchrun')) { try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ } }
   // (before the game's worker writes its store: persistent storage asked — its state in the telemetry, storage-persist.js)
   (state.storage ??= pageStorage()).ask();
-  const sourcesReq = snapshotsOn() ? fetch('/api/snapshot-sources').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
-  const manifest = await (await fetch(`/api/manifest/${name}`)).json();
+  // (a game of the player's own, dropped in the page: its manifest and tree in the browser — src/vfs/local-games.js —, and
+  // nothing of it to the server: no learned data asked or sent, no snapshot, no telemetry, no account sync)
+  const local = name.startsWith('local-') ? await import('../vfs/local-games.js').then((L) => L.loadLocal(name)) : null;
+  if (name.startsWith('local-') && !local?.complete) { state.status = 'menu'; showStatus(TEXT.cannotRun, local ? TEXT.localPartial : TEXT.localGone, null, true); return; }
+  if (local) state.telemetry = false;
+  const sourcesReq = snapshotsOn() && !local ? fetch('/api/snapshot-sources').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
+  const manifest = local ? local.manifest : await (await fetch(`/api/manifest/${name}`)).json();
   // (the player's profile: the game's, shared by its versions unless this one keeps its own — docs/profiles.md)
   state.gameManifest = manifest; state.profileKey = profileKeyOf(manifest) ?? name;
   if (manifest.launchUrl) { const portUrl = new URL(manifest.languageLaunchUrls?.[language] ?? manifest.launchUrl, location.href); if (language) portUrl.searchParams.set('gameLang', language); location.href = portUrl.href; return; } // (a browser port: its own page, docs/browser-ports.md)
@@ -229,7 +236,7 @@ async function start(name, language = null) {
   if (!options.includes(language)) language = options.includes('en') ? 'en' : options[0] ?? null;
   state.gameLanguage = language;
   if (!headless) { const u = new URL(location.href); u.searchParams.delete('menu'); u.searchParams.delete('tags'); u.searchParams.set('manifest', name); if (language) u.searchParams.set('gameLang', language); history.replaceState(null, '', u.toString()); } // (a reload keeps the selected version and language)
-  const treeReq = fetch(`/api/tree/${name}`).then((r) => r.json());
+  const treeReq = local ? Promise.resolve(local.tree) : fetch(`/api/tree/${name}`).then((r) => r.json());
   home?.destroy(); home = null; $('stage').classList.remove('hidden');
   state.title = manifest.name ?? name;
   // (headless: no header nor loading screen — the harness reads the stats, and screenshots the frame alone)
@@ -239,7 +246,7 @@ async function start(name, language = null) {
   // and the game read it — data-store.js, profile-share.js)
   await mergeVersionProfiles(manifest, (msg) => log('loader', msg)).catch((e) => log('warn', `profile merge: ${e.message}`));
   // the player's saves on the account (cloud-sync.js): the account's copy in place before the game reads its profile
-  if (shell) {
+  if (shell && !local) {
     const st = await shell.ready;
     if (st.user) {
       shell.progress(null, TEXT.account);
@@ -249,7 +256,7 @@ async function start(name, language = null) {
       const what = await cloud.pull().catch((e) => { log('warn', `account saves: ${e.message}`); return 'offline'; });
       if (what === 'conflict') { if (prefer) await cloud.resolve('account'); else await shell.resolveConflict(cloud); }
     }
-  } else if (headless && params.get('cloud') === '1') {
+  } else if (headless && params.get('cloud') === '1' && !local) {
     // (a harness run without the header, signed in: the account's saves as a player's — a conflict keeps the account's)
     const st = await accountState();
     if (st.user) {
@@ -276,6 +283,7 @@ async function start(name, language = null) {
   // the code: its modules 404 — is not a game error: reloaded once to take the served code, then said plainly)
   worker.onerror = (e) => { log('crash', `worker error: ${e.message}`); if (!state.workerAlive && !headless) staleCode(); };
   const opts = { headless, gameLanguage: language, profileDir: profileDir(state.profileKey), profileDates: profileDates(state.profileKey), dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined, netBw: savedNetBw() };
+  if (local) Object.assign(opts, { local: true, session: '', encodedRanges: false, prefetch: false, offline: false, programCache: false, regionCache: false, profileSeed: false, lan: false });
   // (this browser's snapshot of the game, docs/snapshot.md: the machine goes on from it)
   let snapshot = null;
   const sources = await sourcesReq;

@@ -125,6 +125,18 @@ async function loadProfile(mem, dir, dates = {}) {
   } catch (e) { log('warn', `OPFS unavailable (${e.message}): saves are not persisted`); opfsDir = null; }
 }
 
+/** The game's reads summed up (ORTHROS_READ_SUMMARY, see openVersion's onRead below), logged every 10 s. */
+function readSummary(out) {
+  const first = [], files = new Set(); let reads = 0, bytes = 0, h = 0x811c9dc5, last = '';
+  const t = setInterval(() => { const line = `reads: ${files.size} files, ${reads} reads, ${(bytes / 1048576).toFixed(1)} MiB, first-read order ${(h >>> 0).toString(16)} (first ${first.slice(0, 3).join(', ')})`; if (line !== last) out((last = line)); }, 10000);
+  return { stop: () => clearInterval(t), add(path, a, b) {
+    reads++; bytes += Math.max(0, b - a);
+    if (files.has(path)) return;
+    files.add(path); if (first.length < 3) first.push(path);
+    for (let i = 0; i < path.length; i++) h = Math.imul(h ^ path.toLowerCase().charCodeAt(i), 0x01000193);
+  } };
+}
+
 /** Puts the server's shared first-launch profile in an empty profile, else watches this first session (see profile-seed.js). */
 async function seedProfile(lang, session) {
   const url = `/api/profile-seed/${encodeURIComponent(manifestName)}`;
@@ -232,7 +244,7 @@ async function start(m) {
     // (new builds with their sources; the ids of the learned ones this session used, which the server keeps)
     programSink = (list, used) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: programsPost(list, used) }).catch(() => {});
   }
-  if (!m.opts.headless || m.opts.lan) connectLan(host, manifestName); // (the virtual LAN: every player of this game on the server)
+  if ((!m.opts.headless || m.opts.lan) && !m.opts.local) connectLan(host, manifestName); // (the virtual LAN: every player of this game on the server)
   if (m.opts.regionCache) {
     const url = `/api/regions/${encodeURIComponent(manifestName)}`, heatUrl = `/api/heat/${encodeURIComponent(manifestName)}`;
     // (the heat first: the learned regions are translated with it)
@@ -256,13 +268,13 @@ async function start(m) {
   // is kept in its persistent OPFS block store (pages; headless runs with a persistent profile, --opfs), with its own
   // learned prefetch and offline copy; the game reads each version through a PartsBackend (its whole tree, each file
   // read through the part that holds it), its reads reported under that version (ReadLog)
-  const persistent = !m.opts.headless || m.opts.opfs;
+  const persistent = !m.opts.headless || m.opts.opfs || m.opts.local; // (a game of the player's own: only in its store)
   let version = null; // (the version opened on this thread: the default, without ORTHROS_DATA_WORKER=1)
   // (the reads of this session until its game looks playable: sent with the mark — not by a session restored from a
   // snapshot, which skips the reads of the start: readLogUnlearnedOnly)
   if (m.opts.session) { readLog = new ReadLog(); readBackends = new Map(); playableMeta = { session: m.opts.session, lang: m.opts.gameLanguage || null }; }
   // (the reader in a data worker of its own — data-link.js, the engines' data worker —, ?dbg=ORTHROS_DATA_WORKER=1; else on this thread, below)
-  if (dataWorkerOn()) {
+  if (dataWorkerOn() && !m.opts.local) { // (a game of the player's own: read on this thread, its store holding every block)
     const deps = [...new Set((manifest.extraMounts ?? []).map((d) => d.manifest).filter((n) => n && n !== manifestName))];
     dataLink = await DataLink.open({ name: manifestName, tree: m.tree, manifest, mounts: [manifestName, ...deps], session: m.opts.session ?? '', lang: m.opts.gameLanguage || null,
       bw: Number(m.opts.netBw) || undefined, cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, stores: persistent ? 'opfs' : 'none', memPrefetch: !!m.opts.memPrefetch,
@@ -289,11 +301,17 @@ async function start(m) {
     return store;
   };
   const rank = new Map(); // (?netlog: a block's rank in its part's learned list)
+  // (?dbg=ORTHROS_READ_SUMMARY=1: the game's reads summed up — files, reads, bytes, and a digest of the files in the
+  // order of their first read — logged every 10 s: two runs' reads compared, e.g. a dropped folder against the same
+  // folder over HTTP, docs/drop-game.md)
+  const readSum = globalThis.ORTHROS_READ_SUMMARY ? readSummary((line) => log('file', line)) : null;
   version = await openVersion(manifestName, { tree: m.tree, manifest, net: netLink, store: storeOf, legacy: persistent ? openLegacyStore : null,
-    cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '',
+    cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '', local: !!m.opts.local,
     // (a session restored from a snapshot reports only the reads the server did not learn from its requests: those
     // without a session, and those served by bytes an announced or predicted request brought — HttpBackend.takeUnlearned)
-    onRead: readLog ? (p, a, b, f) => {
+    onRead: readLog || readSum ? (p, a, b, f) => {
+      if (readSum) readSum.add(f?.readPath ?? p, a, b);
+      if (!readLog) return;
       const name = f?.readName ?? manifestName, path = f?.readPath ?? p, now = performance.now(), un = f?.b?.takeUnlearned?.(p, a, b);
       if (!(readLogUnlearnedOnly && f?.b?.session)) readLog?.add(name, path, a, b, now);
       else if (un) for (const [x, y] of un) readLog?.add(name, path, x, y, now);

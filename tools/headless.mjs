@@ -209,6 +209,26 @@ if (opt('account')) {
   console.log(`[account] ${username}: ${signed === 200 ? 'signed in' : 'HTTP ' + signed}`);
   if (!args.includes('--ui')) q.set('cloud', '1'); // (without the header too: the saves restored and sent as a player's)
 }
+// --drop <folder>: the game is a folder of the player's own (docs/drop-game.md): the home's "Lancer mon jeu" entry
+// (?dropgame=1) is given that folder (as its <input webkitdirectory> would be), copies it into the browser's store, and
+// the run plays it from there — nothing of it from the server (needs --opfs; the positional name is only the run's label)
+if (opt('drop')) {
+  if (!opfsDir) { console.error('--drop needs --opfs <user-data-dir>'); process.exit(2); }
+  await page.addInitScript(() => { window.__orthrosDropNoPlay = true; });
+  await page.goto(`${pageOrigin}/?menu&dropgame=1`);
+  await page.locator('#dropFolder').waitFor({ state: 'attached', timeout: 30000 });
+  const td = Date.now();
+  await page.setInputFiles('#dropFolder', path.resolve(opt('drop')));
+  let st = null;
+  for (;;) {
+    st = await page.evaluate(() => window.orthrosDrop && { ...window.orthrosDrop });
+    if (st?.status === 'ready' || st?.status === 'error') break;
+    await page.waitForTimeout(1000);
+  }
+  if (st.status !== 'ready') { console.log(`[drop] failed: ${st.error}`); await browser.close(); server?.close(); process.exit(1); }
+  console.log(`[drop] ${st.id}: ${(st.total / 1048576).toFixed(0)} MiB copied into the browser in ${(st.ms / 1000).toFixed(1)} s (${((Date.now() - td) / 1000).toFixed(1)} s with the folder's listing)`);
+  q.set('manifest', st.id);
+}
 await page.goto(`${pageOrigin}/?${q}`);
 if (bench && args.includes('--ui')) { await page.locator('#benchStart').click({ timeout: 30000 }).then(() => console.log('[bench] started'), (e) => console.log(`[bench] no start button: ${e.message.split('\n')[0]}`)); }
 const t0 = Date.now();

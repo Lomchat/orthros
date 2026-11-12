@@ -1,40 +1,24 @@
-// Manifests for bare game folders: `orthros run <folder>` needs no per-game file. The main executable is chosen
-// by generic rules (never by game name): executables at the top of the folder (else one level down), minus the
-// usual installer / updater / launcher / crash-reporter tools, preferring the one whose name matches the folder's,
-// then the largest. A manifest.json in the folder, or explicit options, override the guess.
+// Manifests for bare game folders: `orthros run <folder>` needs no per-game file. The main executable is chosen by the
+// generic rules of src/shared/folder-manifest.js (shared with the folders players drop in the page). A manifest.json
+// in the folder, or explicit options, override the guess.
 import fs from 'node:fs';
 import path from 'node:path';
+import { pickExeFrom, withDefaults } from '../shared/folder-manifest.js';
 
-/** Executable names that are not the game itself (installers, updaters, launchers, tools, redistributables). */
-const NOT_THE_GAME = /^(setup|install|uninst|unins\d*|unwise|autorun|config|configure|settings|patch|update|updater|launcher|crash|bugreport|errorreport|report|dxsetup|dxwebsetup|vcredist|directx|register|registration|activation|readme|support|easetup|eauninstall|touchup|cleanup|dotnet|oalinst|physx)/i;
+export { withDefaults };
 
-const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-/** The candidate executables of `dir` (relative paths, '/'-separated): top level, else one level down. */
+/** The executables of `dir` (relative paths, '/'-separated, with their size): top level and one level down. */
 function executables(dir) {
-  const top = fs.readdirSync(dir, { withFileTypes: true });
-  const here = top.filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.exe')).map((e) => e.name);
-  if (here.length) return here;
-  const below = [];
-  for (const e of top) {
-    if (!e.isDirectory()) continue;
-    try { for (const f of fs.readdirSync(path.join(dir, e.name))) if (f.toLowerCase().endsWith('.exe')) below.push(`${e.name}/${f}`); } catch { /* unreadable */ }
+  const out = [], size = (p) => { try { return fs.statSync(path.join(dir, p)).size; } catch { return 0; } };
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.isFile() && e.name.toLowerCase().endsWith('.exe')) out.push(e.name);
+    else if (e.isDirectory()) { try { for (const f of fs.readdirSync(path.join(dir, e.name))) if (f.toLowerCase().endsWith('.exe')) out.push(`${e.name}/${f}`); } catch { /* unreadable */ } }
   }
-  return below;
+  return out.map((p) => ({ path: p, size: size(p) }));
 }
 
-/** The game executable of `dir` (relative path) or null. */
-export function pickExe(dir) {
-  const all = executables(dir);
-  if (!all.length) return null;
-  const base = (p) => p.split('/').pop().replace(/\.exe$/i, '');
-  const games = all.filter((p) => !NOT_THE_GAME.test(base(p)) && !/uninstall|setup/i.test(base(p)));
-  const pool = games.length ? games : all;
-  const folder = norm(path.basename(path.resolve(dir)));
-  const size = (p) => { try { return fs.statSync(path.join(dir, p)).size; } catch { return 0; } };
-  const score = (p) => { const n = norm(base(p)); return n && (folder.includes(n) || n.includes(folder)) ? 1 : 0; };
-  return pool.slice().sort((a, b) => score(b) - score(a) || size(b) - size(a))[0];
-}
+/** The game executable of `dir` (relative path) or null (the shared rules: src/shared/folder-manifest.js). */
+export const pickExe = (dir) => pickExeFrom(executables(dir), path.basename(path.resolve(dir)));
 
 /**
  * Manifest for a folder (its manifest.json when present, else synthesized) with the defaults filled in;
@@ -49,10 +33,4 @@ export function folderManifest(dir, over = {}) {
   m.name ??= path.basename(path.resolve(dir));
   m.folder = path.resolve(dir);
   return withDefaults(m);
-}
-
-/** Defaults shared by every manifest source. */
-export function withDefaults(m) {
-  m.mount ??= 'C:\\Game'; m.args ??= ''; m.dllOverrides ??= {}; m.env ??= {}; m.display ??= { width: 1024, height: 768 };
-  return m;
 }

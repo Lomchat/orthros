@@ -124,13 +124,14 @@ export function partOf(version, name, path) {
  *   budget?: object, cacheBlocks?: number, encoded?: boolean, onFetch?: Function, onRetry?: Function, onRead?: Function }} [o]
  *   store: the block store, 'opfs' for the version's own, null for none; encoded: the compressed ranges (default);
  *   batch: batched requests (default; HttpBackend.batch);
- *   onRead: each read of the game (path, start, end), whatever answered it
+ *   onRead: each read of the game (path, start, end), whatever answered it; local: a game of the player's own
+ *   (local-games.js) — its store holds every block, nothing is on the server: a miss fails at once, never retried
  */
 export async function openData(name, o = {}) {
   const tree = o.tree ?? await json(`/api/tree/${enc(name)}`);
   const store = o.store === 'opfs' ? await openStore(name) : o.store ?? null;
   const files = new HttpBackend(`/game/${name}/`, tree, { cacheBlocks: o.cacheBlocks, store, encoded: o.encoded ?? true, session: o.session ?? '', batch: o.batch ?? true,
-    link: o.link, net: o.net, budget: o.budget, onFetch: o.onFetch, onRetry: o.onRetry, onRead: o.onRead });
+    link: o.link, net: o.net, budget: o.budget, onFetch: o.onFetch, onRetry: o.onRetry, onRead: o.onRead, ...(o.local ? { retryWaits: [] } : {}) });
   return { name, tree, store, files, total: treeBytes(tree) };
 }
 
