@@ -357,8 +357,9 @@ export class Jit {
     // (the control arm of an A/B: the same window and retranslation); tier2Window / tier2Share tune it
     if (!internal && (over?.tier2 || over?.tier2Profile)) this.t2 = new Tier2(this, { window: over.tier2Window ?? JIT_DEFAULTS.tier2Window, share: over.tier2Share ?? JIT_DEFAULTS.tier2Share });
     // hot-code experiment (hotcode.js): {"hotProfile": true} counts a window, then translates everything again under the
-    // hot* options (hotOnly, hotHints, hotLayout); any other switch forgets the window's counts
-    if (!internal) { this.hotHeat = null; this.hot = over?.hotProfile ? new HotWindow(this, { window: over.hotWindow ?? JIT_DEFAULTS.hotWindow }) : null; }
+    // hot* options (hotOnly, hotHints, hotLayout); any other switch forgets the window's counts. Not with tier 2's window:
+    // both count through the same slots (tier 2's win), so a hot window beside it would count nothing — refused
+    if (!internal) { this.hotHeat = null; this.hot = over?.hotProfile && !this.t2 ? new HotWindow(this, { window: over.hotWindow ?? JIT_DEFAULTS.hotWindow }) : null; }
   }
   /**
    * Region boundaries of a translation at `eip` under the hot-code experiment's `hotOwn` (hotcode.js): a block that ran
@@ -705,7 +706,8 @@ export class Jit {
         let r;
         const o = this.translateOpts(fnIdx, mode ?? null);
         this.hotBounds(eip, o);
-        try { r = translateRegion(this.mem, eip, o); } catch { u.failed++; continue; }
+        // (a failed translation gives its table index back: nothing else was reserved since)
+        try { r = translateRegion(this.mem, eip, o); } catch { u.failed++; if (this.nextFn === fnIdx + 1) this.nextFn = fnIdx; continue; }
         regs.push(this.register(eip, r.blocks, fnIdx, null, r.fpcAssume, r.stats));
         u.blocks += r.blocks.length; for (const b of r.blocks) u.guestBytes += b.end - b.eip;
         codes.push(r.code);

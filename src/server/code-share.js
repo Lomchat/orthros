@@ -32,23 +32,37 @@ const SHIFT = 12;
  */
 export function imagePages(bytes) {
   let img; try { img = new PeImage(bytes); } catch { return null; }
-  const n = Math.ceil(img.sizeOfImage / PAGE), pages = new Array(n).fill(null), buf = new Uint8Array(PAGE);
+  const n = Math.ceil(img.sizeOfImage / PAGE), pages = new Array(n).fill(null);
+  // (each page's bytes from every section it holds — sections smaller than a page may share one —, hashed after)
+  const bufs = new Map();
   for (const s of img.sections) {
     const vsize = s.virtualSize || s.rawSize;
     for (let rva = s.rva & ~(PAGE - 1); rva < s.rva + vsize && (rva >> SHIFT) < n; rva += PAGE) {
-      buf.fill(0);
+      let buf = bufs.get(rva); if (!buf) bufs.set(rva, buf = new Uint8Array(PAGE));
       // (the part of this page the section covers, from its raw data)
       const from = Math.max(rva, s.rva), to = Math.min(rva + PAGE, s.rva + vsize, s.rva + s.rawSize);
       if (to > from) {
         const src = s.rawPtr + (from - s.rva), len = Math.min(to - from, bytes.length - src);
         if (len > 0) buf.set(bytes.subarray(src, src + len), from - rva);
       }
-      let uniform = true; for (let i = 1; i < PAGE; i++) if (buf[i] !== buf[0]) { uniform = false; break; }
-      if (uniform) continue;
-      pages[rva >> SHIFT] = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 16);
     }
   }
+  for (const [rva, buf] of bufs) {
+    let uniform = true; for (let i = 1; i < PAGE; i++) if (buf[i] !== buf[0]) { uniform = false; break; }
+    if (!uniform) pages[rva >> SHIFT] = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 16);
+  }
   return pages;
+}
+
+/** whether a file starts with a PE image's headers (MZ, then 'PE\0\0' at e_lfanew), read from its first 4 KiB */
+function looksPe(file) {
+  let fd; try {
+    fd = fs.openSync(file, 'r');
+    const h = Buffer.alloc(4096), n = fs.readSync(fd, h, 0, 4096, 0);
+    if (n < 64 || h[0] !== 0x4d || h[1] !== 0x5a) return false;
+    const pe = h.readUInt32LE(0x3c);
+    return pe + 4 <= n && h.readUInt32LE(pe) === 0x00004550;
+  } catch { return false; } finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
 /**
@@ -161,8 +175,9 @@ export class CodeShare {
     const id = `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`, c = this.files.get(file);
     if (c && c.id === id) return c.pages;
     let pages = null;
-    // (an image of a few hundred MiB is not a module a game loads: not read)
-    if (st.size <= 256 * 1048576) try { pages = imagePages(new Uint8Array(fs.readFileSync(file))); } catch { pages = null; }
+    // (module names come from clients' POSTs: a file is read whole only when its headers say PE and it is no bigger
+    // than a module a game loads — a game archive named as a module is not read)
+    if (st.size <= 64 * 1048576 && looksPe(file)) try { pages = imagePages(new Uint8Array(fs.readFileSync(file))); } catch { pages = null; }
     this.files.set(file, { id, pages }); this.stats.hashedFiles++;
     return pages;
   }

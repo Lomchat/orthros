@@ -260,8 +260,23 @@ machine shows a gain.
   snapshot was taken and restored with streams open. `tools/check/snapshot-check.mjs` runs Node without
   `--mp3-host`. Off by default, production snapshots (Chrome, at a menu, its music playing) hold none; turning it on
   should come with a snapshot check.
-- **A session that fails** (a helper error, or 3 s without PCM) leaves its stream silent until the game opens it
-  again. The guest's decoder is not used as a fallback for that stream, because its input has already been read.
+- **A session that fails** (a helper error, or 3 s without PCM) loses the sound it held: the next `process` opens a
+  new session on the rest of the source, so the stream skips ahead rather than staying silent (review, 2026-11-12:
+  `skipBytes` and `synced` are not reset there, so the restart may drop a little more and skips the two-header check).
+  The guest's decoder is not used as a fallback for that stream, because its input has already been read.
+- **To fix before turning the switch on** (review of 2026-11-12, all in host mode only):
+  - `open` fixes the stream's format from the first Layer III header in its 4 KiB, without the two-header check the
+    rest of the parser requires: a false sync in an ID3/LAME tag with another rate would make every real frame rejected
+    (a silent stream);
+  - after a snapshot restore, `ensureSession` keeps `skipBytes` counted against the old session;
+  - `seek(-2)` drops the rest of the current frame (`carry`) when it is not decoded yet; a seek before the first
+    `process` leaves `openBytes` set, so the first-read recheck runs after it;
+  - a snapshot taken in host mode and restored in a page without the helper (switch off, no WebCodecs) leaves the
+    thunks in mss32's table: MP3 streams are silent, no fallback to the provider's own functions;
+  - the helper is created after `AudioDecoder.isConfigSupported` resolves: providers loaded before that stay on the
+    guest's decoder without a log line (a measurement with the switch on could measure the guest's decoder);
+  - the ring's 32-bit positions go negative after 2 GiB of PCM in one session (~3.4 h of 44.1 kHz stereo without a
+    seek or a loop restart).
 - **Preferences** (Requested sample rate / bit width / channels) are stored and reported, never applied. The
   original's output attributes also report the file's own format.
 - **Other Miles versions** keep the guest's decoder. Adding one means adding its fingerprint, after checking that its

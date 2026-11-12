@@ -1273,7 +1273,8 @@ The study of 2026-11-12 (plan.md, rank 2a / 2b) named the size of the translated
 ~100 KB of hot x86 as 15-30 MB of machine code over ~1 500 regions, the uop queue empty 25-32 % of the cycles. Gate: ≥ 8 %
 less guest time per instruction in play on RotWK and AotR, with the instruction-cache fills and the uop-queue-empty
 cycles clearly down; fills not dropping would mean the footprint thesis is wrong. Prototype: src/cpu/jit/hotcode.js, in-session
-switches only (not `JIT_DEFAULTS` keys: the translated-code cache key is unchanged).
+switches only (not `JIT_DEFAULTS` keys; the translated-code cache still starts over once, as at any change of
+translate.js: it keys on the modules' source text too).
 
 **Mechanism.** `ORTHROS_JIT_AB={"hotProfile":true,"hotWindow":2000000000}` starts a profile window (counters by block
 address, as tier 2's: every region translated again with them); at its end every region is translated again, in every
@@ -1363,7 +1364,9 @@ pre-window phase spread −11.6 … −1.5 %). AotR, 2 runs per arm: control 1.5
   the code sits.
 
 Off by default, kept for measurement: `hotProfile`, `hotOnly`, `hotRatio`, `hotOwn`, `hotOwnCalls`, `hotHints`,
-`hotLayout` (`ORTHROS_HOT_LOG=1`: the window's `[hot]` stats). Not measured (the gate failed on the two games it names):
+`hotLayout` (`ORTHROS_HOT_LOG=1`: the window's `[hot]` stats). `hotProfile` is refused beside tier 2's window
+(`tier2` / `tier2Profile` in the same switch): both count through the same slots, tier 2's would win and the hot window
+would count nothing. Not measured (the gate failed on the two games it names):
 BFME1, Vice City, Chrome.
 
 ## Measured, not kept

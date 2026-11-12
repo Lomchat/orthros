@@ -345,6 +345,18 @@ different amounts of work (4.9-8.5 G instructions in 20 s): not comparable per i
   t = 28 s against 39 s; 22 467 regions installed against 10 415; 496 translated at a miss (1.2 s) against 1 723 (4.3 s);
   the cold tier interpreted 9 485 entries (1.6 M instructions) against 29 182 (5.4 M).
 
+Known limits (review of 2026-11-12, at integration):
+- Module names come from clients' POSTs: a file is hashed only when its first 4 KiB say PE (MZ, `PE\0\0`) and it is at
+  most 64 MiB, so a game archive posted as a "module" is never read whole on the server's thread. A page shared by
+  several small sections (SectionAlignment < 4 KiB) is hashed with all of them.
+- What a version learns from lent data is not written back to its own files: a lent region entry installed in the
+  background is never a miss (not in its regions file), lent heat sets no visit flags. Turning sharing off, or removing
+  the lending version, takes that knowledge away from both.
+- The client's "covered" list (entries to forget) only reaches a version's own entries: a lent entry already covered
+  is lent again at each session (background work only; own entries come first in the 40 000).
+- The heat served to a mature version changes at each index rebuild (10 min) when another version learns in shared
+  pages, so its OPFS code cache sees "other extent" misses again from time to time, as its own growing heat already does.
+
 ## Measurements (2026-10-02, headless Chromium, `--gl-discard`, shared 48-core server under load)
 
 Scenarios `tools/scenarios/{bfme2,rotwk,bfme}-first.txt` (the settings a first launch writes), one private server for
