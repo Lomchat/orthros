@@ -39,9 +39,29 @@ input (as a player's pick), waits for the copy, then plays it; `?dbg=ORTHROS_REA
 over HTTP (`tools/headless.mjs <folder>`: the server's synthesized manifest, the same one).
 
 The folder: BFME1 `base/` with `versions/1.08-complete-v1.6/` over it (case-insensitive, the base's directory case kept),
-as symbolic links in the scratch to the read-only `data/` (Chrome's directory input follows them).
+copied (read-only) into the scratch, 3.8 GB, 361 files — Chrome's directory input skips symbolic links: a folder of links
+to `data/` lists no file at all.
 
-RESULTS
+Measured 2026-11-12 (headless Chromium, SwiftShader, 4 cores; shared 48-core host at load 24-37 — the fps are noisy),
+the same synthesized manifest in both arms (`lotrbfme.exe`), translated-code cache off (`--code-cache 0`), fresh profiles
+unless said:
+
+| run | copy into the browser | first Direct3D frame | game's reads at the menu (files, reads, MiB, first-read digest) | fps, t = 115-241 s (menu shell) |
+|---|---|---|---|---|
+| HTTP, same folder (`headless.mjs <folder>`) | — (176 MB sent, 392 MB read by the server) | 88 s | 116, 790, 119.2, `bec5c71a` | 3.58 |
+| dropped, first (fresh profile, run 120 s) | 30.4 s for 3882 MiB (128 MiB/s; 36.5 s with the listing) | 73 s | 116, 774, 119.0, `bec5c71a` | — |
+| dropped, again (same folder: the copy resumed — nothing to copy) | 0.0 s (1.1 s with the listing) | 14 s (*) | 116, 796, 119.3, `bec5c71a` | 4.30 |
+
+(*) its profile kept the files the game's first launch wrote (the run before): the game skips its first-launch work, as a
+player's second launch does. Both arms reach the main menu's shell map (Barad-dûr and the title; 48 vertex arrays, 22
+GL programs, ~45 draws per frame); the reads are the same files in the same first-read order (the read counts differ by
+the timing of the game's streaming threads), and no request for a game file was made by the dropped runs (io 0 MB, no
+`/game` or `/gamez` request: the store answered every read).
+
+The first run picked `worldbuilder.exe` (the map editor, the folder's largest executable: the folder's name `bfme1-108`
+matches neither) and exited on its dialogs: the shared rules now leave editors and dedicated servers out
+(`NOT_THE_GAME`: editor, worldbuilder, worldedit, mapedit, leveledit, modtool, dedicated), and the drop entry lists the
+candidate executables of a dropped game, the guess selected, to change it.
 
 ## Limits
 

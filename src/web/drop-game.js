@@ -3,7 +3,8 @@
 // (.iso); its files are copied into this browser (src/vfs/local-games.js, by the whole-game download's worker) and the
 // game runs as any other (main.js start: the manifest name 'local-…'). Nothing of it is sent to the server.
 import { h } from './dom.js';
-import { filesOfHandle, filesOfList, filesOfIso, folderTree, localId, localManifest, saveLocal, listLocal, removeLocal } from '../vfs/local-games.js';
+import { filesOfHandle, filesOfList, filesOfIso, folderTree, localId, localManifest, saveLocal, loadLocal, listLocal, removeLocal } from '../vfs/local-games.js';
+import { exeCandidates } from '../shared/folder-manifest.js';
 
 const STRINGS = {
   en: {
@@ -11,14 +12,14 @@ const STRINGS = {
     text: 'Pick the folder of a Windows game installed on your computer (or a CD image, .iso). It is copied into this browser, never sent to the server, and runs here like the other games. Experimental.',
     folder: 'Pick a folder', iso: 'CD image (.iso)', play: 'Play', remove: 'Remove',
     reading: 'Reading the folder…', copying: (a, b) => `Copying into this browser: ${a} / ${b} MB`, copied: (s) => `Copied in ${s} s.`,
-    failed: (e) => `Could not copy this game: ${e}`, size: (mb) => `${mb} MB`,
+    failed: (e) => `Could not copy this game: ${e}`, size: (mb) => `${mb} MB`, exe: 'The game’s program',
   },
   fr: {
     entry: 'Lancer mon jeu', title: 'Lancer un jeu à toi',
     text: 'Choisis le dossier d’un jeu Windows installé sur ton ordinateur (ou une image de CD, .iso). Il est copié dans ce navigateur, jamais envoyé au serveur, et se lance ici comme les autres jeux. Expérimental.',
     folder: 'Choisir un dossier', iso: 'Image de CD (.iso)', play: 'Jouer', remove: 'Supprimer',
     reading: 'Lecture du dossier…', copying: (a, b) => `Copie dans ce navigateur : ${a} / ${b} Mo`, copied: (s) => `Copié en ${s} s.`,
-    failed: (e) => `Impossible de copier ce jeu : ${e}`, size: (mb) => `${mb} Mo`,
+    failed: (e) => `Impossible de copier ce jeu : ${e}`, size: (mb) => `${mb} Mo`, exe: 'Le programme du jeu',
   },
 };
 
@@ -47,7 +48,12 @@ export function mountDropGame(anchor, { lang, onPlay }) {
   }
   async function renderList() {
     const games = await listLocal();
-    list.replaceChildren(...games.filter((g) => g.complete).map((g) => h('li', {}, h('span', {}, `${g.name} · ${S().size(Math.round(g.bytes / 1048576))}`),
+    // (the executable guessed, changed here when the guess is wrong: the game's candidates — exeCandidates)
+    const exeChoice = (g) => (g.exes?.length > 1 ? h('select', { title: S().exe, onchange: async (e) => {
+      const meta = await loadLocal(g.id); if (!meta) return;
+      meta.manifest.exe = e.target.value; await saveLocal(meta);
+    } }, ...g.exes.map((x) => { const o = h('option', { value: x }, x); o.selected = x === g.manifest?.exe; return o; })) : null);
+    list.replaceChildren(...games.filter((g) => g.complete).map((g) => h('li', {}, h('span', {}, `${g.name} · ${S().size(Math.round(g.bytes / 1048576))}`), exeChoice(g),
       h('button', { type: 'button', class: 'hm-btn', onclick: () => onPlay(g.id) }, S().play),
       h('button', { type: 'button', class: 'hm-btn', onclick: async () => { await removeLocal(g.id).catch(() => {}); renderList(); } }, S().remove))));
   }
@@ -71,7 +77,7 @@ export function mountDropGame(anchor, { lang, onPlay }) {
       const id = await localId(got.name, got.files);
       const manifest = localManifest(id, got.name, got.files, over, iso ? got.label : null);
       const total = got.files.reduce((n, f) => n + f.size, 0);
-      const meta = { id, name: got.name, manifest, tree: folderTree(got.files), bytes: total, files: got.files.length, complete: false, at: Date.now() };
+      const meta = { id, name: got.name, manifest, exes: exeCandidates(got.files).map((f) => f.path), tree: folderTree(got.files), bytes: total, files: got.files.length, complete: false, at: Date.now() };
       await saveLocal(meta);
       Object.assign(state, { status: 'copying', id, bytes: 0, total });
       const ms = await copy(id, got.files);

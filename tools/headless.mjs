@@ -219,10 +219,12 @@ if (opt('drop')) {
   await page.locator('#dropFolder').waitFor({ state: 'attached', timeout: 30000 });
   const td = Date.now();
   await page.setInputFiles('#dropFolder', path.resolve(opt('drop')));
-  let st = null;
+  let st = null, said = 0;
   for (;;) {
     st = await page.evaluate(() => window.orthrosDrop && { ...window.orthrosDrop });
     if (st?.status === 'ready' || st?.status === 'error') break;
+    if (Date.now() - said > 10000) { said = Date.now(); console.log(`[drop] ${st?.status ?? 'no entry'}${st?.total ? ` ${(st.bytes / 1048576).toFixed(0)} / ${(st.total / 1048576).toFixed(0)} MiB` : ''}`); }
+    if (Date.now() - td > 1200000) { st = { status: 'error', error: 'no copy after 20 min' }; break; }
     await page.waitForTimeout(1000);
   }
   if (st.status !== 'ready') { console.log(`[drop] failed: ${st.error}`); await browser.close(); server?.close(); process.exit(1); }

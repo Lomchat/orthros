@@ -5,7 +5,7 @@
 // preferring the one whose name matches the folder's, then the largest.
 
 /** Executable names that are not the game itself (installers, updaters, launchers, tools, redistributables). */
-export const NOT_THE_GAME = /^(setup|install|uninst|unins\d*|unwise|autorun|config|configure|settings|patch|update|updater|launcher|crash|bugreport|errorreport|report|dxsetup|dxwebsetup|vcredist|directx|register|registration|activation|readme|support|easetup|eauninstall|touchup|cleanup|dotnet|oalinst|physx)/i;
+export const NOT_THE_GAME = /^(setup|install|uninst|unins\d*|unwise|autorun|config|configure|settings|patch|update|updater|launcher|crash|bugreport|errorreport|report|dxsetup|dxwebsetup|vcredist|directx|register|registration|activation|readme|support|easetup|eauninstall|touchup|cleanup|dotnet|oalinst|physx|editor|worldbuilder|worldedit|mapedit|leveledit|modtool|dedicated)/i;
 
 const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -15,9 +15,7 @@ const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
  * @param {{ path: string, size?: number }[]} files @param {string} folder @returns {string|null}
  */
 export function pickExeFrom(files, folder) {
-  const exe = (f) => /\.exe$/i.test(f.path);
-  let all = files.filter((f) => exe(f) && !f.path.includes('/'));
-  if (!all.length) all = files.filter((f) => exe(f) && f.path.split('/').length === 2);
+  const all = exeCandidates(files);
   if (!all.length) return null;
   const base = (p) => p.split('/').pop().replace(/\.exe$/i, '');
   const games = all.filter((f) => !NOT_THE_GAME.test(base(f.path)) && !/uninstall|setup/i.test(base(f.path)));
@@ -25,6 +23,13 @@ export function pickExeFrom(files, folder) {
   const name = norm(folder);
   const score = (f) => { const n = norm(base(f.path)); return n && (name.includes(n) || n.includes(name)) ? 1 : 0; };
   return pool.slice().sort((a, b) => score(b) - score(a) || (b.size ?? 0) - (a.size ?? 0))[0].path;
+}
+
+/** The candidate executables among a folder's files: those at the top level, else those one level down. */
+export function exeCandidates(files) {
+  const exe = (f) => /\.exe$/i.test(f.path);
+  const top = files.filter((f) => exe(f) && !f.path.includes('/'));
+  return top.length ? top : files.filter((f) => exe(f) && f.path.split('/').length === 2);
 }
 
 /** Defaults shared by every manifest source. */
