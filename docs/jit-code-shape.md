@@ -974,6 +974,9 @@ their content (DECISIONS.md D122): a library is recognised, never a game.
   (−0.8 %), 2.016 / 2.008, 2.292 / 2.332 (−1.7 %). JIT cycles −1.9 / −0.9 / +5.1 % (RotWK), −1.0 / +1.2 / −1.4 %
   (BFME1). The time measures do not resolve the ~0.5-1.5 % the instruction counts and the per-call figures predict:
   the spread between rounds on this loaded machine is ±3 %.
+- RotWK in-session A/B (startbench, real clock, tools/scenarios/rotwk-libk-ab.txt: 25 s phases after a 5 s warm-up
+  following each switch), guest ns per instruction on / off: 2.257 / 2.404, 2.004 / 2.273, 2.295 / 2.254 (medians 2.257
+  / 2.273); guest ms per frame 14.4 / 15.9, 15.0 / 17.5, 16.2 / 16.0.
 - On by default: fewer host instructions on both games in every round, every kernel faster than its translation per
   call, exact; no measure where it loses beyond the spread.
 
