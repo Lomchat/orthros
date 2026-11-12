@@ -517,6 +517,8 @@ export class Jit {
     this.hashInsert(eip, rec.fnIdx, eip);
     return rec;
   }
+  /** (diagnostics) the live kernels: name, entry, calls that left the exact way */
+  libReport() { return [...(this.libLive?.values() ?? [])].map((r) => `${r.kernel.name}@${r.entry.toString(16)} ${r.fallbacks} off its path`).join(', '); }
   /** A kernel left the exact way (EXIT_STEP at its entry): counted; too often, dropped for good (its translation runs). */
   libFallback(rec) {
     this.stats.libFallbacks++;
