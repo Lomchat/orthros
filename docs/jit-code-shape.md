@@ -1267,6 +1267,105 @@ Result: no regression beyond the pairs' spread on RotWK or BFME1 (Node and Chrom
 frame in Node and −6 to −9 % in Chrome, all of it the translation that exact invalidation no longer redoes. Defaults:
 `smcExact` on, `tier2` off, `libKernels` off, slot pinning on.
 
+## Hot-code footprint (2026-11-12): hot-only regions, one copy per hot block, contiguous layout — no-go, off by default
+
+The study of 2026-11-12 (plan.md, rank 2a / 2b) named the size of the translated code as the first cause of slow play:
+~100 KB of hot x86 as 15-30 MB of machine code over ~1 500 regions, the uop queue empty 25-32 % of the cycles. Gate: ≥ 8 %
+less guest time per instruction in play on RotWK and AotR, with the instruction-cache fills and the uop-queue-empty
+cycles clearly down; fills not dropping would mean the footprint thesis is wrong. Prototype: src/cpu/jit/hotcode.js, in-session
+switches only (not `JIT_DEFAULTS` keys: the translated-code cache key is unchanged).
+
+**Mechanism.** `ORTHROS_JIT_AB={"hotProfile":true,"hotWindow":2000000000}` starts a profile window (counters by block
+address, as tier 2's: every region translated again with them); at its end every region is translated again, in every
+arm (the control does the same work), under the arm's options (`ORTHROS_JIT_DEFAULTS` of an ab-virtual variant):
+- `hotOnly`: the regions are shaped by the window's counts instead of the learned heat — a branch successor that did not
+  run in the window (menus, loading, or not taken in play) is a cold exit (discoverRegion), translated at a miss if ever
+  reached; `hotRatio: n` also cuts a successor that ran n times less than its branch;
+- `hotOwn: n`: a block that ran ≥ n times in the window and that a live region already holds is a boundary for the next
+  translations (one copy of each hot block; the new region chains to it; not for x87-mode versions, whose blocks must be
+  the first version's); `hotOwnCalls: n`: only direct call targets (the call leaves the region, nothing else is cut);
+- `hotHints` (`hotHintRatio`, default 32): guest Jcc hinted from the heat (one side ≥ 32 times rarer, or never run in a
+  learned heat), so that TurboFan places the rare side after the function's hot code;
+- `hotLayout` (`hotLayoutShare` 0.99, `hotLayoutChunk` 1024): the regions that made 99 % of the window's counted bytes
+  translated at once, hottest first, into modules of 1 024 regions, each function called once in that order
+  (Jit.translateGroups: as bgCompile, block −1 on JIT_WARM_STATE) so that V8 compiles and places them in that order —
+  ~1 450 regions in 2 modules instead of ~12 modules of 128 in translation order.
+Exact whatever the counts (only the regions' extent, boundaries and code placement change): tests/jit-tier2.test.js
+runs its random programs of functions (calls, slots, stubs, tail jumps, recursion, x87, SSE, SMC) with a window and every
+option on (mutation caught: the grouped functions put in the wrong table slots).
+
+**Measured** (Node 24, EPYC 7402P, `tools/bench/ab-virtual.mjs --perf-phase --perf-label hotplay` — every arm's run at
+once on the same virtual-clock play: tools/scenarios/rotwk-hot-ab.txt, aotr-hot-ab.txt with `--child --until-api none`
+and the profile build/saves/aotr-10; learned heat of the live server; a 2 G-instruction window, a warm-up, then perf
+over 50 s of play: RotWK 7 830 M, AotR 9 326 M guest instructions, the same in every arm). ab-virtual now also records
+`de_dis_uop_queue_empty_di0` and splits V8's compilers (`v8c`) from the rest. Per guest instruction: host instructions
+(i/g), cycles (c/g); fills per 1 000 *guest* instructions (per host instruction they mislead when the instruction count
+changes); hot footprint = the region functions making 90 % of the region cycles and their machine code (perf maps).
+
+| RotWK arm | guest ns | regions i/g, c/g | regions + runtime + JS c/g | fills L2 / beyond L2 per kg | uop queue empty | hot footprint |
+|---|---|---|---|---|---|---|
+| control (batch 1) | 3.010 | 6.99, 4.71 | — | 32.1 / 14.8 per k host | 30.8 % | 1 282 fns, 22.3 MiB |
+| `hotOnly` | 3.022 | 6.90, 4.58 | — | 30.3 / 14.1 per k host | 29.9 % | 1 259, 20.5 MiB |
+| `hotOnly` + `hotHints` | 3.249 (+8 %) | 6.90, 5.10 | — | 29.7 / 12.5 per k host | 29.9 % | 1 327, 21.2 MiB |
+| `hotOnly` + `hotHints` + `hotLayout` | 2.998 | 6.98, 4.84 | — | 29.6 / 13.9 per k host | 31.3 % | 1 274, 20.7 MiB |
+| `hotHints` alone (learned heat) | 3.030 | 6.95, 5.15 | — | 31.9 / 13.5 per k host | 30.9 % | 1 294, 21.2 MiB |
+| control (batch 2) | 2.922 | 7.00, 4.57 | — | 31.5 / 15.4 per k host | 30.6 % | 1 254, 21.9 MiB |
+| `hotOnly` + `hotLayout` | 2.923 | 7.01, 4.68 | — | 32.6 / 14.1 per k host | 28.4 % | 1 250, 19.0 MiB |
+| `hotOnly` + `hotRatio` 64 | 2.903 | 6.80, 4.61 | — | 31.2 / 13.6 per k host | 28.5 % | 1 314, 20.4 MiB |
+| `hotOnly` + `hotRatio` 64 + `hotLayout` | 2.810 (−3.8 %) | 6.81, 4.43 | — | 31.3 / 14.3 per k host | 29.4 % | 1 268, 19.8 MiB |
+| control (batch 3) | 2.921 | 7.00, 4.58 | 6.10 | 220 / 108 | 30.4 % (1.39 c/g) | 1 267, 21.1 MiB |
+| `hotOnly` + `hotOwn` 1 000 | 2.870 | 10.73, 5.72 | 7.13 (+17 %) | 276 / 90 | 20.8 % (1.19 c/g) | 701, 8.3 MiB |
+| `hotOnly` + `hotOwn` 100 | 2.812 | 10.58, 5.71 | 7.13 (+17 %) | 275 / 83 | 20.3 % (1.16 c/g) | 668, 7.8 MiB |
+| `hotOnly` + `hotOwnCalls` 1 000 | 2.986 | 10.30, 5.82 | 7.28 | 282 / 98 | 23.0 % (1.34 c/g) | 840, 10.4 MiB |
+
+| AotR arm | guest ns | regions i/g, c/g | regions + runtime + JS c/g | fills L2 / beyond L2 per kg | uop queue empty | hot footprint |
+|---|---|---|---|---|---|---|
+| control | 1.707 | 6.51, 4.37 | 5.83 | 167 / 82 | 30.9 % (1.35 c/g) | 1 175 fns, 20.3 MiB |
+| `hotOnly` + `hotRatio` 64 + `hotLayout` | 1.704 | 6.43, 4.27 | 5.74 | 156 / 73 | 30.4 % (1.30 c/g) | 1 133, 16.9 MiB |
+| `hotOnly` + `hotLayout` | 1.775 (+4 %) | 6.42, 4.47 | 6.00 | 165 / 73 | 30.0 % (1.34 c/g) | 1 135, 16.9 MiB |
+| `hotOnly` + `hotOwn` 100 | 2.021 (+18 %) | 9.45, 5.47 | 6.98 (+20 %) | 203 / 63 | 22.0 % (1.20 c/g) | 703, 7.0 MiB |
+
+(Single runs per arm and batch, perf with `--no-liftoff`: every region is compiled by TurboFan on the emulator thread at
+its first call, so the guest time of a phase still translating includes V8's compilers — 3.9 c/g in RotWK's control,
+2.6-2.7 with `hotOwn`, which makes fewer and smaller new regions; in the browser they compile off that thread. Batch 1
+ran at load average 16-20.) Guest time with V8's default tiers (Liftoff, then TurboFan in the background), no perf:
+RotWK, 3 runs per arm, control 2.094 ns [2.192 2.090 1.999] vs `hotOnly` + `hotRatio` 64 + `hotLayout` 2.070 [2.072 1.989
+2.148] (−1.2 %, thread CPU per frame −0.4 %; the identical pre-window play phase −0.2 %); an earlier batch at load
+average 43-48, 2 runs: `hotOwn` 100 +13.5 %, `hotRatio` 64 + layout −4.3 %, `hotOnly` + layout −3.7 % (its identical
+pre-window phase spread −11.6 … −1.5 %). AotR, 2 runs per arm: control 1.570 [1.526 1.614], `hotRatio` 64 + layout
+1.510 [1.468 1.552] (−3.8 %) — and −4.0 % on the pre-window phases where both arms run the same code: noise.
+
+**Why the gate fails, and what it says about the thesis:**
+- **The hot regions hold almost no cold code already.** The learned heat's cold exits (`coldExits`) leave out what never
+  ran; cutting also what did not run in play (`hotOnly`), or ran 64 times less than its branch (`hotRatio`), changed the
+  hot footprint by ≤ 10 % (22 → 20 MiB): a region stops at 96 blocks, and the room left by cut blocks fills with more hot
+  blocks (blocks registered in play: 65 k → 70 k). The machine code is hot code and its copies: the regions making 90 %
+  of the window's counted bytes hold 1.05 MB of x86 blocks for 0.38 MB of distinct ones (×2.8 copies, RotWK; AotR 1.04 /
+  0.39 MB), at ~13 bytes of WASM per x86 byte (layout: 1.14 MB of x86 → 15.4 MB of WASM in 1 460 regions).
+- **Removing the copies cuts the footprint but costs more than it saves.** `hotOwn` (one copy of each hot block) divides
+  the hot footprint by 2.7-2.9 (21 → 7.8 MiB, AotR 20 → 7.0 MiB) and the uop-queue-empty cycles by 15 % (1.39 → 1.16 c/g;
+  30 → 20 % of the cycles), but fills from beyond L2 drop only 23 % per guest instruction (108 → 83, AotR 82 → 63), fills
+  from L2 *rise* 25 % (220 → 275; AotR 167 → 203), and the region code runs 51 % more host instructions (7.0 → 10.6 i/g:
+  the chained transitions that the copies avoided — each touches a region prologue and a chained exit, themselves cold
+  code): translated code +17 % cycles (RotWK), +20 % (AotR), guest time +13.5 % / +18 % with V8's default tiers. Copies
+  only at calls (`hotOwnCalls`) are no better. This is the trade measured by `dedup` and tier 2 before, now with the
+  fills: the duplication is what keeps transitions rare, and transitions cost more than the fills they replace.
+- **Contiguity does nothing measurable.** `hotLayout` packs the hot regions' TurboFan code into two code spaces (the
+  90 % functions within ~150-200 MiB of address space; RotWK's control had them in code spaces spread over the 47-bit
+  space, AotR's within ~205 MiB already): fills and cycles unchanged (RotWK `hotOnly` 4.58 → 4.68 c/g with the layout;
+  AotR +4 %).
+- **Branch hints from the heat are slower** (RotWK region cycles +8-11 % at the same instruction count and fewer fills
+  beyond L2): not explored further.
+- So the footprint does drive the fills and the empty uop queue (they fall when it falls), but the footprint that can be
+  removed without new transitions is small, and the rest is the price of not having transitions. The remaining levers
+  are the per-instruction size of the translated code (×13 WASM bytes per x86 byte; plan.md "ce que coûte une
+  instruction": register shuffling at TurboFan's merges, x87 precision, SMC checks) and cheaper transitions, not where
+  the code sits.
+
+Off by default, kept for measurement: `hotProfile`, `hotOnly`, `hotRatio`, `hotOwn`, `hotOwnCalls`, `hotHints`,
+`hotLayout` (`ORTHROS_HOT_LOG=1`: the window's `[hot]` stats). Not measured (the gate failed on the two games it names):
+BFME1, Vice City, Chrome.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for

@@ -46,7 +46,8 @@ const perf = args.includes('--perf');
 // (from L2, from beyond) with symbols (node --perf-basic-prof), counting only while the scenario has
 // dbg:ORTHROS_PERF_CTL=1 (perf --control through ORTHROS_PERF_FIFO, startbench); per variant the events by code kind —
 // tier-1 regions (r_*), tier-2 functions and their entries (t2_* / w2_*), the rest — and per guest instruction of the
-// phase named by --perf-label (default t2play)
+// phase named by --perf-label (default t2play); also the cycles the uop queue was empty (de_dis_uop_queue_empty_di0, AMD
+// Zen 2: the front end starved) as a share of the cycles
 const perfPhase = args.includes('--perf-phase');
 const perfLabel = opt('perf-label', 't2play');
 const runs = Number(opt('runs', 2));
@@ -56,7 +57,10 @@ const bench = new URL('./startbench.mjs', import.meta.url).pathname;
 
 const jobs = [];
 for (let r = 0; r < runs; r++) for (const v of (r % 2 ? [...variants].reverse() : variants)) jobs.push({ v, r, name: `${v.name}-${r}` });
+// --reuse (with --keep <dir>): no runs, the reports of the runs already in that directory (their perf maps still in /tmp)
+const reuse = args.includes('--reuse');
 const started = jobs.map((j) => new Promise((resolve) => {
+  if (reuse) { resolve(0); return; }
   const a = [bench, target, '--input', opt('input'), '--virtual', '--limit', opt('limit', '900'), '--phases', path.join(dir, j.name + '.json')];
   if (opt('games-dir')) a.push('--games-dir', opt('games-dir'));
   if (opt('heat')) a.push('--heat', opt('heat'));
@@ -66,9 +70,9 @@ const started = jobs.map((j) => new Promise((resolve) => {
   const log = fs.openSync(path.join(dir, j.name + '.log'), 'w');
   const ctl = path.join(dir, j.name + '.ctl');
   if (perfPhase) { fs.rmSync(ctl, { force: true }); spawnSync('mkfifo', [ctl]); }
-  const [cmd, cargs] = perfPhase ? ['perf', ['record', '-q', '-e', 'instructions:u,cycles:u,ic_cache_fill_l2:u,ic_cache_fill_sys:u', '-c', '1000000', '-D', '-1', '--control', 'fifo:' + ctl, '-o', path.join(dir, j.name + '.perf'), process.execPath, '--no-liftoff', '--perf-basic-prof', ...a]]
+  const [cmd, cargs] = perfPhase ? ['perf', ['record', '-q', '-e', 'instructions:u,cycles:u,ic_cache_fill_l2:u,ic_cache_fill_sys:u,de_dis_uop_queue_empty_di0:u', '-c', '1000000', '-D', '-1', '--control', 'fifo:' + ctl, '-o', path.join(dir, j.name + '.perf'), process.execPath, '--no-liftoff', '--perf-basic-prof', ...a]]
     : perf ? ['perf', ['record', '-q', '-e', 'instructions:u,cycles:u', '-c', '1000000', '-o', path.join(dir, j.name + '.perf'), process.execPath, '--no-liftoff', ...a]] : [process.execPath, a];
-  const c = spawn(cmd, cargs, { stdio: ['ignore', log, log], env: { ...process.env, ORTHROS_JIT_DEFAULTS: j.v.json, ...(variantEnv.get(j.v.name) ?? {}), ...(perfPhase ? { ORTHROS_PERF_FIFO: ctl, ORTHROS_TIER2_LOG: '1' } : {}) } });
+  const c = spawn(cmd, cargs, { stdio: ['ignore', log, log], env: { ...process.env, ORTHROS_JIT_DEFAULTS: j.v.json, ...(variantEnv.get(j.v.name) ?? {}), ...(perfPhase ? { ORTHROS_PERF_FIFO: ctl, ORTHROS_TIER2_LOG: '1', ORTHROS_HOT_LOG: '1' } : {}) } });
   c.on('exit', (code) => { fs.closeSync(log); resolve(code); });
 }));
 console.log(`${jobs.length} runs in ${dir}`);
@@ -127,8 +131,9 @@ if (perf) {
 
 // --perf-phase: events by code kind over the measured phase, per guest instruction of that phase
 if (perfPhase) {
-  const KINDS = ['t2', 'r', 'otherJit', 'rest'];
-  const kindOf = (sym) => (/(^|[:\s])(t2|w2)_[0-9a-f]+/.test(sym) ? 't2' : /(^|[:\s])r_[0-9a-f]+/.test(sym) ? 'r' : /wasm|JS:|^\[JIT\]|LazyCompile|Builtin/.test(sym) ? 'otherJit' : 'rest');
+  const KINDS = ['t2', 'r', 'otherJit', 'v8c', 'rest'];
+  // (v8c: V8's WebAssembly compilers — on the emulator thread with --no-liftoff, off it in the browser)
+  const kindOf = (sym) => (/(^|[:\s])(t2|w2)_[0-9a-f]+/.test(sym) ? 't2' : /(^|[:\s])r_[0-9a-f]+/.test(sym) ? 'r' : /v8::internal::(compiler::|wasm::(Turboshaft|Liftoff|WasmFullDecoder|WasmGraph|.*Compil)|Zone)|turboshaft::/.test(sym) ? 'v8c' : /wasm|JS:|^\[JIT\]|LazyCompile|Builtin/.test(sym) ? 'otherJit' : 'rest');
   const res = new Map(); // variant -> [{ ev -> kind -> M events, insns }]
   for (const j of jobs) {
     const f = path.join(dir, j.name + '.perf');
@@ -146,10 +151,10 @@ if (perfPhase) {
   console.log(`perf over phase ${perfLabel} (M user events by code kind; per guest instruction: host instructions, cycles; fills per 1000 host instructions)`);
   for (const v of variants) {
     for (const e of res.get(v.name) ?? []) {
-      const g = e.insns / 1e6, I = e.instructions ?? {}, C = e.cycles ?? {}, L2 = e.ic_cache_fill_l2 ?? {}, SYS = e.ic_cache_fill_sys ?? {};
+      const g = e.insns / 1e6, I = e.instructions ?? {}, C = e.cycles ?? {}, L2 = e.ic_cache_fill_l2 ?? {}, SYS = e.ic_cache_fill_sys ?? {}, QE = e.de_dis_uop_queue_empty_di0 ?? {};
       const sum = (o) => KINDS.reduce((n, k) => n + (o[k] ?? 0), 0);
-      const row = (k) => `${k} ${(I[k] / g).toFixed(2)} i/g ${(C[k] / g).toFixed(2)} c/g IPC ${(I[k] / Math.max(1, C[k])).toFixed(2)} fills L2 ${(1000 * L2[k] / Math.max(1, I[k])).toFixed(1)} sys ${(1000 * SYS[k] / Math.max(1, I[k])).toFixed(1)}`;
-      console.log(`  ${v.name.padEnd(10)} ${(g).toFixed(0)} M guest; regions (t2 + r) ${((I.t2 + I.r) / g).toFixed(2)} i/g ${((C.t2 + C.r) / g).toFixed(2)} c/g; process ${(sum(I) / g).toFixed(2)} i/g ${(sum(C) / g).toFixed(2)} c/g | ${KINDS.map(row).join(' | ')}`);
+      const row = (k) => `${k} ${(I[k] / g).toFixed(2)} i/g ${(C[k] / g).toFixed(2)} c/g IPC ${(I[k] / Math.max(1, C[k])).toFixed(2)} fills L2 ${(1000 * L2[k] / Math.max(1, I[k])).toFixed(1)} sys ${(1000 * SYS[k] / Math.max(1, I[k])).toFixed(1)} uop queue empty ${(100 * (QE[k] ?? 0) / Math.max(1, C[k])).toFixed(1)} % (${((QE[k] ?? 0) / g).toFixed(2)} c/g); fills per 1000 guest L2 ${(1000 * (L2[k] ?? 0) / g).toFixed(0)} sys ${(1000 * (SYS[k] ?? 0) / g).toFixed(0)}`;
+      console.log(`  ${v.name.padEnd(10)} ${(g).toFixed(0)} M guest; regions (t2 + r) ${((I.t2 + I.r) / g).toFixed(2)} i/g ${((C.t2 + C.r) / g).toFixed(2)} c/g; translated code + runtime + JS (r + t2 + otherJit) ${((I.t2 + I.r + I.otherJit) / g).toFixed(2)} i/g ${((C.t2 + C.r + C.otherJit) / g).toFixed(2)} c/g; process ${(sum(I) / g).toFixed(2)} i/g ${(sum(C) / g).toFixed(2)} c/g | ${KINDS.map(row).join(' | ')}`);
     }
   }
 }

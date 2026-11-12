@@ -683,6 +683,8 @@ function planUnits(blocks, byEip, nest) {
  */
 export function discoverRegion(mem, entry, opts) {
   const boundaries = opts.boundaries ?? null;
+  // (opts.callBounds, hotcode.js hotOwnCalls: direct call targets not taken into the region — the call leaves it)
+  const callBounds = opts.callBounds ?? null;
   const ranges = opts.interpRanges ?? null; // (debugging: code left to the interpreter, never part of a region)
   const isBoundary = (a) => (boundaries && boundaries.has(a)) || (a >= THUNK_BASE && a < THUNK_END) || (ranges !== null && ranges.some(([lo, hi]) => a >= lo && a < hi));
   const leaders = new Set([entry]);
@@ -700,7 +702,14 @@ export function discoverRegion(mem, entry, opts) {
   // opts.onlyBlocks (a Set of block addresses): the blocks of an earlier translation of this entry, whose extent and
   // numbering an x87-mode version must repeat (the heat may have grown since)
   const only = opts.onlyBlocks ?? null;
-  const cold = (from, t) => (only !== null ? !only.has(t) : heat !== null && (heat.get(from) ?? 0) >= coldMin && !heat.has(t));
+  // (opts.hotRatio, hotcode.js: with a heat of counts, also a successor that ran hotRatio times less than its branch)
+  const ratio = heat !== null ? opts.hotRatio ?? JIT_DEFAULTS.hotRatio ?? 0 : 0;
+  const cold = (from, t) => {
+    if (only !== null) return !only.has(t);
+    if (heat === null) return false;
+    const n = heat.get(from) ?? 0;
+    return n >= coldMin && (!heat.has(t) || (ratio > 0 && (heat.get(t) ?? 0) * ratio < n));
+  };
   // (measurement, startbench --jit-sites: the successors left out for the region's size)
   const limited = globalThis.ORTHROS_SITE_PROF ? new Set() : null;
   const jtabs = !!(opts.jumpTables ?? JIT_DEFAULTS.jumpTables);
@@ -717,7 +726,7 @@ export function discoverRegion(mem, entry, opts) {
       if (term === TERM_NONE) { a = insn.next; if (leaders.has(a)) break; continue; }
       if (term === TERM_JMP) { addLeader(insn.ops[0].v); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
-      if (term === TERM_CALL) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
+      if (term === TERM_CALL) { if (!callBounds?.has(insn.ops[0].v >>> 0)) addLeader(insn.ops[0].v); addLeader(insn.next); break; }
       if (term === TERM_INDIRECT && jtabs) { // (a jump table's targets: see jumpTableOf)
         if (insn.jtab === undefined) insn.jtab = jumpTableOf(mem, insn);
         if (insn.jtab) for (const t of new Set(insn.jtab.targets)) addLeader(t);
@@ -1071,6 +1080,9 @@ class Emitter {
     this.fcmp = null;
     this.smc = opts.smc !== false;
     this.logicRes = !!(opts.logicRes ?? JIT_DEFAULTS.logicRes); // (see binArith)
+    // (hotcode.js, measurement: guest conditional branches hinted from the heat's counts, see branchHint)
+    this.hotHints = !!(opts.hotHints ?? JIT_DEFAULTS.hotHints) && !!opts.heat;
+    this.hotHintRatio = opts.hotHintRatio ?? JIT_DEFAULTS.hotHintRatio ?? 32;
     this.lzaFree = !!(opts.lzaFree ?? JIT_DEFAULTS.lzaFree); // (see LZA_FREE)
     this.lzaSub = this.lzaFree && !!(opts.lzaSub ?? JIT_DEFAULTS.lzaSub); // (SUB as SUBR: see LZA_FREE)
     this.memarg = !!(opts.memarg ?? JIT_DEFAULTS.memarg); // (displacements in the memarg offset: see foldDisp)
@@ -1875,6 +1887,19 @@ class Emitter {
     let v;
     try { v = this.mem.read32(o.disp >>> 0) >>> 0; } catch { return -1; }
     return this.t2.calls.has(v) ? v : -1;
+  }
+
+  /**
+   * The hint of a guest conditional branch from the heat (opts.hotHints): false when its target ran `hotHintRatio` times
+   * less than its fallthrough (a learned heat: the target never ran, the fallthrough did), true the other way round, else
+   * null. A hint only moves code (TurboFan's deferred blocks): exact whatever the heat.
+   */
+  branchHint(insn) {
+    const heat = this.opts.heat, t = heat.get(insn.ops[0].v >>> 0) ?? 0, f = heat.get(insn.next) ?? 0, r = this.hotHintRatio;
+    if (t === f) return null;
+    if (t * r <= f) return false;
+    if (f * r <= t) return true;
+    return null;
   }
 
   /** Jump to a guest address: intra-region branch or exit. `n` instructions consumed for the budget. */
@@ -3145,7 +3170,8 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
 HANDLERS[OP.JCC] = (E, insn, b) => {
   const c = E.c;
   E.pushCond(insn.cc);
-  const i = c.if_();
+  const h = E.hotHints ? E.branchHint(insn) : null; // (hotcode.js hotHints: the rare side placed after the hot code)
+  const i = (h === null ? c : c.hint(h)).if_();
   E.jumpTo(insn.ops[0].v, b.insns.length);
   c.end(); void i;
 };

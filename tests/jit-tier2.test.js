@@ -3,7 +3,7 @@
 // jumps, tail jumps, recursion deeper than the nesting bound, loops, early returns, a callee replacing its return
 // address, flags read after a call, x87 and SSE functions — run under the JIT with a profile window that builds tier 2
 // in the middle of the run, in time slices: the same registers, flags, stack and data as the reference interpreter.
-// Also code written over on a tier-2 page (tier 2 dropped).
+// Also code written over on a tier-2 page (tier 2 dropped), and the hot-code experiment (hotcode.js) on the same programs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuestMemory } from '../src/cpu/memory.js';
@@ -102,11 +102,11 @@ function state(r, mem, cpu) {
   return [r, cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esp, cpu.ebp, cpu.edi, cpu.eflags & ARITH, cpu.eip].map((v) => (v >>> 0).toString(16)).join(' ') + ' ' + Buffer.from(mem.bytes(DATA + 0x100, 0x80)).toString('hex') + ' ' + Buffer.from(mem.bytes(DATA + 0xc00, 0x300)).toString('hex');
 }
 /** under the JIT, tier 2 profiled for `window` instructions then built, in slices of `slice`; `hook(jit, mem)` between slices */
-function runJit(g, slice, window, hook = null) {
+function runJit(g, slice, window, hook = null, ab = null) {
   const { mem, cpu } = setup(g);
   const jit = new Jit(mem, new Interp(mem, cpu), { smc: true });
   jit.cpu = cpu;
-  jit.switchOpts({ tier2: true, tier2Window: window, tier2Share: 0.9 });
+  jit.switchOpts(ab ?? { tier2: true, tier2Window: window, tier2Share: 0.9 });
   let r, n = 0;
   for (;;) {
     r = jit.run({ stopAt: CODE + g.end, maxInsns: slice });
@@ -149,4 +149,21 @@ test('tier 2: a store into a tier-2 page (SMC) drops it, the run still matches t
     }
   }
   assert.ok(dropped > 0, 'tier 2 built then dropped');
+});
+
+// (the hot-code experiment, src/cpu/jit/hotcode.js: the same programs, a profile window, then every region translated
+// again shaped by the window's counts, branches hinted by them, the regions that ran translated at once in groups)
+test('hot code: regions shaped and grouped from a profile window match the interpreter', () => {
+  let grouped = 0;
+  for (let t = 0, n = depth(24, 6); t < n; t++) {
+    const g = gen(t % 4 === 3);
+    const ref = setup(g);
+    const want = state(new Interp(ref.mem, ref.cpu).run({ stopAt: CODE + g.end, maxInsns: 1e8 }), ref.mem, ref.cpu);
+    for (const slice of [5000, 97, 7]) {
+      const { s, jit } = runJit(g, slice, 0, null, { hotProfile: true, hotWindow: 600, hotOnly: true, hotRatio: 4, hotOwn: t % 2 ? 3 : 0, hotOwnCalls: t % 2 ? 0 : 2, hotHints: true, hotHintRatio: 2, hotLayout: true, hotLayoutChunk: 2 });
+      assert.equal(s, want, `program ${t} slice ${slice}: ${Buffer.from(g.code).toString('hex')}`);
+      if (jit.hotStats?.layout?.regions) grouped++;
+    }
+  }
+  assert.ok(grouped > depth(24, 6), `regions grouped in ${grouped} runs`);
 });

@@ -1,13 +1,14 @@
 // JIT executor: translates regions on demand, keeps the funcref table + hash table used by the
 // WASM dispatcher, and exposes the same run() interface as the interpreter.
 import { EXIT, ST, CpuState } from '../state.js';
-import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
+import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS, JIT_WARM_STATE } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
 import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, EXIT_T2MODE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, FID_SURF_LOCK, FID_SURF_UNLOCK, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_FX_XFORM, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
+import { HotWindow } from './hotcode.js';
 import { Tier2 } from './tier2.js';
 import { LIB_KERNELS, LIB_CALLS, matchLibKernel, buildLibKernelModule } from './libkernels.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
@@ -131,6 +132,8 @@ export class Jit {
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
     /** tier 2 (tier2.js, opts.tier2: off by default): its profile window or its installed functions, and its last stats */
     this.t2 = null; this.t2Stats = null;
+    /** hot-code experiment (hotcode.js, off by default): its profile window, the window's counts shaping the regions (hotOnly), its last stats */
+    this.hot = null; this.hotHeat = null; this.hotStats = null;
     // library kernels (libkernels.js): the live ones by entry, the table index of each definition's function (-1: not
     // yet; the module made at the first), the entries dropped for leaving the exact way too often
     this.libLive = null; this.libFns = null; this.libExports = null; this.libOff = null;
@@ -302,6 +305,7 @@ export class Jit {
     // (a version: the first version's blocks, see discoverRegion opts.onlyBlocks)
     const o = this.translateOpts(this.nextFn, fpcAssume);
     if (version) o.onlyBlocks = new Set(version.first.blocks.map((b) => b.eip));
+    else this.hotBounds(eip, o);
     const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, o);
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
@@ -352,6 +356,24 @@ export class Jit {
     // tier 2 (tier2.js): {"tier2": true} profiles then builds it, {"tier2Profile": true} profiles only unless tier2 is on
     // (the control arm of an A/B: the same window and retranslation); tier2Window / tier2Share tune it
     if (!internal && (over?.tier2 || over?.tier2Profile)) this.t2 = new Tier2(this, { window: over.tier2Window ?? JIT_DEFAULTS.tier2Window, share: over.tier2Share ?? JIT_DEFAULTS.tier2Share });
+    // hot-code experiment (hotcode.js): {"hotProfile": true} counts a window, then translates everything again under the
+    // hot* options (hotOnly, hotHints, hotLayout); any other switch forgets the window's counts
+    if (!internal) { this.hotHeat = null; this.hot = over?.hotProfile ? new HotWindow(this, { window: over.hotWindow ?? JIT_DEFAULTS.hotWindow }) : null; }
+  }
+  /**
+   * Region boundaries of a translation at `eip` under the hot-code experiment's `hotOwn` (hotcode.js): a block that ran
+   * at least `hotOwn` times in the window and that a live region already holds is not copied — the new region ends
+   * there and chains to it (one copy of each hot block). Not for x87-mode versions (their blocks must be the first
+   * version's). `hotOwnCalls`: the same for direct call targets only (the call leaves the region, nothing else is cut).
+   * Sets the translation options `o`.
+   */
+  hotBounds(eip, o) {
+    const heat = this.hotHeat; if (!heat) return;
+    const opt = (k) => this.abOpts?.[k] ?? this.opts[k] ?? JIT_DEFAULTS[k] ?? 0;
+    const owned = (min) => ({ has: (a) => a !== eip && (heat.get(a) ?? 0) >= min && this.blockMap.has(a) });
+    const min = opt('hotOwn'), calls = opt('hotOwnCalls');
+    if (min) { const b = o.boundaries, own = owned(min); o.boundaries = { has: (a) => (b?.has(a) ?? false) || own.has(a) }; }
+    if (calls) o.callBounds = owned(calls);
   }
   /** is tier 2 built at the end of a profile window (opts.tier2, ORTHROS_JIT_AB / ORTHROS_JIT_DEFAULTS)? */
   tier2Opt() { return this.abOpts?.tier2 ?? this.opts.tier2 ?? JIT_DEFAULTS.tier2 ?? false; } // (not a JIT_DEFAULTS key: the code cache keys on those)
@@ -379,7 +401,8 @@ export class Jit {
   }
   translateOptsBase(fnIdx, fpcAssume) {
     const t2 = this.t2, bounds = t2?.bounds ? (this.boundaries ? new Set([...this.boundaries, ...t2.bounds]) : t2.bounds) : this.boundaries;
-    return { countSlots: t2?.state === 'profile' ? t2.countSlots : null, boundaries: bounds, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.heat ?? null, visitSlots: this.visitSlots, ...this.codeOpts() };
+    const hot = this.hot?.state === 'profile' ? this.hot : null;
+    return { countSlots: t2?.state === 'profile' ? t2.countSlots : hot ? hot.countSlots : null, boundaries: bounds, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.hotHeat ?? this.heat ?? null, visitSlots: this.visitSlots, ...this.codeOpts() };
   }
   /**
    * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block
@@ -663,6 +686,44 @@ export class Jit {
     return true;
   }
 
+  /**
+   * Translate the regions at `list` ([eip, x87 mode (null: generic)]) now, in that order, into modules of `chunk` regions
+   * each, every function called once in that order so that V8 compiles them in it (as bgCompile does; with lazy
+   * compilation V8 places a module's code in the order its functions are first compiled): their machine code contiguous,
+   * in that order (hotcode.js hotLayout). Entries already translated (blocks of an earlier one) are skipped.
+   */
+  translateGroups(list, chunk = 1024) {
+    const t0 = performance.now(), u = { regions: 0, modules: 0, bytes: 0, blocks: 0, guestBytes: 0, failed: 0, skipped: 0 };
+    for (let i = 0; i < list.length; i += chunk) {
+      const regs = [], codes = [];
+      for (const [eip0, fpc] of list.slice(i, i + chunk)) {
+        const eip = eip0 >>> 0;
+        if (this.blockMap.has(eip) || !this.interp.executable(eip) || this.libKernel(eip)) { u.skipped++; continue; }
+        let mode = this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : fpc;
+        if (mode !== null && mode !== undefined && this.genericTop.has(eip)) mode &= 0xf00;
+        const fnIdx = this.reserveFn();
+        let r;
+        const o = this.translateOpts(fnIdx, mode ?? null);
+        this.hotBounds(eip, o);
+        try { r = translateRegion(this.mem, eip, o); } catch { u.failed++; continue; }
+        regs.push(this.register(eip, r.blocks, fnIdx, null, r.fpcAssume, r.stats));
+        u.blocks += r.blocks.length; for (const b of r.blocks) u.guestBytes += b.end - b.eip;
+        codes.push(r.code);
+      }
+      if (!codes.length) continue;
+      const bytes = buildRegionModule(codes, regs.map((r) => 'r_' + r.entry.toString(16)), this.shared);
+      let inst;
+      try { inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), this.imports); }
+      catch (e) { for (const r of regs) this.dropOne(r); u.failed += regs.length; this.opts.warn?.(`jit: region group failed: ${e.message}`); continue; }
+      regs.forEach((r, k) => this.table.set(r.fnIdx, inst.exports['r' + k]));
+      // (block -1 on a state block no thread uses: the prologue runs, then the dispatcher traps — see bg-translate.js compileHere)
+      for (let k = 0; k < regs.length; k++) { try { inst.exports['r' + k](-1, JIT_WARM_STATE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); } catch { /* (compiled) */ } }
+      u.regions += regs.length; u.modules++; u.bytes += bytes.length;
+    }
+    u.ms = +(performance.now() - t0).toFixed(1);
+    return u;
+  }
+
   consolidate() {
     const live = this.pending.filter((r) => r.code && this.byEntry.get(r.entry) === r);
     this.pending = [];
@@ -920,9 +981,10 @@ export class Jit {
   }
 
   run(opts = {}) {
-    const t2 = this.t2;
-    if (t2 === null || t2.state !== 'profile') return this.runNow(opts);
-    // (tier 2's profile window: the guest instructions run counted, the tier built between slices once it is over)
+    const t2 = this.t2 !== null && this.t2.state === 'profile' ? this.t2 : this.hot !== null && this.hot.state === 'profile' ? this.hot : null;
+    if (t2 === null) return this.runNow(opts);
+    // (tier 2's or the hot-code experiment's profile window: the guest instructions run counted, its end acted on between
+    // slices once it is over)
     const budget = Math.min(opts.maxInsns ?? 1e9, 0x7fffffff);
     const r = this.runNow(opts);
     t2.tick(budget - this.remaining());
