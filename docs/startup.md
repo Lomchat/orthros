@@ -471,3 +471,32 @@ each of its current learn scenarios was played, so a version whose boot was lear
 its menus learned, and an edited scenario is played again (one that never reaches its end is given up after two tries). Scenario files are data; `--coords WxH` scales their pointer
 steps to the game's mode (a first launch may pick another resolution than the one they were written for). Measured:
 docs/snapshot.md "Warm jobs".
+
+## Load-time work combined (measured 2026-11-12)
+
+Four pieces of work merged together: the data worker of the Windows games (docs/slow-network.md, off by default), D3DX
+texture jobs and the surface-lock fast path (docs/api-layer.md; jobs on, locks off), static frames (docs/render-worker.md
+section 11, off) and the sampled frame accounting with its gap classification (docs/frame-accounting.md, on). Measured
+against main (aa58cb8) in the browser harness, runs alternated main / merged / merged / main, a fresh copy of the live
+learned directory (snapshots excluded) per run unless noted, headless Chromium with SwiftShader through the slot guard,
+shared server (1-min load 1-6). Seconds of the phase marks; worker CPU = the emulator worker's thread over the phase.
+
+| Case | main | merged |
+|---|---|---|
+| AotR MY CAPTAINS load, 800 %, `--gl-discard` | 39.8, 39.7 s (worker 30.1, 30.3 s CPU) | 37.7, 37.7 s (worker 28.4, 28.2 s CPU) |
+| AotR MY CAPTAINS load, 400 %, rendering on | 178.6, 184.1, 190.5, 190.4 s (worker 43.3-45.4 s) | 202.0, 183.0, 187.2, 184.3 s (worker 43.7-48.5 s); texture jobs off: 195.2, 191.5 s |
+| AotR skirmish, load + loading screen, 800 %, `--gl-discard` | 23.8, 20.7 s (worker 17.7, 16.4 s) | 22.3, 22.6 s (worker 16.5, 17.0 s) |
+| AotR first visit, empty learned dir, launch to menu, 50 ms / 10 Mbit/s | 269.9, 270.9 s | 269.7, 271.0 s |
+| RotWK 2.02 skirmish, load + loading screen, 800 %, `--gl-discard` | 21.8, 21.8 s (worker 12.3, 12.6 s) | 19.8, 21.0 s (worker 11.4, 12.1 s) |
+| AotR skirmish, 60 s of play, 800 %, rendering on | 6.1, 6.2 fps; frame p50 88, 90 ms, p99 1514, 1124 ms | 6.1, 6.3 fps; p50 93, 90 ms, p99 1291, 1145 ms |
+| same runs, load + loading screen with rendering | 24.4, 27.8 s | 27.4, 27.6 s |
+| AotR launch, 50 ms / 0.68 Mbit/s, 420 s | 5.2 MB delivered, the worker held in one synchronous request, no frame | the same (default build); with `ORTHROS_DATA_WORKER=1`: 20.3 MB, the game running (2 frames, 5 threads) |
+
+- The only gain beyond the spread: the MY CAPTAINS load at 800 %, 2 s (5 %) faster and 2 s less worker CPU in every
+  run. Its frame accounting read the clock 5 215-5 402 times per frame on main, 1 780-1 793 merged; `late` fell from
+  21-22 % to 9 % of the phase and `sleep` rose from 17 % to 31 % (the classification, not a speed change).
+- RotWK and the AotR skirmish lean the same way within their spread; the first visit is unchanged (data path unchanged
+  by default); play is GPU-bound under SwiftShader and unchanged.
+- 400 %: neutral (means 186 vs 189 s, the spread ±10 s; one merged run at 202 s). With the browser capped by a CPU quota
+  the load is bounded by SwiftShader's GPU process (560-640 s CPU for a 180-200 s load: the quota throttles every
+  period, docs/render-worker.md section 11). Texture jobs off made it no faster (195, 192 s).
