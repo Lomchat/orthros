@@ -20,7 +20,7 @@ import { loadManifest, makeVfs } from '../../src/server/cli.js';
 import { loadGameCatalog } from '../../src/server/game-catalog.js';
 import { decode, fmtInsn } from '../../src/cpu/decoder.js';
 import { listRegion } from '../../src/cpu/jit/listing.js';
-import { PROF_OPS_BASE, NOCHAIN_PROF, SITE_PROF } from '../../src/cpu/jit/translate.js';
+import { PROF_OPS_BASE, NOCHAIN_PROF, SITE_PROF, T2_PROF, T2_PROF_NAMES } from '../../src/cpu/jit/translate.js';
 import { FAST_PROF, FAST_NAMES } from '../../src/cpu/jit/runtime.js';
 import { jitMix, jitShape } from './jit-mix.mjs';
 import { NodeScenario } from './node-scenario.mjs';
@@ -94,6 +94,18 @@ const siteReport = () => {
 // --log <kinds>: the emulator log kinds printed (default crash; e.g. crash,warn — null-page faults are warnings)
 let vm = new Vm({ vfs, clock, host, logKinds: (opt('log') ?? 'crash').split(','), sharedMemory: bgWanted });
 const rootVm = vm;
+// (measurement: ORTHROS_PERF_FIFO=<perf record/stat --control fifo>: a scenario's dbg:ORTHROS_PERF_CTL=1 / 0 enables / disables
+// the counting, so that perf measures one phase only)
+if (process.env.ORTHROS_PERF_FIFO) {
+  const fd = fs.openSync(process.env.ORTHROS_PERF_FIFO, 'w');
+  Object.defineProperty(globalThis, 'ORTHROS_PERF_CTL', { configurable: true, get: () => undefined, set: (v) => {
+    fs.writeSync(fd, v ? 'enable\n' : 'disable\n');
+    const fg = vm.group?.foreground ?? vm;
+    // (ORTHROS_TIER2_COUNT: tier 2's counters, translate.js T2_PROF, at each switch)
+    const t2 = process.env.ORTHROS_TIER2_COUNT ? ' tier 2 ' + T2_PROF_NAMES.map((k, i) => `${k} ${(fg.mem.read32(T2_PROF + 4 * i) / 1e6).toFixed(2)}M`).join(' ') + ` insns ${(Number(fg.mem.read32(T2_PROF + 64) + fg.mem.read32(T2_PROF + 68) * 2 ** 32) / 1e6).toFixed(0)}M` : '';
+    console.log(`[perf] ${v ? 'enable' : 'disable'} at ${(fg.guestInsns / 1e6).toFixed(0)} M guest instructions${t2}`);
+  } });
+}
 if (bgWanted && vm.jit) {
   const { Worker, MessageChannel, receiveMessageOnPort } = await import('node:worker_threads');
   const ch = new MessageChannel();

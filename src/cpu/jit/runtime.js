@@ -40,6 +40,8 @@ export const EXIT_TRANSLATE = 7;
 export const EXIT_FPUMODE = 8;
 /** run the instruction at EIP in the interpreter, then continue (a rare case left to the reference, see Emitter.stepExit) */
 export const EXIT_STEP = 9;
+/** a tier-2 x87 function (tier2.js) entered under another x87 mode than its own: tier 1 takes its entries (see Jit.run) */
+export const EXIT_T2MODE = 10;
 export const HASH_ENTRY = 16; // eip u32, fnIdx u32, block u32, pad
 export const HASH_PROBES = 4;
 // Region function signature: (block, state, eax, ecx, edx, ebx, esp, ebp, esi, edi, eflags,

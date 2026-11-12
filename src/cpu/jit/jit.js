@@ -4,10 +4,11 @@ import { EXIT, ST, CpuState } from '../state.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, JIT_HASH_BASE, JIT_HASH_BITS, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NEXT, SMC_NULL, JIT_ALT_BASE, JIT_ALT_SLOTS } from '../memory.js';
 import { NULL_PAGE_END, USER_END } from '../nullpage.js';
 import { d3dxFastId } from './fast-d3dx.js';
-import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, FID_SURF_LOCK, FID_SURF_UNLOCK, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_FX_XFORM, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
+import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXIT_FPUMODE, EXIT_STEP, EXIT_T2MODE, HASH_ENTRY, HASH_PROBES, FAST_TABLE, FAST_NAMES, PROC_CONSTS, MATH_KERNELS, FID_DEFER, DEFER_SPEC, DEFER_SPECS, FID_ADDREF, FID_RELEASE, FID_PARAM_DESC, FID_SURF_DESC, FID_SURF_LOCK, FID_SURF_UNLOCK, DEFER_RAW, DEFER_QUEUE, DEFER_DRAWS, DEFER_FX_MASK, DEFER_FX_XFORM, DEFER_F_FORGET, DEFER_TECH, DEFER_BEGIN, DEFER_END } from './runtime.js';
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
+import { Tier2 } from './tier2.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -120,6 +121,8 @@ export class Jit {
     // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
     this.refFast = null; this.refFastOff = false; this.lockFast = null; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.xformOff = !globalThis.ORTHROS_XFORM_FILTER; this.xformPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0; this.fxDefer = null; this.fxDeferOff = false; // (xformOff: the SetTransform filter, off by default — docs/api-layer.md)
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
+    /** tier 2 (tier2.js, opts.tier2: off by default): its profile window or its installed functions, and its last stats */
+    this.t2 = null; this.t2Stats = null;
     this.clearTables();
   }
 
@@ -221,6 +224,7 @@ export class Jit {
     this.byFn?.clear();
     this.genericFpu?.clear();
     this.genericTop?.clear();
+    if (this.t2) { this.t2.discard(); this.t2 = null; }
   }
 
   /** Drop every translation (e.g. between conformance cases). */
@@ -269,6 +273,7 @@ export class Jit {
   }
   translateNow(eip, version, assume) {
     const t0 = performance.now();
+    if (!version && this.t2?.reinsert(eip)) return null; // (a tier-2 block whose hash entry was evicted)
     // already translated (its hash entry was evicted): re-insert instead of retranslating
     const known = version ? null : this.blockMap.get(eip);
     if (known) { this.hashInsert(eip, known.region.fnIdx, known.block); this.stats.reinserts = (this.stats.reinserts ?? 0) + 1; return known.region; }
@@ -320,7 +325,7 @@ export class Jit {
    * overridden from now on, every translation dropped so that the code runs retranslated under them — an A/B of a
    * translation option within one session (same machine slot, same game state). Called between slices only.
    */
-  switchOpts(over) {
+  switchOpts(over, internal = false) {
     this.abOpts = over && Object.keys(over).length ? over : null;
     for (const r of this.regions) this.table.set(r.fnIdx, null); // (the old modules become garbage)
     this.clearTables();
@@ -329,7 +334,12 @@ export class Jit {
     this.cold.clear(); this.coldQueue = [];
     this.abEpoch = (this.abEpoch ?? 0) + 1; // (background batches translated before: not installed, see bgInstallNow)
     this.stats.abSwitches = (this.stats.abSwitches ?? 0) + 1;
+    // tier 2 (tier2.js): {"tier2": true} profiles then builds it, {"tier2Profile": true} profiles only unless tier2 is on
+    // (the control arm of an A/B: the same window and retranslation); tier2Window / tier2Share tune it
+    if (!internal && (over?.tier2 || over?.tier2Profile)) this.t2 = new Tier2(this, { window: over.tier2Window ?? JIT_DEFAULTS.tier2Window, share: over.tier2Share ?? JIT_DEFAULTS.tier2Share });
   }
+  /** is tier 2 built at the end of a profile window (opts.tier2, ORTHROS_JIT_AB / ORTHROS_JIT_DEFAULTS)? */
+  tier2Opt() { return this.abOpts?.tier2 ?? this.opts.tier2 ?? JIT_DEFAULTS.tier2 ?? false; } // (not a JIT_DEFAULTS key: the code cache keys on those)
   /**
    * The x87 mode to translate a learned region for: as learned (an entry learned by an earlier build has no stack top:
    * translated testing it at run time — assuming one would drop and translate again, on the game's thread, every such
@@ -353,7 +363,8 @@ export class Jit {
     return this.translateOptsBase(fnIdx, fpcAssume);
   }
   translateOptsBase(fnIdx, fpcAssume) {
-    return { boundaries: this.boundaries, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.heat ?? null, visitSlots: this.visitSlots, ...this.codeOpts() };
+    const t2 = this.t2, bounds = t2?.bounds ? (this.boundaries ? new Set([...this.boundaries, ...t2.bounds]) : t2.bounds) : this.boundaries;
+    return { countSlots: t2?.state === 'profile' ? t2.countSlots : null, boundaries: bounds, interpRanges: this.opts.interpRanges, smc: this.opts.smc !== false, chain: this.chaining, profile: this.opts.profile, fnIdx, fpcAssume, nestLoops: this.opts.nestLoops, countChains: this.opts.countChains, inlineApi: this.opts.inlineApi, blockCounts: this.opts.blockCounts, deadExitFlags: this.opts.deadExitFlags, heat: this.heat ?? null, visitSlots: this.visitSlots, ...this.codeOpts() };
   }
   /**
    * The live region holding `eip` (a region entry, else the region with a block starting there, else one whose block
@@ -462,7 +473,8 @@ export class Jit {
     if (fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * fnIdx, 0); // (no next version yet)
     if (!version) {
       this.byEntry.set(eip, region);
-      for (const b of blocks) { this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
+      const t2 = this.t2;
+      for (const b of blocks) { if (!t2?.owns(b.eip)) this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
     }
     // mark code pages for SMC detection (and the page before each: a store crossing into a code page, see smcCheck)
     for (const p of region.pages) {
@@ -650,10 +662,11 @@ export class Jit {
     for (let p = p0; p <= p1; p++) {
       const s = this.pageRegions.get(p); if (!s) continue;
       code = true;
-      for (const r of s) if (!exact || overlaps(r.blocks, lo, hi)) victims.add(r);
+      for (const r of s) if (!exact || r.t2 || overlaps(r.blocks, lo, hi)) victims.add(r); // (tier 2's marker: by page)
     }
     if (victims.size) this.stats.invalidations++;
     else if (code) this.stats.smcKept++;
+    for (const r of victims) if (r.t2) { victims.delete(r); r.t2.drop(); } // (tier 2: dropped whole)
     for (const r of victims) this.dropRegion(r);
     this.stats.dropped += victims.size;
   }
@@ -671,7 +684,7 @@ export class Jit {
   }
   dropOne(r) {
     if (r.fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * r.fnIdx, 0);
-    for (const b of r.blocks) { this.hashRemove(b.eip); const k = this.blockMap.get(b.eip); if (k && k.region === r) this.blockMap.delete(b.eip); }
+    for (const b of r.blocks) { if (!this.t2?.owns(b.eip)) this.hashRemove(b.eip); const k = this.blockMap.get(b.eip); if (k && k.region === r) this.blockMap.delete(b.eip); }
     this.byEntry.delete(r.entry);
     // (out of the list in O(1): the last region takes its place — the list's order means nothing)
     const i = r.at, rs = this.regions;
@@ -829,6 +842,15 @@ export class Jit {
   }
 
   run(opts = {}) {
+    const t2 = this.t2;
+    if (t2 === null || t2.state !== 'profile') return this.runNow(opts);
+    // (tier 2's profile window: the guest instructions run counted, the tier built between slices once it is over)
+    const budget = Math.min(opts.maxInsns ?? 1e9, 0x7fffffff);
+    const r = this.runNow(opts);
+    t2.tick(budget - this.remaining());
+    return r;
+  }
+  runNow(opts = {}) {
     const cpu = this.cpu;
     const stopAt = opts.stopAt ?? -1;
     const m = this.mem, b4 = cpu.b4; // (the state block by its word index, a small integer: see CpuState.b4)
@@ -905,6 +927,10 @@ export class Jit {
         else s = this.interp.step();
         this.stats.steps = (this.stats.steps ?? 0) + 1;
         if (s !== EXIT.NONE) { this.lastFault = this.interp.lastFault; return s; }
+        continue;
+      }
+      if (r === EXIT_T2MODE) { // (a tier-2 x87 function under another x87 mode: tier 1 takes its entries; see tier2.js)
+        this.t2?.unhash(cpu.eip >>> 0);
         continue;
       }
       if (r === EXIT_FPUMODE) {

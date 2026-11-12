@@ -38,6 +38,13 @@ for (let i = 0; i < args.length; i++) if (args[i] === '--jit-opts') { const v = 
 for (const v of variants) JSON.parse(v.json); // (fails early on a typo)
 for (const j of jitOpts.values()) JSON.parse(j);
 const perf = args.includes('--perf');
+// --perf-phase (tier 2, 2026-11-12): each run under `perf record` of user cycles, instructions and instruction-cache fills
+// (from L2, from beyond) with symbols (node --perf-basic-prof), counting only while the scenario has
+// dbg:ORTHROS_PERF_CTL=1 (perf --control through ORTHROS_PERF_FIFO, startbench); per variant the events by code kind —
+// tier-1 regions (r_*), tier-2 functions and their entries (t2_* / w2_*), the rest — and per guest instruction of the
+// phase named by --perf-label (default t2play)
+const perfPhase = args.includes('--perf-phase');
+const perfLabel = opt('perf-label', 't2play');
 const runs = Number(opt('runs', 2));
 const dir = opt('keep') ?? fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-abv-'));
 fs.mkdirSync(dir, { recursive: true });
@@ -53,20 +60,25 @@ const started = jobs.map((j) => new Promise((resolve) => {
   if (jitOpts.has(j.v.name)) a.push('--jit-opts', jitOpts.get(j.v.name));
   a.push(...passThrough);
   const log = fs.openSync(path.join(dir, j.name + '.log'), 'w');
-  const [cmd, cargs] = perf ? ['perf', ['record', '-q', '-e', 'instructions:u,cycles:u', '-c', '1000000', '-o', path.join(dir, j.name + '.perf'), process.execPath, '--no-liftoff', ...a]] : [process.execPath, a];
-  const c = spawn(cmd, cargs, { stdio: ['ignore', log, log], env: { ...process.env, ORTHROS_JIT_DEFAULTS: j.v.json } });
+  const ctl = path.join(dir, j.name + '.ctl');
+  if (perfPhase) { fs.rmSync(ctl, { force: true }); spawnSync('mkfifo', [ctl]); }
+  const [cmd, cargs] = perfPhase ? ['perf', ['record', '-q', '-e', 'instructions:u,cycles:u,ic_cache_fill_l2:u,ic_cache_fill_sys:u', '-c', '1000000', '-D', '-1', '--control', 'fifo:' + ctl, '-o', path.join(dir, j.name + '.perf'), process.execPath, '--no-liftoff', '--perf-basic-prof', ...a]]
+    : perf ? ['perf', ['record', '-q', '-e', 'instructions:u,cycles:u', '-c', '1000000', '-o', path.join(dir, j.name + '.perf'), process.execPath, '--no-liftoff', ...a]] : [process.execPath, a];
+  const c = spawn(cmd, cargs, { stdio: ['ignore', log, log], env: { ...process.env, ORTHROS_JIT_DEFAULTS: j.v.json, ...(perfPhase ? { ORTHROS_PERF_FIFO: ctl, ORTHROS_TIER2_LOG: '1' } : {}) } });
   c.on('exit', (code) => { fs.closeSync(log); resolve(code); });
 }));
 console.log(`${jobs.length} runs in ${dir}`);
 await Promise.all(started);
 
 const byPhase = new Map(); // label -> variant -> [{ ns, cpuMsPerFrame, insns }]
+const phaseInsns = new Map(); // job name -> guest instructions of the --perf-label phase
 for (const j of jobs) {
   let res; try { res = JSON.parse(fs.readFileSync(path.join(dir, j.name + '.json'), 'utf8')); } catch { console.log(`${j.name}: no phases (see ${path.join(dir, j.name + '.log')})`); continue; }
   for (const p of res) {
     if (!byPhase.has(p.label)) byPhase.set(p.label, new Map());
     const m = byPhase.get(p.label); if (!m.has(j.v.name)) m.set(j.v.name, []);
     m.get(j.v.name).push({ ns: p.guestMsPerMInsn, cpuMsPerFrame: p.frames ? (p.threadCpuS ?? p.cpuS) * 1000 / p.frames : 0, insns: p.guestInsns });
+    if (p.label === perfLabel) phaseInsns.set(j.name, p.guestInsns);
   }
 }
 const mean = (l) => l.reduce((s, x) => s + x, 0) / Math.max(1, l.length);
@@ -106,5 +118,34 @@ if (perf) {
     const l = counts.get(v.name); if (!l) continue;
     const f = (k) => `${mean(l.map((y) => y[k])).toFixed(2)} [${l.map((y) => y[k].toFixed(2)).join(' ')}]${pct(l, k)}`;
     console.log(`  ${v.name.padEnd(10)} JIT instructions ${f('jitI')}, JIT cycles ${f('jitC')}; process instructions ${f('allI')}, cycles ${f('allC')}`);
+  }
+}
+
+// --perf-phase: events by code kind over the measured phase, per guest instruction of that phase
+if (perfPhase) {
+  const KINDS = ['t2', 'r', 'otherJit', 'rest'];
+  const kindOf = (sym) => (/(^|[:\s])(t2|w2)_[0-9a-f]+/.test(sym) ? 't2' : /(^|[:\s])r_[0-9a-f]+/.test(sym) ? 'r' : /wasm|JS:|^\[JIT\]|LazyCompile|Builtin/.test(sym) ? 'otherJit' : 'rest');
+  const res = new Map(); // variant -> [{ ev -> kind -> M events, insns }]
+  for (const j of jobs) {
+    const f = path.join(dir, j.name + '.perf');
+    const r = spawnSync('perf', ['report', '-i', f, '--sort', 'sym', '-n', '--stdio'], { encoding: 'utf8', maxBuffer: 1 << 28 });
+    const e = {}; let ev = null;
+    for (const line of (r.stdout ?? '').split('\n')) {
+      const h = /^# Samples: .* of event '(\w+):u'/.exec(line); if (h) { ev = h[1]; e[ev] = Object.fromEntries(KINDS.map((k) => [k, 0])); continue; }
+      const m = /^\s+[\d.]+%\s+(\d+)\s+\[.\]\s+(.*)$/.exec(line); if (!m || !ev) continue;
+      e[ev][kindOf(m[2])] += Number(m[1]); // (one sample per 10^6 events: M events)
+    }
+    e.insns = phaseInsns.get(j.name) ?? 0;
+    if (!res.has(j.v.name)) res.set(j.v.name, []);
+    res.get(j.v.name).push(e);
+  }
+  console.log(`perf over phase ${perfLabel} (M user events by code kind; per guest instruction: host instructions, cycles; fills per 1000 host instructions)`);
+  for (const v of variants) {
+    for (const e of res.get(v.name) ?? []) {
+      const g = e.insns / 1e6, I = e.instructions ?? {}, C = e.cycles ?? {}, L2 = e.ic_cache_fill_l2 ?? {}, SYS = e.ic_cache_fill_sys ?? {};
+      const sum = (o) => KINDS.reduce((n, k) => n + (o[k] ?? 0), 0);
+      const row = (k) => `${k} ${(I[k] / g).toFixed(2)} i/g ${(C[k] / g).toFixed(2)} c/g IPC ${(I[k] / Math.max(1, C[k])).toFixed(2)} fills L2 ${(1000 * L2[k] / Math.max(1, I[k])).toFixed(1)} sys ${(1000 * SYS[k] / Math.max(1, I[k])).toFixed(1)}`;
+      console.log(`  ${v.name.padEnd(10)} ${(g).toFixed(0)} M guest; regions (t2 + r) ${((I.t2 + I.r) / g).toFixed(2)} i/g ${((C.t2 + C.r) / g).toFixed(2)} c/g; process ${(sum(I) / g).toFixed(2)} i/g ${(sum(C) / g).toFixed(2)} c/g | ${KINDS.map(row).join(' | ')}`);
+    }
   }
 }
