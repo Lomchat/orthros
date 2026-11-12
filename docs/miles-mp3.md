@@ -171,7 +171,7 @@ mp3dec.asi from MSS 6; 7 streams).
 not spent waiting. The decoder runs many guest instructions (the mixer thread's 2.76 G of a 25.5 G run, 2.48 G of
 them in 120 s of play), but cheap ones: straight-line floating-point code at roughly 0.3-0.4 ns per instruction,
 against 2.3 ns for the game's average. The study's "7.5-13 % of instructions" is therefore 1-2 % of the time in
-RotWK. Games that keep more MP3 streams open save more (AotR below).
+RotWK. AotR decodes about as much in the same scenario length (below).
 
 **Guest instructions per frame in play**, with and without the host decoder:
 
@@ -220,9 +220,12 @@ each, with the same game work. The thread's CPU time per frame of each phase, in
 | guest decoder (13:30, load ~25-30) | 14.3 | 18.7 | 3.6 | 22.3 | 25.5 |
 | host decoder (13:40, load ~14-18) | 10.7 | 16.5 | 3.0 | 19.5 | 27.1 |
 | guest decoder (13:45, load ~8-12) | 10.3 | 16.9 | 2.9 | 19.8 | 27.1 |
+| host decoder, final code, `?dbg=ORTHROS_MP3_HOST=1` (14:06, load ~8-12) | 10.3 | 16.1 | 3.0 | 19.1 | 27.1 |
 
-  The two adjacent runs (13:40 / 13:45) differ by −1.5 % in play and +3.9 % in the menu, within what single runs
-  vary. A first host run with one message per frame (13:15, load 30-39) had 20.6 + 4.4 ms in play.
+  Against the guest-decoder run at 13:45, the host runs are −1.5 % and −3.5 % in play, and +3.9 % and 0 % in the
+  menu. That is within the spread of single runs, but it leans the host's way. A first host run with one message
+  per frame (13:15, load 30-39) had 20.6 + 4.4 ms in play. The final run: 6 sessions, 6 661 frames, 21 waits
+  (18 ms), 0 failures, output peak 0.22.
 
 **AotR.** Under `--virtual`, AotR never got past the launcher's first frames in 25 minutes, so its pairs were run
 on the real clock, both variants at once, and only their play phases with about the same frame counts are
@@ -241,7 +244,8 @@ opens and attribute queries as the guest's decoder.
 `startbench --mp3-host` in Node). The rule for a default is a win beyond noise on at least two games and a loss on
 none. Here, 6-13 % fewer guest instructions in play give, in thread CPU per frame, −0.8 / +0.6 % on RotWK (Node,
 two deterministic rounds), −3.2 % on BFME II (one round), −5.5 / +0.4 % and −0.8 / +3.6 % on AotR (two real-clock
-pairs), and −1.5 % on RotWK in the browser (one pair of single runs). Only BFME II's result is beyond its spread.
+pairs), and −1.5 / −3.5 % on RotWK in the browser (two host runs against one guest run). Only BFME II's result is
+beyond its spread.
 The decoder's instructions are among the game's cheapest (high-IPC floating-point code), and the host side costs
 some of what it saves (messages, copies, `fetch` calls through the guest). What stays in favour of the host path:
 the decoding leaves the game's thread entirely, which matters more where the decoder's share is larger (many
@@ -254,7 +258,8 @@ machine shows a gain.
   decode with 0 failures (Vice City: 115 sessions, 110 streams opened, 5 restarted at the first read).
 - **Snapshots holding host streams** follow the design above (frames not heard are kept and sent again), but no game
   snapshot was taken and restored with streams open. `tools/check/snapshot-check.mjs` runs Node without
-  `--mp3-host`. Production snapshots are taken in Chrome, at a menu, with its music playing.
+  `--mp3-host`. Off by default, production snapshots (Chrome, at a menu, its music playing) hold none; turning it on
+  should come with a snapshot check.
 - **A session that fails** (a helper error, or 3 s without PCM) leaves its stream silent until the game opens it
   again. The guest's decoder is not used as a fallback for that stream, because its input has already been read.
 - **Preferences** (Requested sample rate / bit width / channels) are stored and reported, never applied. The
