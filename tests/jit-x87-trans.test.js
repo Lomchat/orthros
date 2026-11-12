@@ -639,7 +639,7 @@ test('FSTP into a translated code page right after FSINCOS / FPTAN pushes and FY
   a.fld1().fldQ(DATA).fsincos().fstpQ(T0).fldQ(DATA + 8).fptan().fstpQ(T1).fldQ(DATA + 8).fyl2x().fstpQ(T2).fldQ(DATA + 8).fpatan().fstpQ(T3).fstpQ(DATA + 16);
   a.label('end').hlt();
   const end = a.labels.get('end');
-  const EI = makeExec(false), EJ = makeExec(true);
+  const EI = makeExec(false), EJ = makeExec(true, { smcExact: false }); // (page-granular: each store into the code's page drops its regions, as counted below)
   load(EI, a.finish(), [[0, 0.9], [8, 1.5]]); load(EJ, a.finish(), [[0, 0.9], [8, 1.5]]);
   assert.equal(EI.run(end), EXIT.HALT);
   assert.equal(EJ.runSmc(end), EXIT.HALT);

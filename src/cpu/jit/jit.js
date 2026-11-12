@@ -45,6 +45,12 @@ function foldLazyFlags(cpu) {
 }
 CpuState.foldLazyFlags = foldLazyFlags;
 
+/** does one of `blocks` overlap [lo, hi)? */
+function overlaps(blocks, lo, hi) {
+  for (const b of blocks) if (b.eip < hi && b.end > lo) return true;
+  return false;
+}
+
 export class Jit {
   /**
    * @param {import('../memory.js').GuestMemory} mem
@@ -106,7 +112,7 @@ export class Jit {
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, smcKept: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -448,7 +454,7 @@ export class Jit {
     // the code pages the blocks cover (a region can span distant functions: not every page in between)
     const pages = new Set();
     for (const b of blocks) for (let p = b.eip >>> 12; p <= (b.end - 1) >>> 12; p++) pages.add(p);
-    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, visits: stats.visits ?? null, first: version?.first ?? null, versions: null };
+    const region = { entry: eip, pages: [...pages], blocks, fnIdx, code, fpc, calls: stats.calls, counters: stats.counters ?? -1, visits: stats.visits ?? null, first: version?.first ?? null, versions: null, at: this.regions.length }; // (at: its index in this.regions, see dropOne)
     this.byFn.set(fnIdx, region);
     this.regions.push(region);
     if (region.visits) this.visitRegions.push(region);
@@ -628,15 +634,34 @@ export class Jit {
     return true;
   }
 
-  /** Invalidate translations overlapping [addr, addr+len). */
+  /**
+   * Invalidate translations overlapping [addr, addr+len): the regions with a block overlapping the range itself — the
+   * bytes a translation was made from are its blocks' bytes (the translator reads nothing else that it does not check
+   * at run time: inlineApiOf, jumpTableOf). A store into data sharing a page with translated code (a packer's or a
+   * protection's writable code section, a variable next to its function) leaves its region as any store into that page
+   * (translate.js smcCheck: one map byte per page, the translated code unchanged) but drops nothing: the page keeps its
+   * code and its flag. smcExact() false: every region on the range's pages, as before 2026-11-12 (page-granular).
+   */
   invalidate(addr, len) {
-    const p0 = addr >>> 12, p1 = (addr + len - 1) >>> 12;
+    addr >>>= 0;
+    const lo = addr, hi = addr + Math.max(1, len), p0 = lo >>> 12, p1 = (hi - 1) >>> 12, exact = this.smcExact();
     const victims = new Set();
-    for (let p = p0; p <= p1; p++) { const s = this.pageRegions.get(p); if (s) for (const r of s) victims.add(r); }
+    let code = false;
+    for (let p = p0; p <= p1; p++) {
+      const s = this.pageRegions.get(p); if (!s) continue;
+      code = true;
+      for (const r of s) if (!exact || overlaps(r.blocks, lo, hi)) victims.add(r);
+    }
     if (victims.size) this.stats.invalidations++;
+    else if (code) this.stats.smcKept++;
     for (const r of victims) this.dropRegion(r);
     this.stats.dropped += victims.size;
   }
+  /**
+   * Is invalidation exact (only the regions whose bytes a write overlaps) rather than page-granular? Default on;
+   * ?jitopts={"smcExact":false} / ORTHROS_JIT_AB, or the debug global ORTHROS_SMC_PAGE=1: page-granular (measurement).
+   */
+  smcExact() { return !!(this.abOpts?.smcExact ?? this.opts.smcExact ?? !globalThis.ORTHROS_SMC_PAGE); }
   /** Drop a region with every FPU-mode version of it (the guard of one version may tail-call the next). */
   dropRegion(r) {
     const family = (r.first ?? r).versions;
@@ -648,7 +673,10 @@ export class Jit {
     if (r.fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * r.fnIdx, 0);
     for (const b of r.blocks) { this.hashRemove(b.eip); const k = this.blockMap.get(b.eip); if (k && k.region === r) this.blockMap.delete(b.eip); }
     this.byEntry.delete(r.entry);
-    const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
+    // (out of the list in O(1): the last region takes its place — the list's order means nothing)
+    const i = r.at, rs = this.regions;
+    if (i >= 0 && rs[i] === r) { const last = rs.pop(); if (last !== r) { rs[i] = last; last.at = i; } r.at = -1; }
+    this.stats.live = rs.length;
     r.visits = null; // (its flags are no longer harvested: harvestVisitsStep drops it from visitRegions)
     for (const p of r.pages) {
       const s = this.pageRegions.get(p);

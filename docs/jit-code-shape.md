@@ -902,6 +902,77 @@ instruction fetch of a large, flat body of translated code, and a jump table add
 Off by default (`JIT_DEFAULTS.jumpTables`); `?jitopts={"jumpTables":true}` or `dbg:ORTHROS_JIT_JTAB_OFF=` (empty: on,
 `=1`: off; both retranslate everything) for measurement.
 
+## Self-modifying code: exact invalidation (2026-11-12) — on by default
+
+Age of the Ring's play retranslated code without end (study of 2026-11-12, data/proof/guest-speed-2026-11-12: ~61
+invalidations and ~190 regions a second, the jit category 16-32 % of the thread). Why, from a trace of every invalidation
+(a preload around `Jit.invalidate` keeping each region's block bytes at registration, one run to the skirmish, 10 278
+events): game.dat's `.danetta` section (rva 0xaca000, virtual size 0x8192, read-write-execute — rva 0xad1318 is inside
+it, not after it) holds code and the variables that code writes. In play, the code at 0xed0810 / 0xed0816 writes a
+counter at 0xed0000 / 0xed0004, on the page of its own code, ~60 times a second; during loading 0xed1664 fills a table
+from 0xed1318, and `.angmar` (0xed3000) takes stores too. **None of the 10 278 events overlapped a translated byte**
+(10 274 were 256 bytes or more from the nearest translated block). But the SMC map has one byte per 4 KiB page
+(translate.js smcCheck), and `Jit.invalidate` dropped every region with a block on the written page — ~3 per event: the
+writer's own region and those that had taken a call into `.danetta` —, all translated again within milliseconds.
+Vice City's crack does the same at startup (1-byte stores into its writable `.rsrc` stub: 3 632 invalidations in the
+first 4 G instructions).
+
+**Change** (jit.js `invalidate`, `smcExact`): only the regions with a block overlapping the written range itself
+(`EXIT_ARG`, `EXIT_LEN` — the store's own width for plain stores, 16 bytes when the store did not record it) are dropped.
+The translated code is unchanged: a store into a code page still leaves its region (one map byte per page), the
+dispatcher resumes after it, and when it overlapped no translated byte nothing is dropped and the page keeps its flag
+(`stats.smcKept`). Exact because a region depends only on its blocks' bytes, `[eip, end)` of each run of decoded
+instructions (what the translator reads besides — import slots run inline, jump tables — it compares at run time);
+the VirtualFree / FlushInstructionCache ranges go through the same test. Also: a region leaves `Jit.regions` in O(1)
+(its index `at`, the last region moved into its place) instead of `indexOf` + `splice` over ~17 000 live regions.
+`?jitopts={"smcExact":false}`, `dbg:ORTHROS_JIT_AB={"smcExact":false}` or `dbg:ORTHROS_SMC_PAGE=1`: page-granular as
+before, for measurement. Tests: tests/jit-smc-exact.test.js (random programs storing data of every width around their
+own code on its page and across into the next code page, rewriting a function's immediate and a branch displacement
+that is the last byte of its block, rewriting bytes with their own values, whole and time-sliced, page-granular and
+exact against the interpreter; mutations caught: overlap tested on a region's first block only, or missing a block's
+last byte); the existing SMC tests unchanged (three that count page-granular drops run with `smcExact: false`).
+
+Measured (Node 24, EPYC 7402P, `tools/bench/startbench.mjs`; AotR as a launcher plus game.dat: `--child`, which
+follows the child process; `[jitchurn]` lines per phase):
+
+- AotR, in-session A/B after the skirmish starts (scenario learn-aotr-skirmish then 3 × [exact, 8 s warm-up, 22 s;
+  page-granular, 8 s warm-up, 22 s], `dbg:ORTHROS_JIT_AB`; two sessions at once). Thread CPU per frame, exact /
+  page-granular: session 1 22.5 / 24.0, 23.7 / 26.1, 26.9 / 36.8 ms; session 2 23.4 / 23.2, 22.2 / 24.6, 32.6 / 36.4 ms
+  (mean 25.2 / 28.5 ms, −12 %; 5 pairs of 6 better, one equal). jit category 0.4-1.3 s / 3.4-5.8 s per 22 s (2-6 % /
+  16-27 % of the wall time); invalidations 0 / 47-61 per second, regions dropped 0 / 140-180, regions translated 27-87 /
+  205-278; data stores kept 44-58 per second (the exits that remain). The guest category is 7-12 % higher in the exact
+  phases of the first two pairs of each session (instruction counts ±2 %) but equal over the 400 s below: a matter of
+  which moments of play the alternating phases caught.
+- AotR, two separate sessions whose scenario waited ~400 s in play for its loading-screen mark (a heavy frame that
+  came late): the same work, 102.8 G guest instructions and 11 254 / 11 358 frames at 27-28.6 fps. Page-granular /
+  exact: thread CPU 335.5 / 234.8 s, **29.8 / 20.7 ms per frame (−31 %)**; jit category 106.1 / 5.7 s; guest 191.9 /
+  188.6 s (1.87 / 1.83 ns per instruction: unchanged); api 38.2 / 37.6 s; waiting (headroom) 80 / 164 s; frames over
+  40 ms 1 188 / 294, p99 92 / 55 ms; 54.6 / 0 invalidations a second, 164 / 0 regions dropped, 191 / 16 translated
+  (the exact session ran under a preload timing `Jit.invalidate`: 1 150 calls in 20 s took 14 ms, 20 regions and ~1 000
+  blocks scanned each).
+- Vice City startup (first 4 G instructions, both variants at once): translation 2 262 → 679 ms, regions 4 429 → 841,
+  invalidations 3 632 → 4 (3 628 stores kept), wall 5.4 → 3.8 s, process CPU 9.3 → 6.3 s.
+- Controls without SMC events (0 invalidations either way), concurrent pairs, thread CPU per frame in play, exact /
+  page-granular: RotWK 2.02 (rotwk-skirmish, 60 s) 19.18 / 19.18, 20.52 / 20.55, 20.48 / 20.40 ms (guest 2.32 / 2.26,
+  2.37 / 2.46, 2.37 / 2.39 ns per instruction); BFME1 1.08 (bfme1-108-quick, 120 s) 14.89 / 15.66, 15.77 / 16.26 ms.
+  Neutral.
+
+Not kept — fine masks in WASM (measured first): stores into the data of a code page did not even leave their region. A
+256-bit mask per such page (16-byte granules, 15 slots named by the high nibble of the page's SMC map byte, given to a
+page at its first data store) was tested on smcCheck's cold path, by a call to a runtime function or inline. Exact as
+well (the same randomized test; mutations caught: a region registered without marking its granules), and AotR's play had
+no exit left — but every store's cold path grew: the TurboFan code of the regions compiled in a RotWK boot (`node
+--perf-prof` jitdump, the 114 regions compiled in all three runs) 1.389 MB → 1.722 MB with the call (+24 %), 1.743 MB
+inline (+26 %), and RotWK's play, bound by instruction fetch, lost 7.8 % guest time per instruction (one pair: 2.203 →
+2.375 ns) — to save ~50 exits a second (counted in the runtime function: 41-57 data stores a second into AotR's mixed
+pages in play). Exits cost microseconds; code bytes in every store site cost the whole play.
+
+Not done: revalidating a region by comparing the bytes it was translated from (bgInstall compares a background batch's
+bytes before installing it): no AotR event overlapped translated code, so there was nothing to keep that way; it would
+need every region's block bytes kept. And the `blockMap` / `byFn` Map updates of `register()` and `dropOne()`, 14 % of
+the thread in the study's profile, follow the drops: ~190 regions a second before, 5-87 a second with exact
+invalidation; left as they are.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for

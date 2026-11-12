@@ -155,7 +155,7 @@ test('FSTP / FISTP into a translated code page: the pop is applied before the SM
   a.fld1().fldQ(DATA).fstpQ(T0).fldQ(DATA + 8).fistpD(T1).fstpQ(DATA + 16);
   a.label('end').hlt();
   const end = a.labels.get('end');
-  const EI = makeExec(false), EJ = makeExec(true);
+  const EI = makeExec(false), EJ = makeExec(true, { smcExact: false }); // (page-granular: each store into the code's page drops its regions, as counted below)
   load(EI, a.finish(), [[0, 2.5], [8, 7.25]]); load(EJ, a.finish(), [[0, 2.5], [8, 7.25]]);
   assert.equal(EI.run(end), EXIT.HALT);
   assert.equal(EJ.runSmc(end), EXIT.HALT);
