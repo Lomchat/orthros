@@ -4,7 +4,7 @@
 import { DxtPool } from '../win32/dxt-pool.js';
 import { TexJobs } from '../win32/d3dx9-tex-jobs.js';
 import { Mp3Host } from '../media/mp3-host.js';
-import { mp3HostMode } from '../win32/miles-mp3.js';
+import { mp3HostMode, HOST_DEFAULT } from '../win32/miles-mp3.js';
 import { setDxtEncoder } from '../win32/d3dx9-image.js';
 import { Vm, GuestCrash } from '../core/vm.js';
 import { RealClock } from '../core/clock.js';
@@ -406,10 +406,10 @@ async function start(m) {
   if (texHelpers > 0 && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated && vm.mem.memory.buffer instanceof SharedArrayBuffer) {
     try { host.texJobs = new TexJobs(texHelpers, () => { const w = new Worker(new URL('../win32/d3dx9-tex-helper.js', import.meta.url), { type: 'module' }); w.onerror = (e) => log('warn', `texture helper: ${e.message ?? e}`); return w; }, (t) => log('warn', t)); } catch (e) { log('warn', `D3DX texture helpers unavailable: ${e.message}`); }
   }
-  // Miles' MP3 decoder replaced by the browser's (src/win32/miles-mp3.js): decoded by a helper worker with WebCodecs'
-  // AudioDecoder, the game's thread only copying PCM; ?dbg=ORTHROS_MP3_HOST=0: the game's own decoder. (Decided before
-  // the game loads its Miles providers: the support check answers in milliseconds, the game's sound start-up comes later.)
-  if (mp3HostMode() !== 0 && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated && typeof AudioDecoder === 'function') {
+  // Miles' MP3 decoder replaced by the browser's (src/win32/miles-mp3.js; off by default, ?dbg=ORTHROS_MP3_HOST=1):
+  // decoded by a helper worker with WebCodecs' AudioDecoder, the game's thread only copying PCM. (Decided before the game
+  // loads its Miles providers: the support check answers in milliseconds, the game's sound start-up comes later.)
+  if ((mp3HostMode() ?? HOST_DEFAULT) === 1 && typeof Worker !== 'undefined' && globalThis.crossOriginIsolated && typeof AudioDecoder === 'function') {
     AudioDecoder.isConfigSupported({ codec: 'mp3', sampleRate: 44100, numberOfChannels: 2 }).then((r) => {
       if (!r.supported) { log('audio', 'MP3: no AudioDecoder for mp3, the games decode it themselves'); return; }
       host.mp3 = new Mp3Host(() => { const w = new Worker(new URL('../media/mp3-helper.js', import.meta.url), { type: 'module' }); w.onerror = (e) => log('warn', `mp3 helper: ${e.message ?? e}`); return w; }, (t) => log('warn', t));

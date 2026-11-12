@@ -1,18 +1,20 @@
 // Miles Sound System's MP3 decoder run by the host (DECISIONS.md D122: a library recognised by its content, never a
 // game). Games using Miles decode MP3 in an ASI codec provider (mssmp3.asi, mp3dec.asi): a DLL that registers the
-// "ASI codec" interface with mss32.dll (RIB_register_interface) — ASI_stream_open / process / seek / close / attribute /
-// set_preference — and that mss32 calls from its mixer for every MP3 sample and stream (music, voices). Its decoding is
-// x87 code: 7.5-13 % of the guest instructions of a SAGE game in play (data/proof/guest-speed-2026-11-12).
+// "ASI codec" and "ASI stream" interfaces with mss32.dll (RIB_register_interface) — ASI_stream_open / process / seek /
+// close / attribute / set_preference — which mss32's mixer calls for every MP3 sample and stream (music, voices). Its
+// decoding is x87 code: 7.5-13 % of the guest instructions of a SAGE game in play (data/proof/guest-speed-2026-11-12),
+// 1-2 % of the time in RotWK (cheap instructions), more where many streams play (docs/miles-mp3.md).
 //
-// When a recognised decoder registers its interface, the stream functions it registers are replaced by host functions
-// (thunks of orthros.dll): the MP3 frames are read through the same fetch callback mss32 gave the decoder, decoded off the
-// emulator's thread (src/media/mp3-decoder.js: the browser's WebCodecs AudioDecoder in a helper worker), and the guest
-// thread only copies PCM. Everything else the provider registers stays the guest's (startup, shutdown, error text,
-// PROVIDER_query_attribute). See docs/miles-mp3.md.
+// When a recognised decoder registers its interfaces, its six stream functions are replaced by host functions (thunks
+// of orthros.dll): the MP3 frames are read through the fetch callback mss32 gave the stream, decoded off the emulator's
+// thread (src/media/mp3-host.js, mp3-helper.js: the browser's WebCodecs AudioDecoder in a helper worker), and the game's
+// thread only copies PCM. Everything else stays the provider's own (DllMain, RIB_Main, startup, shutdown, error text,
+// PROVIDER_query_attribute).
 //
-// Switch: ORTHROS_MP3_HOST (debug global or environment): 0 = off (the guest decoder), 1 = on (default where a host
-// decoder exists), 'trace' = the guest decoder wrapped (every ASI call logged with its result, measurement of the
-// original's behaviour), 'capture' = trace + every stream's input and decoded PCM kept (tools/dev/mp3-compare.mjs).
+// Switch: ORTHROS_MP3_HOST (debug global ?dbg=ORTHROS_MP3_HOST=1, or the environment in Node): 1 = the host's decoder
+// where one exists (vm.host.mp3: the browser with WebCodecs' mp3; Node with startbench --mp3-host); 0 or unset = the
+// guest's (HOST_DEFAULT); 'trace' = the guest's, every call logged (startbench --mp3-capture: every stream's input and
+// output kept, for tools/dev/mp3-compare.mjs).
 import { snapKnown, snapClass } from '../core/snapshot.js';
 import { mpegAudioHeader } from '../media/mpeg-ps.js';
 import { ST_DONE, ST_FAILED } from '../media/mp3-ring.js';
@@ -38,11 +40,17 @@ export function codeFingerprint(img) {
   return { fnv: h >>> 0, len };
 }
 
-/** The switch: 0 off, 1 on, 'trace', 'capture' (the debug global first, then the environment). */
+/**
+ * Unset switch: the guest's decoder. The host's saves 6-13 % of the guest instructions in play but no time beyond the
+ * measurements' spread on RotWK, BFME II and AotR (its instructions are cheap ones): docs/miles-mp3.md, "Decision".
+ */
+export const HOST_DEFAULT = 0;
+
+/** The switch: 0 off, 1 on, 'trace', null unset (the debug global first, then the environment). */
 export function mp3HostMode() {
   const g = globalThis.ORTHROS_MP3_HOST ?? globalThis.process?.env?.ORTHROS_MP3_HOST;
   if (g === undefined || g === null || g === '') return null; // (default: decided by the decoder's availability)
-  if (g === 'trace' || g === 'capture') return g;
+  if (g === 'trace') return g;
   return Number(g) ? 1 : 0;
 }
 
@@ -76,10 +84,9 @@ export function registerMilesMp3(api, vm) {
   vm.milesMp3Stats = () => st.stats; // (diagnostics: startbench)
   vm.milesImport = (mod, dep, name, addr) => {
     if (name !== 'RIB_register_interface' || dep.builtin) return null;
-    let mode = mp3HostMode();
-    if (mode === 0) return null;
-    if (mode !== 'trace' && mode !== 'capture' && !vm.host?.mp3) return null; // (no decoder off this thread: the guest's)
-    if (mode === null) mode = 1;
+    const mode = mp3HostMode() ?? HOST_DEFAULT;
+    if (!mode) return null;
+    if (mode !== 'trace' && !vm.host?.mp3) return null; // (no decoder off this thread: the guest's)
     const k = recognise(mod);
     if (!k) return null;
     st.providers.push({ module: mod.name, base: mod.base, kind: k.name, real: addr, funcs: {}, tokens: {} });
@@ -96,7 +103,7 @@ export function registerMilesMp3(api, vm) {
       const e = entries + 16 * i, type = mem.read32(e), name = mem.readCString(mem.read32(e + 4)), value = mem.read32(e + 8);
       if (type === RIB_FUNCTION && ARGC[name] !== undefined) { // (in the "ASI stream" interface)
         prov.funcs[name] = value;
-        mem.write32(e + 8, api.thunkFor('orthros.dll', `__mss_${name}`)); // (the entries are the provider's: a copy is not needed, mss32 copies them)
+        mem.write32(e + 8, api.thunkFor('orthros.dll', `__mss_${name}`)); // (in the provider's own array, before mss32 reads it)
       } else if (iname === 'ASI stream' && type !== RIB_FUNCTION) prov.tokens[value] = name;
       if (globalThis.ORTHROS_MP3_PRINT) log(`  ${iname}[${i}] type ${type} ${name} = 0x${value.toString(16)} sub ${mem.read32(e + 12)}`);
     }
@@ -123,7 +130,7 @@ export function registerMilesMp3(api, vm) {
       try { r = vm.callGuest(c.thread, p.funcs[name], args) >>> 0; } finally { cur = prev; }
       if (name === 'ASI_stream_open' && r) { traceOf.set(r, f); if (cap) cap('open', f.id, `${hex(r)} ${f.id}\n`); }
       if (name === 'ASI_stream_close') traceOf.delete(args[0]);
-      if (name === 'ASI_stream_process') { st.stats.process++; st.stats.bytes += r; if (cap && r && f) cap('pcm', f.id, mem.u8.slice(args[1], args[1] + r)); }
+      if (name === 'ASI_stream_process') { st.stats.process++; st.stats.bytes += r; if (cap && r && f) cap('pcm', f.id, mem.u8.slice(args[1], args[1] + r)); if (r < args[2] && globalThis.ORTHROS_MP3_LOG && !verbose()) log(`[t${c.thread.id}] process(${hex(args[0])}, ${args[2]}) -> ${r}`); }
       if (cap && f && (name === 'ASI_stream_seek' || name === 'ASI_stream_close')) cap('log', f.id, `${name} ${args[1] | 0} after ${st.stats.bytes}\n`);
       if (name === 'ASI_stream_attribute') { if (globalThis.ORTHROS_MP3_TRACE_ATTR) log(`[t${c.thread.id}] attribute(${hex(args[0])}, ${p.tokens[args[1]] ?? args[1]}) -> ${hex(r)}`); }
       else if (name !== 'ASI_stream_process' || verbose()) log(`[t${c.thread.id} d${vm.depth}] ${name}(${args.map(hex).join(', ')}) -> ${hex(r)}${name === 'ASI_stream_process' ? ` (${st.stats.process} calls, ${st.stats.bytes} bytes)` : ''}`);
@@ -183,6 +190,7 @@ export function registerMilesMp3(api, vm) {
       this.ended = false; // the session was told its end (the input ran dry when its PCM was needed)
       this.prefs = {};
       this.openBytes = null; // what open read, until the first process call reads the start again (see recheckStart)
+      this.carry = null; // PCM kept at a seek(-2): the rest of the frame being read
       this.busy = false; this.failedLogged = false;
       this.session = null; // (the host's)
     }
@@ -309,6 +317,11 @@ export function registerMilesMp3(api, vm) {
   }
 
   function hostOpen(c) {
+    const r = open(c);
+    if (globalThis.ORTHROS_MP3_LOG) log(`[t${c.thread.id}] open(${hex(c.arg(0))}, ${hex(c.arg(1))}, ${c.arg(2)}) -> ${hex(r)}`);
+    return r;
+  }
+  function open(c) {
     const user = c.arg(0), cb = c.arg(1), total = c.arg(2);
     if (!decoders()) return 0;
     const handle = (STREAM_TAG + (st.nextId++ & 0xfffff)) >>> 0;
@@ -337,6 +350,7 @@ export function registerMilesMp3(api, vm) {
     try { if (s.openBytes) recheckStart(c, s); got = processBody(c, s, buf, n - (n % bps(s))); } finally { s.busy = false; }
     st.stats.process++; st.stats.bytes += got;
     if (got < n) mem.fill(buf + got, n - got, 0); // (the original fills the rest of the request with silence)
+    if (got < n && globalThis.ORTHROS_MP3_LOG) log(`[t${c.thread.id}] process(${hex(s.handle)}, ${n}) -> ${got}`);
     return got;
   }
   /**
@@ -361,6 +375,11 @@ export function registerMilesMp3(api, vm) {
     let ses = ensureSession(s), got = 0, fetches = 2, waited = 0;
     if (!ses) return 0;
     const dst = mem.u8.subarray(buf, buf + n);
+    if (s.carry) { // (the rest of the frame being read at a seek(-2))
+      const k = Math.min(n, s.carry.length); dst.set(s.carry.subarray(0, k)); got = k;
+      s.carry = k < s.carry.length ? s.carry.slice(k) : null;
+      if (got >= n) return got;
+    }
     for (;;) {
       if (s.skipBytes) { const k = ses.skip(s.skipBytes); s.skipBytes -= k; s.readSamples += k / B; }
       if (!s.skipBytes) { const k = ses.take(dst.subarray(got), n - got); if (k) { got += k; consumed(s, k / B); } }
@@ -403,23 +422,34 @@ export function registerMilesMp3(api, vm) {
     const s = st.streams.get(c.arg(0)), pos = c.arg(1) | 0;
     if (!s) return 0;
     st.stats.seeks++;
-    // -2: the decoder's state cleared (bit reservoir, synthesis), reading going on where it is — the original keeps the
-    // rest of its decoded frame and parses on from its input position: here every byte fetched is kept, the frames not
-    // read are decoded again by a new session (ensureSession). Any other value: from that offset of the source.
-    s.session?.close(); s.session = null;
-    if (pos !== -2) { s.parsed = []; s.sent = []; s.headDone = 0; s.inBuf = new Uint8Array(0); s.nextOff = pos; s.pos = pos; s.inPos = pos; s.synced = false; }
-    s.ended = false; s.skipBytes = 0;
+    if (globalThis.ORTHROS_MP3_LOG) log(`[t${c.thread.id}] seek(${hex(c.arg(0))}, ${pos})`);
+    // -2: mss32 moved its source on its own (a stream looping, its buffers loaded again): the original clears its
+    // decoder's state (bit reservoir, synthesis), keeps the rest of the frame it was reading out, and reads on from the
+    // source — whose next bytes are the new ones, not those this host had fetched ahead: those are dropped. Any other
+    // value: everything dropped, reading from that offset of the source.
+    const ses = s.session, B = s.fmt ? bps(s) : 4;
+    const rest = pos === -2 && ses && s.sent.length && s.headDone ? (s.sent[0].samples - s.headDone) * B : 0;
+    if (rest && ses.available() >= rest) { const k = new Uint8Array(rest); ses.take(k, rest); s.carry = k; s.pos = s.sent[0].end; }
+    ses?.close(); s.session = null;
+    s.parsed = []; s.sent = []; s.headDone = 0; s.inBuf = new Uint8Array(0); s.synced = false; s.ended = false; s.skipBytes = 0;
+    if (pos !== -2) { s.nextOff = pos; s.pos = pos; s.inPos = pos; s.carry = null; } else s.nextOff = -1;
     return 0;
   }
 
   function hostClose(c) {
     const s = st.streams.get(c.arg(0));
+    if (globalThis.ORTHROS_MP3_LOG) log(`[t${c.thread.id}] close(${hex(c.arg(0))})`);
     if (s) { s.session?.close(); st.streams.delete(c.arg(0)); }
     return 0;
   }
 
   const PREFS = new Set(['Requested sample rate', 'Requested bit width', 'Requested # of channels']);
   function hostAttribute(c) {
+    const r = attribute(c);
+    if (globalThis.ORTHROS_MP3_TRACE_ATTR) log(`[t${c.thread.id}] attribute(${hex(c.arg(0))}, ${provOf().tokens[c.arg(1)] ?? c.arg(1)}) -> ${hex(r)}`);
+    return r;
+  }
+  function attribute(c) {
     const s = st.streams.get(c.arg(0)), name = provOf().tokens[c.arg(1)];
     if (!s) return 0xffffffff;
     const { rate, ch, version } = s.fmt, pos = (s.headDone > 0 && s.sent.length ? s.sent[0].end : s.pos) >>> 0; // (as the original's: past the frame being read)

@@ -11,6 +11,10 @@ With the host decoder on, the provider's stream functions are the host's (src/wi
 to the browser's WebCodecs `AudioDecoder` in a helper worker (src/media/mp3-helper.js), and the game's thread only
 copies the PCM back (src/media/mp3-host.js, src/media/mp3-ring.js).
 
+**Result**: the sound is the same as the original's (61-77 dB from a file's start), and the guest instructions in
+play drop by 6-13 %. Thread time does not drop beyond the measurements' spread: the decoder was 1-2 % of RotWK's
+thread, and its instructions are cheap. **Off by default**, `?dbg=ORTHROS_MP3_HOST=1` to turn it on.
+
 ## The ASI interface, as mss32 uses it
 
 An ASI provider registers two RIB interfaces with mss32's `RIB_register_interface(provider, name, count, entries)`
@@ -81,9 +85,11 @@ What a trace of the original shows (RotWK, `ORTHROS_MP3_HOST=trace`, `ORTHROS_MP
 - The first `process` call reads the start again from offset 0, as the original does. mss32's offsets are within its
   current buffer, and a streamed sample may have loaded or switched it since `open`. If the bytes are the same, the
   session started at `open` goes on. If not, it is dropped and decoding starts from the bytes there now.
-- `seek(-2)` resets the decoder's state and keeps reading where it is: every byte fetched is kept, and the frames not
-  yet read are decoded again by a new session (the original keeps the rest of its decoded frame and parses on from its
-  input position). Any other offset drops everything and reads from that offset.
+- `seek(-2)`: mss32 has moved its source on its own (a stream looping, its buffers loaded again). The original
+  clears its decoder's state, keeps the rest of the frame it was reading out, and reads on from the source, whose
+  next bytes are the new ones. Here the rest of that frame is kept (copied out of the ring when it is already
+  decoded). What was fetched, parsed or decoded ahead is dropped, and a new session reads on with `fetch(-1)`. Any
+  other offset drops everything and reads from that offset.
 - The attributes are computed from the headers, as the original computes them: Position is the input offset after
   the frame being read, Percent done is `float(position) * 100 / total`, and Input sample width is
   `16 / max(1, rate * channels * 16 / bitrate)`.
@@ -113,12 +119,15 @@ What a trace of the original shows (RotWK, `ORTHROS_MP3_HOST=trace`, `ORTHROS_MP
 ## Switch
 
 `ORTHROS_MP3_HOST` (debug global `?dbg=ORTHROS_MP3_HOST=…`, or the environment in Node):
-- unset: host decoding where a decoder exists (the browser with WebCodecs' mp3), the guest's decoder elsewhere;
-- `0`: always the guest's decoder;
-- `1`: host decoding (Node: with ffmpeg, through startbench `--mp3-host`);
-- `trace`: the guest's decoder, every call logged (`ORTHROS_MP3_TRACE_PROCESS=1`: `process` and unusual `fetch` calls
-  too). `startbench --mp3-capture <dir>` writes each stream's MP3 input and PCM output there, for
+- unset or `0`: the guest's decoder (the default, `HOST_DEFAULT`: see "Decision" below);
+- `1`: the host's decoder where one exists: the page when it is cross-origin isolated and WebCodecs decodes mp3
+  (src/web/worker.js creates the helper then), Node through startbench `--mp3-host` (ffmpeg). Elsewhere the guest's;
+- `trace`: the guest's decoder, every call logged (`ORTHROS_MP3_LOG=1`: opens, closes, seeks, short reads in both
+  modes; `ORTHROS_MP3_TRACE_ATTR=1`: attribute queries; `ORTHROS_MP3_TRACE_PROCESS=1`: every `process` call and the
+  unusual `fetch` calls). `startbench --mp3-capture <dir>` writes each stream's MP3 input and PCM output there, for
   `tools/dev/mp3-compare.mjs`.
+- `ORTHROS_MP3_PRINT=1`: the fingerprint of every Miles provider loaded, and the entries it registers.
+- `tools/bench/ab-virtual.mjs --variant-env on='ORTHROS_MP3_HOST=1'` compares the two, as measured below.
 
 ## Is the sound the same? (tools/dev/mp3-compare.mjs)
 
@@ -157,8 +166,103 @@ mp3dec.asi from MSS 6; 7 streams).
 
 ## What it saves
 
-RESULTS_PERF
+**Where the decoder's time goes.** A V8 CPU profile of RotWK play (Node, the guest's decoder, 80 s of
+`rotwk-quick` play) puts mssmp3.asi's translated code at 0.93 s: 1.2 % of the emulator thread, or 2.2 % of its time
+not spent waiting. The decoder runs many guest instructions (the mixer thread's 2.76 G of a 25.5 G run, 2.48 G of
+them in 120 s of play), but cheap ones: straight-line floating-point code at roughly 0.3-0.4 ns per instruction,
+against 2.3 ns for the game's average. The study's "7.5-13 % of instructions" is therefore 1-2 % of the time in
+RotWK. Games that keep more MP3 streams open save more (AotR below).
+
+**Guest instructions per frame in play**, with and without the host decoder:
+
+| game, run | guest decoder | host decoder | change |
+|---|---|---|---|
+| RotWK 2.02 `rotwk-short`, virtual clock (2 runs each) | 5.97 M | 5.20 M | −12.9 % |
+| BFME II 1.09 `bfme2-short`, virtual clock (2 runs each) | 4.36 M | 4.06 M | −6.9 % |
+| AotR 10 `learn-aotr-skirmish` + 60 s, real clock, play2 (30 s, ~900 frames), two pairs | 7.71 / 9.08 M | 6.78 / 7.87 M | −12.1 / −13.4 % |
+| Vice City `vc-quick` drive, real clock (one run each) | 5.76 M | 5.40 M | −6.3 % |
+
+The mixer thread's instructions: RotWK 2 764 → 283 M, BFME II 5 849 → 724 M (`rotwk-quick` / `bfme2-quick`,
+`--threads`).
+
+**The emulator thread's CPU per frame** (Node). Under `ab-virtual` the two variants run at the same time, two runs
+each, with the same game work. The thread's CPU time per frame of each phase, in ms (each run's value in brackets):
+
+| game, phase | guest decoder | host decoder | change |
+|---|---|---|---|
+| RotWK play, round 1 | 15.44 [15.19 15.69] | 15.31 [15.50 15.13] | −0.8 % |
+| RotWK play, round 2 | 18.03 [18.07 17.99] | 18.13 [18.20 18.06] | +0.6 % |
+| RotWK menu, rounds 1 / 2 | 9.15 / 10.48 | 8.78 / 10.43 | −4.1 / −0.4 % |
+| BFME II play | 12.52 [12.54 12.50] | 12.12 [11.99 12.26] | −3.2 % |
+| BFME II menu | 7.11 [7.58 6.64] | 6.24 [6.37 6.12] | −12.2 % |
+| AotR play (real clock, two concurrent pairs, 790-875 frames) | 20.0 / 25.4 | 18.9 / 25.5 | −5.5 / +0.4 % |
+| AotR play2 (the same runs, 894-903 frames) | 17.9 / 19.6 | 17.8 / 20.3 | −0.8 / +3.6 % |
+
+- **Load screens**: the phase ends at a point in virtual time. The host variant does less guest work, so it shows
+  fewer frames in that phase, and its CPU per frame looks higher (RotWK +19.7 / +21.9 %, BFME II +4.4 %) while the
+  phase as a whole costs less: RotWK 9.2 → 8.9 s, BFME II 10.5 → 10.1 s of thread CPU.
+- **The host side's own cost in Node**: `__mss_ASI_stream_process` takes 0.06-0.10 ms per frame (8 calls of 7-12 µs).
+  This includes the waits for ffmpeg at each stream's start (5-16 per run, 158-278 ms in all), which the browser
+  does not have (below).
+- **Messages**: the first version sent one message per MP3 frame. A profile of RotWK play then put 1.96 s of 80 s in
+  `postMessage` (1.26 ms per frame for `__mss_ASI_stream_process`). With messages batched (one per ~0.17 s of
+  sound per stream), that cost is gone from the profile's top.
+
+**Browser** (Chromium headless shell through the slot guard, pinned to its 4 cores, `--gl-discard`, RotWK
+`rotwk-quick`, `--audio`; single runs, guest decoder and host decoder alternated):
+- The sound plays: the AudioWorklet runs, output peak 0.33 (0.28 with the guest's decoder), no underruns. 8 MP3
+  sessions (menu music, then voices and music in play), 6 096 frames decoded by the helper, 0 failures. The game's
+  thread waited for decoded PCM 15 times in the whole run, 11 ms in all.
+- Frame accounting, ms per frame (guest + API categories), and fps:
+
+| run (machine load) | menu guest + api | play guest | play api | play guest + api | play fps |
+|---|---|---|---|---|---|
+| guest decoder (13:30, load ~25-30) | 14.3 | 18.7 | 3.6 | 22.3 | 25.5 |
+| host decoder (13:40, load ~14-18) | 10.7 | 16.5 | 3.0 | 19.5 | 27.1 |
+| guest decoder (13:45, load ~8-12) | 10.3 | 16.9 | 2.9 | 19.8 | 27.1 |
+
+  The two adjacent runs (13:40 / 13:45) differ by −1.5 % in play and +3.9 % in the menu, within what single runs
+  vary. A first host run with one message per frame (13:15, load 30-39) had 20.6 + 4.4 ms in play.
+
+**AotR.** Under `--virtual`, AotR never got past the launcher's first frames in 25 minutes, so its pairs were run
+on the real clock, both variants at once, and only their play phases with about the same frame counts are
+compared. An earlier version gave 9.16 → 6.55 M instructions and 20.3 → 17.0 ms of CPU per frame (−16 %) in one
+pair. Two pairs of the final version (above) do not repeat that gain. Their sessions decoded 9 400-9 600 MP3 frames;
+runs that went 6 minutes further into the skirmish decoded 26 600-28 300.
+
+In three runs of intermediate versions, the scenario's anchor (the first frame with 400 draws) came about 5 minutes
+late. In two of them, `seek(-2)` kept the bytes fetched ahead, which plays stale input after mss32 has moved its
+source; the third was stopped after a minute. docs/jit-code-shape.md reports that this anchor also flakes with the
+guest's decoder. With the final code, the three host runs met it on time: load screen 11.9, 15.3 and 12.0 s, against
+11.3, 14.1 and 11.0 s for the guest runs started with them. One of those host runs logged its events: the same
+opens and attribute queries as the guest's decoder.
+
+**Decision: off by default** (`HOST_DEFAULT = 0`; `?dbg=ORTHROS_MP3_HOST=1` turns it on in the page,
+`startbench --mp3-host` in Node). The rule for a default is a win beyond noise on at least two games and a loss on
+none. Here, 6-13 % fewer guest instructions in play give, in thread CPU per frame, −0.8 / +0.6 % on RotWK (Node,
+two deterministic rounds), −3.2 % on BFME II (one round), −5.5 / +0.4 % and −0.8 / +3.6 % on AotR (two real-clock
+pairs), and −1.5 % on RotWK in the browser (one pair of single runs). Only BFME II's result is beyond its spread.
+The decoder's instructions are among the game's cheapest (high-IPC floating-point code), and the host side costs
+some of what it saves (messages, copies, `fetch` calls through the guest). What stays in favour of the host path:
+the decoding leaves the game's thread entirely, which matters more where the decoder's share is larger (many
+streams at once), and the sound is the same (above). It is ready to be turned on if a measurement on the target
+machine shows a gain.
 
 ## Not done / open
 
-OPEN_ITEMS
+- **Verified in a browser on RotWK only.** BFME II, AotR and Vice City were run in Node (the ffmpeg stand-in): they
+  decode with 0 failures (Vice City: 115 sessions, 110 streams opened, 5 restarted at the first read).
+- **Snapshots holding host streams** follow the design above (frames not heard are kept and sent again), but no game
+  snapshot was taken and restored with streams open. `tools/check/snapshot-check.mjs` runs Node without
+  `--mp3-host`. Production snapshots are taken in Chrome, at a menu, with its music playing.
+- **A session that fails** (a helper error, or 3 s without PCM) leaves its stream silent until the game opens it
+  again. The guest's decoder is not used as a fallback for that stream, because its input has already been read.
+- **Preferences** (Requested sample rate / bit width / channels) are stored and reported, never applied. The
+  original's output attributes also report the file's own format.
+- **Other Miles versions** keep the guest's decoder. Adding one means adding its fingerprint, after checking that its
+  stream functions take the same arguments (a trace with `ORTHROS_MP3_HOST=trace`).
+- **The game's thread can still wait** for PCM the helper has not decoded yet: at a stream's start, or when the
+  reader catches up with the decoder. That happened 15 times in a RotWK browser run, 11 ms in all.
+- **mss32's calls are recorded, not documented**: the semantics above come from traces of RotWK (MSS 7) and from
+  reading the two providers' stream functions (MSS 6 matches MSS 7 there). A behaviour the traces did not meet
+  (for example a seek to a non-zero offset) follows the original's code as read, untested.
