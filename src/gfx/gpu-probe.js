@@ -9,8 +9,9 @@
 //   frame's commands: under ANGLE D3D11 a self-paced 30 fps game reads ~33 ms whatever the load). On alternate frames of
 //   a window, a second TIME_ELAPSED query covers only the run of draws (from the frame's first draw, `draw()`, to the
 //   start of the present, `endRun()`: `runMs`, no idle in it); and every sampled frame gets a fence after the present's
-//   flush, polled at later presents and draws: its latency is the GPU backlog at the end of the frame (`fence*`;
-//   resolution = the polling interval, a few ms at worst). Both only inside the windows; ORTHROS_GPU_METRIC=0 turns
+//   flush, polled at later presents and draws and whenever the thread comes back from its event loop (`wake()`: a sync
+//   object's status only changes between tasks): its latency is the GPU backlog at the end of the frame (`fence*`;
+//   resolution = the render worker's sleeps, 2 ms at most). Both only inside the windows; ORTHROS_GPU_METRIC=0 turns
 //   them off (the present-to-present query stays).
 // - WebGL calls per frame (bench runs only: ORTHROS_GL_COUNT, set by the page's ?bench mode — swapping the
 //   prototype's methods makes V8 drop the code optimized against them, a cost ordinary sessions need not pay): every
@@ -79,6 +80,13 @@ export class GpuProbe {
     const q = this.runQ; if (!q) return;
     this.runQ = null; this.gl.endQuery(TIME_ELAPSED_EXT); q.endAt = this.presents; this.pending.push(q);
   }
+  /**
+   * The thread is back from its event loop (the render worker's sleep or yield, the emulator's next slice): the fences
+   * signaled meanwhile are read now. A WebGL sync object only changes state between tasks (WebGL 2: never while a task
+   * runs), so the polls at the draws of the task that replays the next frame see what the previous task left — on a real
+   * GPU that finished the frame in 4 ms, the fence then read the time to the next frame (~33-45 ms at 30 fps).
+   */
+  wake() { if (this.fences.length) this.pollFences(this.now()); }
   /** Fences signaled: their latency (since the flush that followed the frame's present) is the backlog the frame left. */
   pollFences(now) {
     const gl = this.gl, g = this.stats.gpu; this.lastPoll = now;

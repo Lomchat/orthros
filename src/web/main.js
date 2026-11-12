@@ -21,6 +21,7 @@ import { PerfSession } from './perf-page.js';
 import { TimerHelper, browserVariants, createWaitProbe } from './timer-helper.js';
 import { pageStorage, withStorage } from './storage-persist.js';
 import { snapshotKey } from './snapshot-key.js';
+import { compatKey } from '../core/compat-stats.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -460,8 +461,8 @@ function onWorkerMessage(m) {
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
     case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
     case 'audio-voices': state.audioVoices = { type: 'voices', memory: m.memory, voices: m.voices }; state.audioNode?.port.postMessage(state.audioVoices); break; // (the AudioWorklet mixes the game's sound buffers itself)
-    case 'exit': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; state.perf?.end(); log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(TEXT.exited(state.title), TEXT.exitCode(m.code, m.reason), null, m.code !== 0, true); cloud?.push(); break;
-    case 'crash': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; state.perf?.end(); log('crash', m.report); if (!headless) showStatus(TEXT.crashed(state.title), TEXT.crashDetail, m.report, true, true); break;
+    case 'exit': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); sendCompat(true); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; state.perf?.end(); log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(TEXT.exited(state.title), TEXT.exitCode(m.code, m.reason), null, m.code !== 0, true); cloud?.push(); break;
+    case 'crash': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); sendCompat(true); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; state.perf?.end(); log('crash', m.report); if (!headless) showStatus(TEXT.crashed(state.title), TEXT.crashDetail, m.report, true, true); break;
     case 'report': state.report = m.text; log('report', m.text); break;
     case 'regions': state.regions = m.text; break;
     case 'corpus': state.corpus = m.text; break;
@@ -595,6 +596,8 @@ function hideLoader(now = false) {
   if (!now) { try { localStorage.setItem('orthros.boot.' + state.manifest, String(Math.round((performance.now() - state.loadT0) / 1000))); } catch { /* no storage */ } }
   shell.hideLoader(now);
   if (now) return;
+  // (the time to the first images, and whether the tab was hidden then: the ready signal of shell.js)
+  telemetryEvent({ event: 'ready', seconds: Math.round((performance.now() - state.loadT0) / 100) / 10, hidden: !!shell.ready?.hidden, notified: !!shell.ready?.notified });
   shell.running = true; shell.setMouse(state.pointerLocked);
   if (!state.benchActive) toast(TEXT.capture, 7000); // (a bench plays alone: its summary says it)
 }
@@ -713,11 +716,24 @@ function recordSample(m) {
   state.perf?.interval(m);
   if (!state.telemetry) return;
   (state.queue ??= []).push(smp);
+  if (m.compat) { state.compat = m.compat; sendCompat(false); }
   // every ~20 s a summary of the frames (perf-summary.js: percentiles, slow frames, time by category, draws, GPU time,
   // GL calls, render worker waits), at most 720 per session
   const sum = (state.summaries ??= new SummaryClock()).add(m, { t: smp.t, visible: smp.vis, fullscreen: smp.fs, status: state.status });
   if (sum) state.queue.push({ t: smp.t, event: 'summary', ...sum, audio: state.audioStats.take() }); // (audio: sound.js AudioStats — context, worklet, mix level, buffers)
   if (!state.flushTimer) state.flushTimer = setTimeout(flushTelemetry, 10000);
+}
+/**
+ * The compatibility summary (core/compat-stats.js: unknown imports called, COM E_NOTIMPL answers, untranslated shader
+ * instructions; cumulative, bounded): queued when its set of names changed, at most every 30 s; `final` (exit, crash,
+ * page hidden): whenever its counts changed since the last one sent.
+ */
+function sendCompat(final) {
+  const c = state.compat; if (!c || !state.telemetry) return;
+  const key = compatKey(c), now = Date.now(), json = JSON.stringify(c);
+  if (final ? json === state.compatSent : key === state.compatKey || now - (state.compatAt ?? 0) < 30000) return;
+  state.compatKey = key; state.compatAt = now; state.compatSent = json;
+  (state.queue ??= []).push({ t: now, event: 'compat', ...c });
 }
 function telemetryEvent(ev) { if (!state.telemetry) return; (state.queue ??= []).push({ t: Date.now(), ...ev }); flushTelemetry(); }
 /** Send the queued records; resolves to whether the server took them. */
@@ -730,7 +746,7 @@ function flushTelemetry() {
   if (!state.envSent) { state.envSent = true; body.env = withStorage(state.env ?? environment(), state.storage?.state); }
   return fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true }).then((r) => r.ok, () => false);
 }
-addEventListener('pagehide', () => { if (state.telemetry) flushTelemetry(); });
+addEventListener('pagehide', () => { if (state.telemetry) { sendCompat(true); flushTelemetry(); } });
 /**
  * What the measurements depend on: browser, GPU (WebGL's unmasked renderer and vendor), screen, cores, memory,
  * cross-origin isolation, the browser's audio decoder and AudioWorklet. Nothing else is collected.

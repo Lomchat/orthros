@@ -207,9 +207,14 @@ self-paced 30 fps game reads ~33 ms. Two idle-free figures ride on the same wind
 prints them as `draw run` and `fence backlog`; harness bench lines `draw-run` / `fence`): on the odd frames of a window a
 second `TIME_ELAPSED` query covers only the run of draws (first draw of the frame, `GpuProbe.draw()`, to the start of the
 present, `endRun()`; one query is active at a time, hence the alternation); on every sampled frame a fence is set after
-the present's flush and polled (`getSyncParameter`, non-blocking) at later presents and at draws (at most every 0.5 ms):
-its latency is the GPU backlog at the end of the frame (the resolution is the polling interval). Cost outside a window:
-one boolean test per draw. `?dbg=ORTHROS_GPU_METRIC=0` (a host-only flag) turns both off.
+the present's flush and polled (`getSyncParameter`, non-blocking) at later presents, at draws (at most every 0.5 ms)
+and whenever the thread comes back from its event loop (`GpuProbe.wake()`: the render worker after each sleep of at most
+2 ms and each yield, render-loop.js; the emulator's worker at each slice, `backend.beforeSlice`): its latency is the GPU
+backlog at the end of the frame (resolution: the render worker's sleeps, 2 ms). The wake-time poll matters: a WebGL sync
+object only changes state between tasks, so the polls at the draws of the task replaying the next frame saw the status
+of the previous task — until 2026-11-12 a real GPU's fence read the time to the next frame (owner's RTX 4050, AotR
+2026-11-10: draw run 3.75 ms, fence 44.75 ms at 21 fps; tests/gpu-probe.test.js has the regression). Cost outside a
+window: one boolean test per draw. `?dbg=ORTHROS_GPU_METRIC=0` (a host-only flag) turns both off.
 SwiftShader (Vice City 1.1, `vc-quick`, harness): drive phase draw run mean 49-75 ms against a present-to-present p50 of
 50-95 ms (the CPU rasteriser is never idle: they agree); menu at 60 fps: draw run 3.5 ms against 17 ms present-to-present
 (the idle part), fence 16-34 ms (about one frame: the polling resolution); GPU-bound phases show a fence backlog of

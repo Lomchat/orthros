@@ -11,11 +11,13 @@
 // - the bench suite's runs (?benchsuite=, bench-suite.js: every game in a row): per run, each game's outcome and phases
 //   (frame time percentiles, frames > 40 ms, work, GPU time, data waits), the renderer, the host's timers.
 // Usage: node tools/dev/telemetry-report.mjs <telemetry dir | .jsonl file>... [--from YYYY-MM-DD] [--to YYYY-MM-DD]
-//          [--session <id>] [--game <manifest>] [--bench [<name>]] [--suite [<run>]] [--players] [--perf [--gpu <name>]]
+//          [--session <id>] [--game <manifest>] [--bench [<name>]] [--suite [<run>]] [--players] [--compat] [--perf [--gpu <name>]]
 //          [--min-seconds 60] [--json]
 //   --bench: only the sessions with bench runs (of that bench) and the comparison
 //   --suite: only the bench suite's runs (that run: its id), per game
 //   --players: the sessions of benches (marked by the page: their batches' and passive records' `bench`) left out
+//   --compat: per game, over its sessions, the compatibility gaps the sessions met (unknown imports called, COM methods
+//          answering E_NOTIMPL, untranslated shader instructions: core/compat-stats.js), by number of sessions
 //   --perf [--gpu <part of its name>]: the passive session records (every runtime, src/shared/perf-record.js) per game ×
 //          GPU: medians over the sessions, all frames merged, the worst minutes, the slow frames' causes, host timing
 import fs from 'node:fs';
@@ -53,7 +55,7 @@ export function buildSessions(lines, { from = null, to = null, session = null, g
     const day = typeof r.at === 'string' ? r.at.slice(0, 10) : null;
     if (day && ((from && day < from) || (to && day > to))) continue;
     let s = sessions.get(r.session);
-    if (!s) sessions.set(r.session, (s = { id: r.session, game: r.game ?? null, first: r.at ?? null, last: r.at ?? null, env: null, options: null, version: null, samples: [], summaries: [], benches: [], suites: [], bench: null, slow: 0, events: {} }));
+    if (!s) sessions.set(r.session, (s = { id: r.session, game: r.game ?? null, first: r.at ?? null, last: r.at ?? null, env: null, options: null, version: null, samples: [], summaries: [], benches: [], suites: [], bench: null, slow: 0, events: {}, compat: null }));
     if (r.game) s.game = r.game;
     if (r.bench) s.bench = r.bench; // (a bench's session: the page marks its batches — its suite run, or the bench's name)
     if (r.at) { if (!s.first || r.at < s.first) s.first = r.at; if (!s.last || r.at > s.last) s.last = r.at; }
@@ -62,6 +64,7 @@ export function buildSessions(lines, { from = null, to = null, session = null, g
       if (x.event === 'options') { s.options = x.options; s.version = x.version ?? s.version; }
       else if (x.event === 'slow') s.slow++;
       else if (x.event === 'summary') s.summaries.push(x);
+      else if (x.event === 'compat') { if (!s.compat || (x.t ?? 0) >= (s.compat.t ?? 0)) s.compat = x; } // (cumulative: the latest)
       else if (x.event === 'bench') s.benches.push({ ...x, at: x.at ?? r.at ?? null, env: x.env ?? r.env ?? null, session: r.session });
       else if (x.event === 'bench-suite') s.suites.push({ ...x, at: r.at ?? null, env: x.env ?? r.env ?? null });
       else if (x.event) s.events[x.event] = (s.events[x.event] ?? 0) + 1;
@@ -159,7 +162,7 @@ export function report(sessions, { minSeconds = 60, bench = undefined, players =
     const benches = bench === undefined ? s.benches : s.benches.filter((b) => bench === true || b.bench === bench);
     if (bench !== undefined && !benches.length) continue;
     if (seconds < minSeconds && !benches.length) continue;
-    const r = { session: s.id, game: s.game, bench: s.bench, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), benches };
+    const r = { session: s.id, game: s.game, bench: s.bench, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), compat: s.compat, benches };
     for (const st of stretches(s.samples)) {
       const min = st.seconds / 60, n = st.acctFrames || 1, slowTotal = Object.values(st.slowCats).reduce((a, b) => a + b, 0);
       r.stretches.push({ kind: st.kind, at: new Date(st.t0).toISOString().slice(11, 19), seconds: Math.round(st.seconds), fps: +(st.frames / st.seconds).toFixed(1), busy: Math.round(st.busy / st.seconds), per33: Math.round(st.s33 / min), per50: Math.round(st.s50 / min),
@@ -230,6 +233,36 @@ export function formatSuites(runs) {
   return L.join('\n');
 }
 
+const COMPAT_KINDS = [['imports', 'unknown imports called', 'calls'], ['notImpl', 'COM E_NOTIMPL', 'calls'], ['shaderOps', 'untranslated shader instructions', 'programs']];
+/** A session's compatibility summary (core/compat-stats.js) as text lines. */
+export function compatLines(c) {
+  if (!c) return [];
+  return COMPAT_KINDS.filter(([k]) => c[k]?.length).map(([k, label]) => `${label} (${c[k].length + (c.more?.[k] ?? 0)}): ${c[k].map(([n, v]) => `${n} x${v}`).join(', ')}${c.more?.[k] ? `, +${c.more[k]} more` : ''}`);
+}
+
+/** --compat: per game, each gap with the sessions that met it and its counts summed, the most frequent first. */
+export function compatByGame(sessions, { players = false } = {}) {
+  const games = new Map();
+  for (const s of sessions.values()) {
+    if (players && s.bench) continue;
+    const g = games.get(s.game ?? '?') ?? { game: s.game ?? '?', sessions: 0, withGaps: 0, kinds: {} };
+    games.set(g.game, g); g.sessions++;
+    if (!s.compat) continue;
+    g.withGaps++;
+    for (const [k] of COMPAT_KINDS) for (const [name, n] of s.compat[k] ?? []) { const m = (g.kinds[k] ??= {}); const e = (m[name] ??= { sessions: 0, count: 0 }); e.sessions++; e.count += n; }
+  }
+  return [...games.values()].sort((a, b) => b.withGaps - a.withGaps || String(a.game).localeCompare(String(b.game)))
+    .map((g) => ({ ...g, kinds: Object.fromEntries(Object.entries(g.kinds).map(([k, m]) => [k, Object.entries(m).sort((a, b) => b[1].sessions - a[1].sessions || b[1].count - a[1].count).map(([name, e]) => ({ name, ...e }))])) }));
+}
+export function formatCompat(groups) {
+  const L = [];
+  for (const g of groups) {
+    L.push(`${g.game}: ${g.withGaps} of ${g.sessions} session(s) met compatibility gaps`);
+    for (const [k, label, unit] of COMPAT_KINDS) if (g.kinds[k]?.length) L.push(`  ${label}: ${g.kinds[k].map((e) => `${e.name} (${e.sessions} session${e.sessions > 1 ? 's' : ''}, ${e.count} ${unit})`).join(', ')}`);
+  }
+  return L.join('\n') || 'no session';
+}
+
 const cell = (p) => (p ? `${p.fps} fps p99 ${p.dt?.p99 ?? '?'} >33 ${p.per33}/min${p.gpu?.frames ? ` gpu p99 ${p.gpu.p99}` : ''}` : '-');
 
 /** The text report. */
@@ -244,6 +277,7 @@ export function formatReport(reports, comparison) {
       if (st.slowShares) L.push(`      slow frames' time (%): ${st.slowShares}; worst ${st.worst[0]} ms (work ${st.worst[1]}: ${Object.entries(st.worst[2]).map(([k, v]) => `${k} ${v}`).join(', ')})`);
     }
     if (r.audio && r.audio.verdict !== 'none') L.push(`  ${audioText(r.audio)}`);
+    for (const line of compatLines(r.compat)) L.push(`  ${line}`);
     if (r.summaryStretches.length) L.push('  summaries (every ~20 s), merged per stretch:');
     for (const st of r.summaryStretches) {
       L.push(`  ${st.at ?? '--:--:--'} ${st.kind.padEnd(9)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps; frame ms p50 ${st.p50} p90 ${st.p90} p99 ${st.p99} max ${st.max}; >33 ${st.per33}/min >40 ${st.per40} >50 ${st.per50} >100 ${st.per100}; draws/frame ${st.drawsPerFrame ?? '-'}, GL calls/frame ${st.glCallsPerFrame ?? '-'}; GPU ${typeof st.gpu === 'object' && st.gpu ? `${st.gpu.mean} ms/frame p50 ${st.gpu.p50} p99 ${st.gpu.p99} (${st.gpu.frames} frames timed)` : st.gpu ?? '-'}${st.renderWaitMs !== null ? `; render worker waits ${st.renderWaitMs} ms/frame, replay ${st.replayMs}` : ''}${st.visible !== null && st.visible < 0.99 ? `; visible ${Math.round(st.visible * 100)}%` : ''}`);
@@ -385,7 +419,7 @@ function main(args) {
     if (a === '--suite') { const n = args[i + 1]; if (n && !n.startsWith('--') && !fs.existsSync(n)) { suiteRun = n; i++; } else suiteRun = true; continue; }
     if (!a.startsWith('--')) inputs.push(a);
   }
-  if (!inputs.length) { console.error('usage: node tools/dev/telemetry-report.mjs <telemetry dir | file.jsonl>... [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--session id] [--game manifest] [--bench [name]] [--suite [run]] [--players] [--perf [--gpu name]] [--min-seconds 60] [--json]'); return 2; }
+  if (!inputs.length) { console.error('usage: node tools/dev/telemetry-report.mjs <telemetry dir | file.jsonl>... [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--session id] [--game manifest] [--bench [name]] [--suite [run]] [--players] [--compat] [--perf [--gpu name]] [--min-seconds 60] [--json]'); return 2; }
   const range = { from: opt('from', null), to: opt('to', null) };
   if (args.includes('--perf')) {
     const groups = perfReport(perfSessions(readLines(telemetryFiles([...new Set(inputs)], range)), { ...range, session: opt('session', null), game: opt('game', null), gpu: opt('gpu', null), players: args.includes('--players') }), { minSeconds: Number(opt('min-seconds', 60)) });
@@ -393,6 +427,11 @@ function main(args) {
     return 0;
   }
   const sessions = buildSessions(readLines(telemetryFiles([...new Set(inputs)], range)), { ...range, session: opt('session', null), game: opt('game', null) });
+  if (args.includes('--compat')) {
+    const groups = compatByGame(sessions, { players: args.includes('--players') });
+    console.log(args.includes('--json') ? JSON.stringify(groups, null, 1) : formatCompat(groups));
+    return 0;
+  }
   if (suiteRun !== undefined) {
     const runs = suiteRuns(sessions, suiteRun === true ? null : suiteRun);
     if (args.includes('--json')) console.log(JSON.stringify({ suites: runs }, null, 1));

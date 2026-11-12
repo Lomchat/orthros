@@ -38,6 +38,8 @@ const STRINGS = {
     quitTitle: (g) => `Quit ${g}?`, quitSaved: 'Your progress is saved on your account.', quitLocal: 'You are not signed in: your progress stays in this browser only.', quit: 'Quit', stay: 'Keep playing',
     quitSaving: 'Saving your progress…', quitFailed: 'Your progress could not be sent to your account. Quit anyway? It stays in this browser.',
     soundOff: 'Sound is off — click to turn it on', log: 'Launch log', ready: 'Ready',
+    readyMark: '▶ Ready —', readyNote: (g) => `${g} is ready`, readyNoteBody: 'Its first images are on screen: come back to play.',
+    notifyMe: 'Notify me when the game is ready', notifyOn: 'You will be notified when the game is ready.', notifyOff: 'Notifications are blocked for this site: the tab\'s title will say when the game is ready.',
     ahead: 'Preloading', aheadTitle: 'The game downloads ahead what players need next (what earlier sessions read): waiting a little before going on makes it faster.',
     whole: 'Game downloaded', wholeTitle: 'The whole game is being kept in this browser (settings: offline copy): once done it plays without waiting for the network.',
     launch: 'Ready to play', launchTitle: 'What the game still reads before it plays without freezing (a new game\'s first load too) is downloading now: waiting in the menu until then spares you the long freeze.',
@@ -68,6 +70,8 @@ const STRINGS = {
     quitTitle: (g) => `Quitter ${g} ?`, quitSaved: 'Ta progression est sauvegardée sur ton compte.', quitLocal: 'Tu n’es pas connecté : ta progression reste seulement dans ce navigateur.', quit: 'Quitter', stay: 'Continuer à jouer',
     quitSaving: 'Sauvegarde de ta progression…', quitFailed: 'Ta progression n’a pas pu être envoyée sur ton compte. Quitter quand même ? Elle reste dans ce navigateur.',
     soundOff: 'Le son est coupé — clique pour l’activer', log: 'Journal de lancement', ready: 'Prêt',
+    readyMark: '▶ Prêt —', readyNote: (g) => `${g} est prêt`, readyNoteBody: 'Ses premières images sont à l’écran : reviens jouer.',
+    notifyMe: 'Me prévenir quand le jeu est prêt', notifyOn: 'Tu seras prévenu quand le jeu sera prêt.', notifyOff: 'Les notifications sont bloquées pour ce site : le titre de l’onglet dira quand le jeu est prêt.',
     ahead: 'Préchargement', aheadTitle: 'Le jeu télécharge à l’avance ce dont les joueurs ont besoin ensuite (ce que les sessions précédentes ont lu) : attendre un peu avant de continuer le rend plus rapide.',
     whole: 'Jeu téléchargé', wholeTitle: 'Le jeu entier est gardé dans ce navigateur (réglages : copie hors ligne) : une fois fini, il se joue sans attendre le réseau.',
     launch: 'Prêt à jouer', launchTitle: 'Ce que le jeu lit encore avant de tourner sans se figer (le premier chargement d’une nouvelle partie aussi) se télécharge maintenant : attendre dans le menu jusque-là t’évite le long gel.',
@@ -129,8 +133,11 @@ export function createShell(o) {
     h('div', { class: 'brand' }, home, h('span', { class: 'sep' }), gameEl, tagEl),
     h('div', { class: 'spacer' }), extras, mouse, save, perf, settings, full, games);
   shell.bar = bar; shell.extras = extras;
+  // (readyMark: the game reached its first images while the tab was hidden — shell.hideLoader — until the tab is shown)
+  let titleText = o.title, readyMark = false;
+  const showTitle = () => { document.title = `${readyMark ? S.readyMark + ' ' : ''}${titleText} · Orthros`; };
   shell.setTitle = (title, version = o.version, language = o.gameLanguage) => {
-    gameEl.textContent = title; document.title = `${title} · Orthros`;
+    gameEl.textContent = title; titleText = title; showTitle();
     tagEl.textContent = [version, language?.toUpperCase()].filter(Boolean).join(' · ');
     tagEl.hidden = !tagEl.textContent;
   };
@@ -144,8 +151,16 @@ export function createShell(o) {
   const who = h('div', { class: 'who' }), choices = h('div', { class: 'choices' });
   const progress = h('div', { class: 'progress' }, h('div', { class: 'bar' }, fill), h('div', { class: 'row' }, phaseEl, pctEl), stepsEl);
   const loaderBg = h('div', { class: 'bg' });
+  // (a long first load in a hidden tab: the player may ask for a system notification when the game is ready — asked
+  // only from this button, never automatically; shown while the browser has not been answered for this site)
+  const notifyEl = h('button', { type: 'button', class: 'notify', id: 'notifyReady' }, S.notifyMe);
+  notifyEl.hidden = !!o.headless || typeof globalThis.Notification !== 'function' || Notification.permission !== 'default';
+  notifyEl.onclick = async () => {
+    let p = 'default'; try { p = await Notification.requestPermission(); } catch { /* unsupported */ }
+    notifyEl.disabled = true; notifyEl.textContent = p === 'granted' ? S.notifyOn : S.notifyOff;
+  };
   const loader = h('div', { id: 'loader' }, loaderBg, h('div', { class: 'box' },
-    h('div', { class: 'head' }, h('img', { src: LOGO, alt: '' }), h('div', {}, titleEl, subEl)), who, choices, progress, tipEl, logBox));
+    h('div', { class: 'head' }, h('img', { src: LOGO, alt: '' }), h('div', {}, titleEl, subEl)), who, choices, progress, notifyEl, tipEl, logBox));
   if (o.cover) loaderBg.style.backgroundImage = `url(${o.cover})`;
   shell.loader = loader; shell.choices = choices; shell.logEl = logEl;
   let pct = 0, tipTimer = null;
@@ -164,9 +179,26 @@ export function createShell(o) {
   shell.phase = (text, error = false) => { phaseEl.textContent = text; phaseEl.classList.toggle('error', error); if (loader.classList.contains('hidden') && text) shell.toast(text, error ? 9000 : 5000); };
   /** Progress shown or not (the runtime's choices first, as the browser ports' modes). */
   shell.showProgress = (on) => { progress.hidden = !on; };
+  /**
+   * The game is ready (its first images: hideLoader without `now`) while the tab is hidden: the tab's title marks it
+   * until the tab is shown, and a system notification says it when the player allowed them. What was done: shell.ready.
+   */
+  const signalReady = () => {
+    const hidden = document.visibilityState === 'hidden';
+    let notified = false;
+    if (hidden) {
+      readyMark = true; showTitle();
+      document.addEventListener('visibilitychange', function back() { if (document.visibilityState !== 'visible') return; document.removeEventListener('visibilitychange', back); readyMark = false; showTitle(); });
+      if (!o.headless && typeof globalThis.Notification === 'function' && Notification.permission === 'granted') {
+        try { const n = new Notification(S.readyNote(titleText), { body: S.readyNoteBody, icon: LOGO, tag: 'orthros-ready' }); n.onclick = () => { window.focus(); n.close(); }; notified = true; } catch { /* no notification from this page */ }
+      }
+    }
+    shell.ready = { hidden, notified };
+  };
   shell.hideLoader = (now = false) => {
     if (loader.classList.contains('hidden')) return;
     clearInterval(tipTimer);
+    if (!now) signalReady();
     fill.style.width = '100%'; pctEl.textContent = '100%'; phaseEl.textContent = S.ready;
     if (now) { loader.classList.add('hidden'); return; }
     setTimeout(() => { loader.classList.add('gone'); setTimeout(() => { loader.classList.add('hidden'); o.onLoaderHidden?.(); }, 600); }, 250);

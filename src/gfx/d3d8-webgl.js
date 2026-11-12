@@ -6,7 +6,7 @@
 // sampler states, shader objects (SM 1.x–2.x), stream offsets, base vertices, MRT/scissor.
 import { FMT, surfacePitch, surfaceBytes } from '../win32/d3d8.js';
 import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, ffProgramFromKey, flatVaryings, translateVertexShader, translatePixelShader, leanShaders, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
-import { translateVertexShader9, translatePixelShader9, semName, disasmShader9 } from './d3d9-shaders.js';
+import { translateVertexShader9, translatePixelShader9, semName, disasmShader9, OPN } from './d3d9-shaders.js';
 import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION } from './program-id.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { apiOpt } from '../core/api-opt.js';
@@ -1032,6 +1032,7 @@ export class WebGLDevice {
     const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), fog, alphaTest };
     let fsSrc = ff ? ff.fs : ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
     if (flat && !ff) ({ vs: vsSrc, fs: fsSrc } = flatVaryings(vsSrc, fsSrc)); // (ffProgramFromKey: done)
+    if (L.code || ps) this.noteUnsupported(vsSrc, fsSrc, dev.api9 ? 9 : 8);
     // (measurement, dbg ORTHROS_GL_FLATFS=1: every pixel shader replaced by a constant color — what the pixels' shading,
     // texture sampling and interpolation cost a software rasterizer, against depth tests, blending and vertex work)
     if (globalThis.ORTHROS_GL_FLATFS) fsSrc = '#version 300 es\nprecision highp float;\nout vec4 fragColor;\nvoid main() { fragColor = vec4(0.5, 0.5, 0.5, 1.0); }';
@@ -1051,6 +1052,23 @@ export class WebGLDevice {
     if (this.dumpShaders && this.programs.size < 64) this.log(`d3d-webgl: program ${this.programs.size} key=${key}${L.code ? `\nD3D VS\n${disasmShader9(L.code)}` : ''}${ps ? `\nD3D PS\n${disasmShader9(ps.code)}` : ''}\nGLSL VS\n${vsSrc}\nGLSL FS\n${fsSrc}`);
     this.programs.set(key, p);
     return { p, L, stages, lighting, fog, lightTypes, ps };
+  }
+  /**
+   * Shader instructions the translators left out (their `// unsupported vs|ps op N` lines: d3d8-shaders.js,
+   * d3d9-shaders.js), at a new program key: counted in stats.unsupportedOps ('ps9 texm3x2depth': the programs that met
+   * it), warned once each — compatibility telemetry (core/compat-stats.js).
+   */
+  noteUnsupported(vsSrc, fsSrc, sm) {
+    if (!vsSrc.includes('// unsupported') && !fsSrc.includes('// unsupported')) return;
+    const seen = new Set();
+    for (const m of `${vsSrc}\n${fsSrc}`.matchAll(/\/\/ unsupported (vs|ps) op (\d+)/g)) {
+      const op = +m[2], k = `${m[1]}${sm} ${OPN[op] ?? 'op' + op}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const u = this.stats.unsupportedOps ??= {};
+      if (!u[k]) this.log(`d3d-webgl: warning: shader instruction ${k} (opcode ${op}) not translated, left out of the program`);
+      u[k] = (u[k] ?? 0) + 1;
+    }
   }
   /**
    * Build a program at its first draw. The build is learned (programCache.learned: the key and sources, sent to the
@@ -1955,7 +1973,10 @@ export function createWebGLBackend(canvas, log, dump) {
       if (programCache.fence) gl.deleteSync(programCache.fence);
       programCache.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush();
     },
+    /** Back from the event loop: the GPU probe's fences signaled meanwhile are read (gpu-probe.js wake). */
+    wake() { probe?.wake(); },
     beforeSlice(budgetMs) {
+      probe?.wake();
       const f = programCache.fence;
       if (!f) return;
       if (!programCache.pending) { gl.deleteSync(f); programCache.fence = null; return; }

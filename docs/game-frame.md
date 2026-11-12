@@ -43,6 +43,15 @@ figures, a tip, the launch log. Windows, GoldSrc and re3 games start at once; Op
 When an re3 game ends (quit from its own menu), the loading screen comes back: "The game has ended", restart or back
 to the games.
 
+**Ready signal** (shell.js, every runtime): a first launch can take minutes on a slow link, and the player goes to
+another tab. When the game reaches its first images (`shell.hideLoader()` without `now`: the Win32 page at Direct3D's
+first frame, a few GDI frames or a movie's first picture; GoldSrc/re3 at their 10th image; OpenMW when the world is
+drawn) while the tab is hidden, the tab's title gets a prefix (`▶ Prêt — <game> · Orthros`) until the tab is shown
+again, and a system notification says it when the player allowed notifications for the site. The permission is asked
+only from the loading screen's link "Me prévenir quand le jeu est prêt" (shown while the browser has no answer for the
+site), never automatically. `shell.ready` = `{ hidden, notified }`; the Win32 page sends it as a `ready` telemetry event
+with the seconds from the loading screen to the first images.
+
 ## One identity: the Orthros account
 
 - **Saves** (`src/web/cloud-sync.js`, `CloudSave`): before a game starts, the account's copy is put in place when
