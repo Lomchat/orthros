@@ -1221,6 +1221,51 @@ integer part stored through a pointer), `strncpy` (the magic-bits word loop), th
 next lever the per-call figures show — a kernel called from the caller's region at its `call [slot]` (as the inline
 fast APIs are) instead of through two chained transitions.
 
+## The four 2026-11-12 branches combined, measured against main
+
+Merged together: the slot guard's pinning (Chrome against Node), exact SMC invalidation (on), the tier-2 prototype
+(off) and library kernels (off). Integration fixes: invalidations from the APIs (VirtualProtect, VirtualFree,
+FlushInstructionCache) are rounded to whole pages (`Vm.invalidateCode(addr, len, exact)`; only a store the translated
+code caught is exact — host writes into code raise no SMC exit); tier 2's page marker and library kernels are dropped by
+page under exact invalidation (neither has blocks to test, a kernel would otherwise never be dropped); the slot guard
+pins `floor(quota / 100 %)` cores (rounded up, a 250 % quota on 3 cores throttled again) counted with `nproc --all`;
+the harness reads "no quota" from `cpu.max` (cgroup v2 `cpu.stat` has `nr_periods` without a limit too).
+
+Node (startbench, real clock, the live server's learned heat, no background translator; main and combined started
+together, pairs alternated, 5 to 3 pairs; load average 5-15). Per play phase: thread CPU and guest category in ms per
+frame, `jit` category in s per phase, guest ns per instruction:
+
+| game, phase | thread CPU ms/frame main → combined | guest ms/frame | jit s | guest ns/insn |
+|---|---|---|---|---|
+| RotWK `rotwk-quick`, 120 s play (5 pairs) | 18.21 → 18.24 (pairs −1.5 … +0.6 %) | 14.70 → 14.67 | 2.69 → 2.65 | 2.029 → 2.059 |
+| BFME1 1.08 `bfme1-108-quick`, 120 s play (3 pairs) | 15.41 → 15.47 (−2.4 … +2.2 %) | 12.42 → 12.50 | 1.12 → 1.08 | 2.774 → 2.783 |
+| AotR 10 `learn-aotr-skirmish` + 30 s, play2 (3 pairs) | 23.78 / 44.71 / 24.89 → 20.69 / 41.76 / 18.07 (−13 / −7 / −27 %) | 13.93 / 32.34 / 14.72 → 16.45 / 34.28 / 14.91 | 5.80 / 4.27 / 6.11 → 0.14 / 0.10 / 0.09 | 1.521 / 1.241 / 1.577 → 1.755 / 1.254 / 1.909 |
+
+(RotWK's combined runs execute 1-2 % fewer guest instructions for the same frames, hence its higher ns per instruction at
+equal guest ms per frame. Pairs 4-5 ran main under the combined tree's startbench: +0.6 / −1.5 % thread CPU — the harness's
+`--child` wrapper is not the difference.) AotR's guest category per frame is higher in two of three pairs; a pair of
+the combined build with `smcExact` on and off, both with `--jit-profile`, has equal guest ns per instruction in play2
+(1.632 vs 1.628) and equal chained transitions per instruction (0.027 vs 0.028): the code runs as fast, the frames
+differ in content (one of the pair was CPU-saturated at 16.7 fps, the exact one at 25.6 fps).
+
+Chrome (headless shell, both trees' pages through the combined slot guard: pinned to the slot's 4 cores, `--gl-discard`,
+fresh profile, copies of the live learned data; one browser at a time, main and combined alternated):
+
+| game, phase | fps main → combined | worker CPU ms/frame | guest ms/frame | jit ms/frame | guest ns/insn |
+|---|---|---|---|---|---|
+| RotWK `rotwk-quick` play, run 1 / 2 | 28.2 → 26.9 / 26.8 → 27.0 | 17.66 → 16.80 / 16.59 → 16.74 | 17.6 → 16.6 / 16.1 → 16.4 | 0 | 2.45 → 2.51 / 2.41 → 2.11 |
+| AotR play / play2 (pair 2) | 21.5 → 21.7 / 24.1 → 25.3 | 24.13 → 22.64 / 22.36 → 20.32 | 24.1 → 24.1 / 21.6 → 21.5 | 1.5 → 0 / 1.4 → 0 | 2.62 → 2.61 / 2.49 → 2.52 |
+
+(The browser translates in its background worker, so AotR's retranslations cost the emulator thread only their
+installation, 1.4-1.5 ms per frame, not the 6-10 ms of Node. AotR pair 1 is not comparable: the combined run waited 380 s
+in play for the scenario's 400-draw mark — the flake the SMC work met in both variants — and its "play" phase came
+six minutes later in the game, at 10 fps with 40 ms per frame of rendering waits; main's: 21.7 / 24.2 fps, 24.5 / 22.5 ms
+worker CPU per frame.)
+
+Result: no regression beyond the pairs' spread on RotWK or BFME1 (Node and Chrome); AotR −7 to −27 % thread CPU per
+frame in Node and −6 to −9 % in Chrome, all of it the translation that exact invalidation no longer redoes. Defaults:
+`smcExact` on, `tier2` off, `libKernels` off, slot pinning on.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
