@@ -357,21 +357,35 @@ if (threadInsns && scenario && opt('slow-threads')) {
     slow = new Map(); all = new Map(); nSlow = 0; nAll = 0;
   });
 }
-// --cpu-prof <file.cpuprofile> --cpu-prof-window <phase>:<from s>:<to s>: a V8 CPU profile of this thread between those
-// seconds of a scenario phase (e.g. play:120:180: one minute of play), for Chrome DevTools or a summary script
+// --cpu-prof <file.cpuprofile> --cpu-prof-window <phase>:<from s>:<to s>[,<phase>:<from>:<to>...]: a V8 CPU profile of
+// this thread between those seconds of a scenario phase (e.g. play:120:180: one minute of play), for Chrome DevTools or
+// a summary script (tools/dev/guest-profile.mjs: per guest function); several windows (in their order of play) write
+// <file>.1, <file>.2...
 let cpuProf = null;
 if (scenario && opt('cpu-prof')) {
-  const [label, from, to] = (opt('cpu-prof-window') ?? 'play:60:120').split(':');
+  const wins = (opt('cpu-prof-window') ?? 'play:60:120').split(',').map((w, i, all) => { const [label, from, to] = w.split(':'); return { label, from: Number(from), to: Number(to), file: all.length > 1 ? `${opt('cpu-prof')}.${i + 1}` : opt('cpu-prof') }; });
   const { Session } = await import('node:inspector');
-  cpuProf = { label, from: Number(from), to: Number(to), file: opt('cpu-prof'), session: new Session(), on: false, done: false };
+  cpuProf = { wins, ...wins[0], session: new Session(), on: false, done: false };
   cpuProf.session.connect();
 }
 const cpuProfTick = () => {
-  const p = cpuProf, ph = scenario.phase; if (p.done || !ph || ph.label !== p.label) return;
+  const p = cpuProf, ph = scenario.phase; if (p.done || !ph) return;
+  if (ph.label !== p.label) {
+    // (the phase ended before the window did: the window ends there; a window whose phase has passed is skipped)
+    if (p.on) stopCpuProf(p, `${ph.label} began`);
+    else if (p.seen) { p.wins.shift(); if (p.wins.length) Object.assign(p, p.wins[0], { seen: false }); else p.done = true; }
+    return;
+  }
+  p.seen = true;
   const s = scenario.now() - ph.t;
-  if (!p.on && s >= p.from) { p.on = true; p.session.post('Profiler.enable'); p.session.post('Profiler.setSamplingInterval', { interval: 200 }); p.session.post('Profiler.start'); console.log(`[cpuprof] started at ${p.label}+${s.toFixed(1)} s`); }
-  else if (p.on && s >= p.to) { p.done = true; p.session.post('Profiler.stop', (err, r) => { if (!err) fs.writeFileSync(p.file, JSON.stringify(r.profile)); console.log(`[cpuprof] ${err ? 'failed: ' + err.message : 'written ' + p.file}`); }); }
+  if (!p.on && s >= p.from) { p.on = true; p.session.post('Profiler.enable'); p.session.post('Profiler.setSamplingInterval', { interval: 200 }); p.session.post('Profiler.start'); p.frames0 = scenario.vm.d3dDevice?.frames ?? 0; console.log(`[cpuprof] started at ${p.label}+${s.toFixed(1)} s, ${(vm.guestInsns / 1e6).toFixed(0)} M guest instructions`); }
+  else if (p.on && s >= p.to) stopCpuProf(p, `${p.label}+${s.toFixed(1)} s`);
 };
+function stopCpuProf(p, at) {
+  const file = p.file, frames = (scenario.vm.d3dDevice?.frames ?? 0) - p.frames0; p.wins.shift(); p.on = false;
+  if (p.wins.length) Object.assign(p, p.wins[0], { seen: false }); else p.done = true;
+  p.session.post('Profiler.stop', (err, r) => { if (!err) fs.writeFileSync(file, JSON.stringify(r.profile)); console.log(`[cpuprof] ${err ? 'failed: ' + err.message : 'written ' + file} at ${at}, ${(vm.guestInsns / 1e6).toFixed(0)} M guest instructions, ${frames} frames`); });
+}
 // (`v`: the machine whose thread called the thunk — the root, or with --child a child process)
 const onThunk = (v, t, i) => {
   if (cpuProf) cpuProfTick();

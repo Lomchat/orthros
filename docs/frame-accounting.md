@@ -164,9 +164,75 @@ locks now succeed: 83.6 → 108.9 G instructions in ten minutes).
 
 `startbench` options for this kind of work: `--sleeps` (each phase's Sleep pattern per thread: Sleep(0) calls, those
 that ran a ready thread, throttled ones, why their streaks ended), `--threads --slow-threads <ms>` (each thread's guest
-instructions in the frames over that), `--slow-apis <ms>`, `--cpu-prof <file> --cpu-prof-window <phase>:<from>:<to>` (a
-V8 profile of a window of a phase), `--api-seq <n>@<s>` (the next n API calls after s seconds).
+instructions in the frames over that), `--slow-apis <ms>`, `--cpu-prof <file> --cpu-prof-window <phase>:<from>:<to>[,...]` (a
+V8 profile of a window of a phase; several windows write `<file>.1`, `<file>.2`...; `tools/dev/guest-profile.mjs` reads
+them per guest function, below), `--api-seq <n>@<s>` (the next n API calls after s seconds).
 
 `rotwk-phases.txt` (rotwk-202, 1024x768) needs a rotwk profile; `bfme-phases.txt` (bfme-vanilla, 800x600) a profile
 saved by an earlier run (`/tmp/orthros-profiles/bfme-vanilla`). `--gl-discard` measures the CPU side (headless
 SwiftShader otherwise makes `draw` — the GPU process behind — dominate every rendered frame of play).
+
+## CPU margin along a skirmish (2026-11-12): what grows, and three levers measured first — no-go, nothing built
+
+The owner's BFME 1.08 skirmish (telemetry of 2026-11-08, Andrast, Gondor against one easy AI, 26 minutes, High
+detail): the guest category rises from ~8 ms per frame (minutes 2-8) to 15-22 ms (minutes 11-26) at a steady 30 fps.
+The ~0.5 s summaries show it follows the guest instructions: ~200 M per second (6.7 M per frame) early, 700-830 M per
+second (23-28 M per frame) at the peaks, while the time per instruction falls (~1.2 → ~0.85 ns). More game work —
+units, fights, sounds — not slower emulation.
+
+**Reproduced in Node** (`tools/scenarios/bfme1-108-long.txt`: bfme1-108-quick's menu and skirmish start, then 30
+minutes of its order / camera cycle, marks every 5 minutes; `startbench --virtual --gfx recorder`, the live learned
+heat, a fresh profile whose `Options.ini` is the owner's — High detail, 1024x768; the default skirmish is the owner's
+setup). The passive player is attacked and loses at ~14 minutes (from then on a score screen: 1.3 M instructions per
+frame); before that the guest work grows as in the owner's game. Guest instructions per frame by 5-minute phase: 4.5 M
+(28.6 fps), 6.5 M (25.1 fps), 11.7 M (16.7 fps: Node saturated, the virtual clock's frames lengthen). With the
+default Options of a fresh Node profile (VeryLow detail) the same run plays 2.0 M per frame and the player loses
+within 5 minutes: measure with the owner's settings.
+
+**Per guest function** (`startbench --cpu-prof <file> --cpu-prof-window m00:60:120,...,m10:180:240`: one V8 profile per
+60 s window; `tools/dev/guest-profile.mjs <early> <late> --pe lotrbfme.exe --pe msvcr71.dll --pe mss32.dll --pe
+mss/mssmp3.asi --frames <n>,<n>`: the translated regions grouped by the guest function holding their entry — function
+starts from the `call rel32` targets, the exports and the 16-byte-aligned starts after padding — and compared). Early
+minute (m00 60-120 s, 1 732 frames) against the peak (m10 180-240 s, ~1 000 frames: the phase's 16.7 fps): translated
+guest code 6.1 → 14.2 ms per frame (+8.0), the JavaScript API and Direct3D side 1.71 → 2.41 ms (+0.70). The guest growth
+is spread over the whole game: the three functions that grow most explain 3.9 + 3.8 + 2.9 = 10.7 % of it, the top 25 34
+%, and half needs 62 functions (81 in a second pair of windows, m00 120-180 against m10 120-180, whose top three are
+other functions and explain 7.4 %); 1 805 guest functions have time at the peak. (Wall-time profiles on the shared
+machine: the guest ns per instruction of the windows moved between 1.1 and 2.7 with the load — two m10 windows were
+taken during a spike — so the figures are ±20 %; the ranking and the spread are what the comparison shows.) By address
+range of the executable, the 0xd00000 megabyte grows most (2.5 of the 8.0 ms); Miles (`mss32.dll`: its mixer, ADPCM
+decoding) 0.40 ms, the C runtime 0.26 ms (`floor` 0.09). **(a) answered: no — no two or three routines explain half of
+the gap;** a margin for weaker machines comes from the speed of translated code in general, not from a few hot spots.
+
+**The three levers sized on the same profiles** (upper bounds: each lever's whole cost removed):
+- **(b) Pure Direct3D setters sent raw to the render worker's ring.** The deferred queue's drain is 0.87 ms per frame
+  early and 1.17 ms at the peak (0.77 ms in the VeryLow run), most of it the draws' recording (`DrawIndexedPrimitive`
+  0.30 → 0.48 ms). The setters whose emulator-side work is a state table and a forward to the recorder
+  (`SetRenderState`, `SetTextureStageState`, `SetSamplerState`, `SetMaterial`, `SetViewport`, `LightEnable`,
+  `SetPixelShader`) are 0.17 ms early and 0.19 ms at the peak; with their share of the queue loop's own time
+  (`drainDeferred` + `callQueued` self 0.14 / 0.17 ms, all queued calls) at most ~0.29 ms per frame would go if they cost
+  nothing at all — and a raw record still has to be written and the device's tables kept for `Get*`, state blocks and
+  the draws. `SetTexture`, `SetTransform`, `SetStreamSource` and `SetIndices` are not pure (references, shadows,
+  version counters). The gate (api + draw −0.3 ms per frame on two games) cannot be reached: **no-go**, nothing built.
+  (The profile of 2026-10-22 above, 1.6-1.7 ms per drain-frame of which "~40 %" queue and handlers, predates the
+  issued-state filter's later work: the setters reaching JavaScript are fewer now.)
+- **(c) floor / ceil / fabs inline in the calling region.** `floor` (msvcr71, its translation) is 0.108 ms per frame
+  early and 0.196 ms at the peak (1.4 % of the guest code), `ceil` 0.008, `fabs` nothing measurable. At ~57 ns per
+  translated call (docs/jit-code-shape.md, library kernels) and 15 ns for an inline one, at most ~0.15 ms per frame (1 %
+  of the guest) at the peak — below what a time measure resolves on this machine (the library kernels' 45-ns calls,
+  which already take part of it, did not show beyond the ±3 % spread). Inline code would also have to reproduce, in
+  the caller's region, the x87 stack and status word kept in locals, the XMM registers it caches, the stack words and
+  registers the routine leaves, and drop itself with the kernel: **no-go** on the "measurable play gain" gate, nothing
+  built.
+- **(d) The x87 compare idiom fused (FCOM-family, FNSTSW AX, TEST/AND AH, Jcc).** `guest-profile.mjs --idiom 30`
+  decodes the 30 hottest guest functions: the idiom is 1.2 % of their instructions weighted by time at the peak (2.2 %
+  in the High-detail run's first minutes, 1.1 % in the VeryLow one), 12 % in the densest function (100 instructions,
+  0.12 ms per frame). Far from the 30 % of a hot loop the gate asks: **no-go**, nothing built.
+
+**Profiles of the harness.** `startbench`'s per-API-call hook (`onThunk`) shows 0.20-0.33 ms per frame of self time in
+these profiles and the window check (`cpuProfTick`) 0.15-0.19 ms; reading the flags once and checking the window
+every 64 calls left both unchanged on the same deterministic window (0.206 / 0.147 ms before, 0.203 / 0.189 after):
+samples taken at the WebAssembly → JavaScript boundary of each API call land there, not a cost of that code — the
+change was not kept. Fixed: a window still open when its phase ends is closed there (it used to stay open for the
+rest of the run, and the windows after it never started); each window's line gives its guest instructions and frames
+(the early window above: 1 732 frames, 7 066 M instructions).

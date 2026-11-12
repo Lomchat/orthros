@@ -208,7 +208,9 @@ filter drops the others on the fast path — and draws), ~0.7 µs per call. Insi
 6 %, the vertex ranges a draw reads 6.5 %, textures and streams 5.5 %), the state handlers (SetRenderState 6 %,
 SetTexture 6 %, SetTextureStageState 5 %, the state-use report's `noteState` 3 %, the state tables 2.5 %, the
 bindings 5 %). No single waste: the Direct3D work of the game itself. Slow frames (> 40 ms) drain 2.2-2.5 ms against 1.65
-on average: more draws, not a stall. What the profile did find was outside the queue:
+on average: more draws, not a stall. (Measured again 2026-11-12 along a High-detail skirmish: the drain 0.87 → 1.17 ms per
+frame, the pure setters 0.17-0.19 ms of it — sending them raw to the render worker could not reach −0.3 ms: no-go,
+docs/frame-accounting.md "CPU margin along a skirmish".) What the profile did find was outside the queue:
 
 - **Refused buffer locks.** ~290 `IDirect3DVertexBuffer9::Lock` per frame failed with D3DERR_INVALIDCALL: the game locks
   one dynamic vertex buffer once with DISCARD, never unlocks it, then locks it again ~290 times per frame with

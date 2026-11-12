@@ -1220,7 +1220,10 @@ Not done here: `ldexp` (`_decomp` / `_set_exp`, ~90 instructions with the frame 
 integer part stored through a pointer), `strncpy` (the magic-bits word loop), the MP3 decoder (not a kernel: its
 stream functions are the host's, decoding off the thread — docs/miles-mp3.md), and the next lever the per-call
 figures show — a kernel called from the caller's region at its `call [slot]` (as the inline fast APIs are) instead of
-through two chained transitions.
+through two chained transitions. Sized 2026-11-12 (docs/frame-accounting.md "CPU margin along a skirmish"): `floor` is 1.4 % of BFME 1.08's guest
+code at a skirmish's peak, `ceil` / `fabs` nothing measurable — an inline `floor` at 15 ns would save at most ~1 %:
+no-go, not built. The x87 compare idiom (FCOM / FNSTSW / TEST AH / Jcc) is 1.2 % of the hottest functions'
+instructions: no fusion either.
 
 ## The four 2026-11-12 branches combined, measured against main
 
