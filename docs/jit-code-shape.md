@@ -902,6 +902,86 @@ instruction fetch of a large, flat body of translated code, and a jump table add
 Off by default (`JIT_DEFAULTS.jumpTables`); `?jitopts={"jumpTables":true}` or `dbg:ORTHROS_JIT_JTAB_OFF=` (empty: on,
 `=1`: off; both retranslate everything) for measurement.
 
+## Library kernels recognised by content (2026-11-12, D122): exact, on by default
+
+The C runtime the SAGE games ship (msvcr71.dll 7.10.3052.4, the same file in BFME1, BFME2, RotWK and AotR) runs 8.7 %
+of RotWK's executed guest bytes in play (the study of 2026-11-12: `floor` 3.71 %, `fabs` 0.82 %, `ldexp` 0.81 %, `memcmp`
+0.69 %, `memcpy` 0.61 %, `strncpy` 0.40 %, `modf` 0.30 %, `ceil` 0.18 %). The owner allowed recognising such libraries by
+their content (DECISIONS.md D122): a library is recognised, never a game.
+
+**Mechanism** (src/cpu/jit/libkernels.js, Jit.libKernel):
+- A definition lists the byte ranges a kernel depends on, relative to the function's entry (the function, the helpers
+  its path calls, the constants and jump tables it reads), and the absolute addresses among them. Its fingerprint (two
+  32-bit hashes) replaces each address by its offset from the entry: the library loaded at another base matches, and
+  its data is known to sit at the same offsets. Only fingerprints ship, no library bytes;
+  `tools/gen/libkernel-sigs.mjs <dll>` prints a DLL's (export names are used there only, to write the table).
+- Recognition happens where the JIT meets an address: a hash miss (before the cold tier), a translation request
+  (prewarm, background), and every block a region registers (a caller translating the function with it by a direct
+  call would otherwise hold its entry's hash entry). A first-byte and a 12-byte
+  quick hash probe come before the fingerprint. Only addresses inside a DLL the process mapped count (Vm.inLibrary:
+  never the executable).
+- A kernel is a WASM function with the regions' signature, entered through the hash table like a region (its block
+  parameter is the entry address); it returns through the chain stub to the caller's address. It reproduces every
+  effect of the original path: the result, every register the code leaves (the values its helpers leave in EAX, ECX,
+  EDX), the flags of its last flag-setting instruction (lazy), the x87 control / status / tag words, stack top and the
+  physical registers it pushed through, the XMM registers and MXCSR, the stack memory the code writes below the
+  caller's ESP (dead to the caller, kept all the same), and the guest instructions charged to the budget (the same
+  count: `startbench --virtual` runs repeat their guest work exactly with the kernels on or off).
+- Anything its path does not cover — an infinity / NaN where the code takes an error path, an x87 push that would
+  overflow, an unmasked exception the path raises, DF set, a pointer in the first 64 KiB or near the end of the
+  space, a destination page holding translated code (SMC), the overlapping backward copy, MXCSR with DAZ / FTZ — leaves
+  with EXIT_STEP at the entry: the interpreter runs the first instruction and translation goes on. A kernel counts its
+  calls (LIB_CALLS); one with more than a quarter of its calls off its path is dropped (the translation runs).
+- The pages of the fingerprinted bytes are flagged for SMC detection like a region's: a write there drops the kernel,
+  and changed code is not recognised again. No state of its own: everything is derived from memory at the next miss
+  (a snapshot restores nothing for it).
+- Switches: `ORTHROS_LIBKERNELS=0` (debug global or environment), the JIT option `libKernels` (`dbg:ORTHROS_JIT_AB=
+  {"libKernels":false}` in a session, `ORTHROS_JIT_DEFAULTS='{"libKernels":false}'` for ab-virtual).
+
+**Kernels** (msvcr71 7.10.3052.4):
+- `floor` / `ceil`: the SSE2 path (msvcr71 sets `__sse2_available` under Orthros: IsProcessorFeaturePresent reports
+  SSE2) — `stmxcsr` / `fnstcw` probes, the truncation by shifts of xmm1, the ±1.0 adjustment from a compare mask, the
+  result stored over the argument and loaded with `fld` — and the x87 path (`__sse2_available` clear: `_ctrlfp` to a
+  round-down / up control word, `frndint`, compare, `_ctrlfp` back). NaN (RotWK calls `floor(-NaN)` ~2 300 times in a
+  run): the error path, the exact way.
+- `fabs`: the x87 path (no SSE2 variant): `_ctrlfp(0x133f)`, the sign cleared through the frame, `_ctrlfp` back.
+- `memcmp`: the byte loop and the `repz cmpsd` path, compared 8 bytes at a time; ECX / EDX and the instruction count
+  follow from the position of the first difference.
+- `memcpy` (a memmove): the forward copy to a 4-aligned destination (rep movsd or the unrolled table, then the byte
+  tail), as `memory.copy`; the destination's pages checked first.
+- tests/jit-lib-kernels.test.js: each kernel against the reference interpreter running the DLL's own code (from a game
+  folder; skipped without), on randomized inputs and machine states, at the DLL's base and relocated, with and without
+  chaining; everything compared (registers, flags, x87 and SSE state, the stack around the frame, the buffers, the
+  library's data, the instructions charged), and that the kernel ran exactly when its path applies. Also a copy into
+  a code page, a write to the fingerprinted code, a direct call translated with its caller, code outside a library.
+  Mutations of the kernels (a condition code, a stack word, a register, a count, a tail case) fail it.
+
+**Measurements** (Node 24, EPYC 7402P, the server loaded at 9-24 by other sessions):
+- Per call (tools/bench/libkernel-bench.mjs, a guest loop calling through a function pointer, 10 M calls, median of 3,
+  `--no-liftoff`), kernel / translation: `floor` 45.0 / 56.7 ns, `ceil` 45.2 / 58.0, `fabs` 43.1 / 140.9 (the two
+  control-word switches), `memcmp` (16 equal bytes) 35.6 / 44.6, `memcpy` (64 bytes) 42.0 / 62.8. What remains is
+  mostly the two transitions (call and return through the chain stub, ~23 ns a pair) and the loop.
+- Calls in a run (`startbench --virtual`, `[libkernels]` with ORTHROS_JIT_STATS=1): RotWK 2.02 bench `rotwk-short`
+  (menu, skirmish start, 50 s of play): `memcmp` 19.0 M, `floor` 10.0 M (2 316 off its path: NaN), `fabs` 2.2 M, `ceil`
+  0.2 M; BFME1 1.08 `bfme1-108-short` (its 127 G-instruction map load and 40 s of play): `floor` 88.4 M (560 off its
+  path), `ceil` 0.9 M, `memcpy` 102. Estimated from the per-call savings: ~0.5 s of RotWK's run, ~1.0 s of BFME1's.
+- `tools/bench/ab-virtual.mjs --perf`, 2 runs per variant, on = defaults, off = `{"libKernels":false}`, the same guest
+  instructions in every phase. JIT instructions of the whole run (the deterministic measure: two runs of one variant
+  agree within ~0.1 %): RotWK −1.6 %, −1.8 %, −1.5 % (three rounds), BFME1 −0.6 %, −0.8 %, −0.6 %. Guest ns per
+  instruction, on vs off: RotWK play 2.928 / 3.002 (−2.5 %), 3.068 / 3.085 (−0.6 %), 3.361 / 3.235 (+3.9 %, the round
+  run at load 17-24 with the two runs of each variant 1-5 % apart); RotWK load 3.536 / 3.515, 3.622 / 3.589, 3.622 / 3.590;
+  BFME1 play 2.010 / 2.030 (−1.0 %), 2.056 / 2.004 (+2.6 %), 2.458 / 2.421 (+1.5 %); BFME1 map load 1.856 / 1.871
+  (−0.8 %), 2.016 / 2.008, 2.292 / 2.332 (−1.7 %). JIT cycles −1.9 / −0.9 / +5.1 % (RotWK), −1.0 / +1.2 / −1.4 %
+  (BFME1). The time measures do not resolve the ~0.5-1.5 % the instruction counts and the per-call figures predict:
+  the spread between rounds on this loaded machine is ±3 %.
+- On by default: fewer host instructions on both games in every round, every kernel faster than its translation per
+  call, exact; no measure where it loses beyond the spread.
+
+Not done here: `ldexp` (`_decomp` / `_set_exp`, ~90 instructions with the frame they leave), `modf` (SSE2 path and the
+integer part stored through a pointer), `strncpy` (the magic-bits word loop), the MP3 decoder (a later step), and the
+next lever the per-call figures show — a kernel called from the caller's region at its `call [slot]` (as the inline
+fast APIs are) instead of through two chained transitions.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
