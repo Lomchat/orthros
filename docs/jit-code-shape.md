@@ -1369,6 +1369,62 @@ Off by default, kept for measurement: `hotProfile`, `hotOnly`, `hotRatio`, `hotO
 would count nothing. Not measured (the gate failed on the two games it names):
 BFME1, Vice City, Chrome.
 
+## The second round of 2026-11-12 combined (footprint, Miles MP3, code shared by content), measured against main
+
+Merged: the hot-code footprint prototype (hotcode.js, every option off, no-go), Miles' MP3 decoder run by the host
+(docs/miles-mp3.md, `ORTHROS_MP3_HOST` off by default) and learned code shared by content (src/server/code-share.js,
+docs/startup.md, on by default in the server). Integration fixes: code-share hashes a module file only after a PE header
+check and at most 64 MiB (module names come from unauthenticated POSTs: an archive posted as a module was read whole on
+the server's thread), a page shared by several small sections is hashed with all of them; `hotProfile` refused beside
+tier 2's window; a failed translation in `translateGroups` gives its table index back. With the defaults, the client
+runs the same code as main; what changes is the heat and region lists the server serves (own + lent).
+
+Node (startbench, `--gfx recorder`, no background translator; main with the version's own learned heat, the combined
+tree with the heat its server now serves — `tools/dev/code-share.mjs` on a copy of the live learn directory; main and
+combined started together, pairs alternated; load average 2-17):
+
+| game, phase | thread CPU ms/frame main → combined | guest ms/frame | guest ns/insn | jit s per phase |
+|---|---|---|---|---|
+| RotWK 2.02 `rotwk-quick` play 120 s, real clock (2 pairs) | 18.21 / 19.57 → 18.16 / 19.49 (−0.3 / −0.4 %) | 13.94 / 14.99 → 14.07 / 15.04 | 1.951 / 1.965 → 1.980 / 2.025 | 2.70 / 3.39 → 1.98 / 2.40 |
+| RotWK 2.02 `rotwk-quick` play, `--virtual` (4 rounds; identical guest work) | 12.95 → 13.09 (+1.1 %; own heat on the combined tree 12.98) | 10.34 → 10.50 (own heat 10.38) | 1.853 → 1.884 (rounds +2.4 / +3.6 / −0.1 / +0.8 %; own heat 1.862) | 1.42 → 1.33 |
+| BFME 1.08 `bfme1-108-quick` play 120 s (3 pairs) | 16.23 / 15.90 / 16.29 → 16.39 / 16.27 / 16.45 (+1.0 / +2.3 / +1.0 %) | 12.14 / 11.80 / 12.19 → 12.30 / 12.15 / 12.25 | 2.749 / 2.735 / 2.763 → 2.700 / 2.786 / 2.703 | 0.74 / 0.64 / 0.76 → 1.26 / 0.77 / 1.34 |
+| Vice City `vc-quick` drive 48 s (3 pairs; nothing lent) | 18.23 / 19.46 / 18.40 → 18.65 / 17.31 / 19.27 | 13.57 / 13.67 / 13.59 → 13.60 / 12.61 / 14.79 | 2.644 / 2.794 / 2.779 → 2.662 / 2.828 / 2.500 | 1.23 / 1.48 / 1.15 → 1.27 / 1.08 / 1.50 |
+| AotR 10 `learn-aotr-skirmish` + play2 (3 pairs) | play 38.3 / 22.0 / 29.9 → 26.7 / 26.7 / 27.5 | — | not comparable (2.3-11.1 G instructions in the same 20 s) | — |
+
+(BFME1's combined runs executed 1-3 % more guest instructions per frame in all three pairs at an equal or lower cost
+per instruction — the game's content in real time —, plus ~0.5 s more translation per phase in two of three: the lent
+heat makes some regions larger. RotWK `--virtual`, the only deterministic comparison: +1.7 % ns per instruction with
+the served heat, +0.5 % with the version's own heat on the same tree, within the ±2-3 % spread of the rounds.)
+
+Chrome (headless shell through the slot guard, pinned to the slot's 4 cores, `--gl-discard`, fresh profile, each run
+its own copy of the live learn directory without snapshots, the harness's server from each tree — the combined one
+lends; one browser at a time, order alternated):
+
+| game, phase | fps main → combined | worker CPU ms/frame | guest ns/insn |
+|---|---|---|---|
+| RotWK `rotwk-quick` play, runs 2 / 3 (run 1 in bench mode, no CPU report: 26.7 → 26.6 fps, guest 2.31 → 2.22 ns) | 28.8 / 26.8 → 28.0 / 27.9 | 17.12 / 16.83 → 17.94 / 18.53 (per M guest instructions 2.45 / 2.52 → 2.50 / 2.50) | 2.36 / 2.51 → 2.43 / 2.44 |
+| AotR play, main runs 1 / 3, combined 1 / 2 / 3 | 20.8 / 19.7 → 20.8 / 21.5 / 20.9 | 24.81 / 24.86 → 26.25 / 23.81 / 24.70 | 2.66 / 2.71 → 2.75 / 2.63 / 2.79 |
+| AotR play2 (10 s) | 24.0 / 22.6 → 24.7 / 24.4 / 25.6 | 20.82 / 22.71 → 24.37 / 21.12 / 20.77 | 2.34 / 2.69 → 2.84 / 2.55 / 2.70 |
+
+(AotR main run 2 met the scenario's 400-draw anchor flake — 406 s of loading screen, then another game state at
+12.6 fps and 22 M instructions per frame —: left out. RotWK's combined runs did 3-11 % more guest work per frame: the
+same cost per instruction.)
+
+Startup, Chrome, RotWK 2.02 (a mature version: its own data plus the lent): first Direct3D frame 26 / 26 / 26 s →
+29 / 27 / 28 s, menu anchor 49 / 49 s → 51 / 52 s, play starts at the same time (98 → 97 s). AotR: first frame 102-103 s
+→ 99-103 s. Most of RotWK's delay is the harness: its server is new at each run, so the first `/api/heat` request
+builds the content index (1.3-1.6 s, synchronously) on the start's path, where the live server builds it 20 s after
+its start. With a standalone server of each tree started 30 s before the run (2 pairs, `--br-cache off`): first frame
+24 / 24 → 25 / 25 s, menu anchor 47 / 47 → 48 / 48 s, play from 92 / 94 → 93 / 94 s; play 28.5 / 28.9 → 28.7 / 28.5 fps,
+worker CPU 17.40 / 16.84 → 17.43 / 17.68 ms per frame, guest 2.35 / 2.33 → 2.42 / 2.36 ns per instruction. The second
+left is the lent data itself (RotWK 2.02 has 37 435 entries of its own, 2 565 lent fill the 40 000; its heat grows by
+the other versions' ranges, regions get larger): a mature version gains nothing from it.
+
+Result: no play regression beyond the pairs' spread on RotWK, BFME1, Vice City (Node) or RotWK, AotR (Chrome); a
+mature version's start is ~1 s later in Chrome with a warmed server (RotWK 2.02, two pairs; 1-3 s with the harness's
+new server), against 9-18 s gained by a first session (docs/startup.md). Possible follow-up: lend only to a version
+whose own data is still small. Defaults: code share on (server), MP3 host off, every hot* option off.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
