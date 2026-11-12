@@ -1,0 +1,39 @@
+# Hot-code footprint (src/cpu/jit/hotcode.js) A/B on Age of the Ring play, for tools/bench/ab-virtual.mjs --perf-phase
+# --perf-label hotplay (-- --coords 1024,768 --child --until-api none; a profile past the intro, e.g. build/saves/aotr-10):
+# the warm job's skirmish start (bench/learn-aotr-skirmish.txt), then the profile window in every variant (2 G guest
+# instructions; at its end every region is translated again under the variant's hot* options), a warm-up and the
+# measured phase hotplay (ORTHROS_PERF_CTL: perf --control enabled during it only).
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++15:key:27
++18:key:27
++20:waitframe:14,100000
+0:mark:menu
+4:move:199,148
+5:click:199,148
+8:move:400,149
+9:click:400,149
+10:waitframe:100,180
+0:mark:profile
+2:click:505,364
+4:text:Orthros
+7:move:404,513
+8:click:404,513
+9:waitframe:190,600
+0:mark:setup
+3:move:873,734
+4:click:873,734
+5:mark:load
+6:waitframe:60,110
+0:mark:loadscreen
+1:waitframe:400,100000
+0:mark:play
+10:dbg:ORTHROS_JIT_AB={"hotProfile":true,"hotWindow":2000000000}
+10:mark:hotprofile
+35:mark:warm
+50:dbg:ORTHROS_PERF_CTL=1
+50:mark:hotplay
+100:dbg:ORTHROS_PERF_CTL=0
+100:mark:end
