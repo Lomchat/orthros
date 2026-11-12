@@ -22,6 +22,7 @@
 // runs each kernel against the reference interpreter running the original code on randomized inputs.
 import { ModuleBuilder, Code, T } from './wasm.js';
 import { ST } from '../state.js';
+import { SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL } from '../memory.js';
 import { REGION_PARAMS, REGION_RESULTS, REGION_ARG_OFFSETS, EXIT_STEP, LZ, FAST_STATS } from './runtime.js';
 
 /** the calls of each kernel (u32 per definition, counted by the kernel: the share of calls off its path, see Jit.libFallback) */
@@ -58,6 +59,13 @@ export const LIB_KERNELS = Object.freeze([
   {
     name: 'msvcr71!memcmp', kind: 'memcmp', ref: 0x7c343234, first: 0x8b,
     ranges: [[0, 0xb8]], relocs: [], hash: [0x61345d54, 0xd0825227],
+    k: {},
+  },
+  // memcpy (a memmove): the forward copy to a 4-aligned destination; its jump tables are among the bytes fingerprinted
+  {
+    name: 'msvcr71!memcpy', kind: 'memcpy', ref: 0x7c342ebb, first: 0x55,
+    ranges: [[0, 0x7c343056 - 0x7c342ebb]], relocs: [0x38, 0x50, 0x57, 0x5e, 0x65, 0x69, 0x6d, 0x96, 0xb9, 0xd6, 0xe5, 0xe9, 0xed, 0xf1, 0xf5, 0xf9, 0xfd, 0x101, 0x14b, 0x151, 0x155, 0x159, 0x15d],
+    hash: [0x3d056856, 0xf18432d],
     k: {},
   },
   // fabs: _ctrlfp(0x133f), the sign bit cleared through the frame, _ctrlfp(caller's control word), the result pushed
@@ -133,6 +141,7 @@ export function buildLibKernelModule(opts = {}) {
     if (d.kind === 'round') emitRound(c, d.k, fallback, ret);
     else if (d.kind === 'fabs') emitFabs(c, d.k, fallback);
     else if (d.kind === 'memcmp') emitMemcmp(c, fallback);
+    else if (d.kind === 'memcpy') emitMemcpy(c, fallback);
     else throw new Error(`libkernels: unknown kind ${d.kind}`);
     emitReturn(c, chainIdx, opts.chain !== false);
     c.end(); // fallback: the original code from its entry (Jit.run: EXIT_STEP; the instruction stepped charged here, as a region charges its own)
@@ -457,4 +466,50 @@ function emitRoundSse(c, k, fallback, ret) {
     c.i64reinterpret_f64().set(L_RB);
     xmm(1, 0, () => c.get(L_RB)); store(); flagsCmp(0x432); c.i32(38).set(L_N); push(); ret();
   }
+}
+
+/**
+ * memcpy(dst, src, n) — the C runtime's, a memmove —, its forward path with a 4-aligned destination: push ebp / edi /
+ * esi, the overlap test (dst > src and dst < src + n: the backward copy, left to the exact way), n / 4 words by rep movsd
+ * (8 and more) or an unrolled table of moves, then n % 4 bytes from a jump table; eax = dst, ecx = 0 after rep movsd or
+ * the word count, edx = n % 4, the flags of cmp ecx, 8 or of the unrolled path's add edi. A forward copy reads each
+ * byte before anything overwrites it: memory.copy's result. A destination page holding translated code (or watched,
+ * or never mapped) takes the exact way, which detects the write.
+ */
+function emitMemcpy(c, fallback) {
+  guardStack(c, fallback, 12, 16);
+  c.get(P.EFL).i32(0x400).and().br_if(fallback); // (DF set: rep movsd backwards)
+  c.get(L_S).i32load(4).tee(L_B1).i32(3).and().br_if(fallback); // (an unaligned destination: its byte head)
+  c.get(L_S).i32load(8).set(L_B2); c.get(L_S).i32load(12).set(L_LEN);
+  // the backward copy: dst > src and dst < src + n (mod 2^32, as the code compares)
+  c.get(L_B1).get(L_B2).gt_u().get(L_B1).get(L_B2).get(L_LEN).add().lt_u().and().br_if(fallback);
+  c.get(L_LEN).i32(0x7f000000).gt_u().br_if(fallback);
+  for (const b of [L_B1, L_B2]) {
+    c.get(b).i32(0x10000).lt_u().br_if(fallback);
+    c.get(b).i32(0x7fff0000).get(L_LEN).sub().gt_u().br_if(fallback);
+  }
+  // the destination's pages (SMC detection, write watches, pages never mapped)
+  c.get(L_LEN);
+  const some = c.if_();
+  c.get(L_B1).i32(12).shr_u().set(L_I);
+  const pages = c.loop();
+  c.get(L_I).i32load8u(SMC_MAP_BASE).i32(SMC_CODE | SMC_WATCH | SMC_NULL).and().br_if(fallback);
+  c.get(L_I).i32(1).add().tee(L_I).get(L_B1).get(L_LEN).add().i32(1).sub().i32(12).shr_u().le_u().br_if(pages);
+  c.end(); void pages;
+  c.end(); void some;
+  // 18 instructions to the alignment test's jne (dst <= src: jbe taken), 20 otherwise; then shr, and, cmp, jb
+  c.i32(18).i32(20).get(L_B1).get(L_B2).le_u().select().set(L_N);
+  at(c, 4); c.get(P.EBP).i32store(0); at(c, 8); c.get(P.EDI).i32store(0); at(c, 12); c.get(P.ESI).i32store(0);
+  c.get(L_B1).get(L_B2).get(L_LEN).memcopy();
+  c.get(L_LEN).i32(2).shr_u().set(L_J);
+  c.get(L_B1).set(P.EAX); c.get(L_LEN).i32(3).and().set(P.EDX);
+  c.get(L_J).i32(8).ge_u().get(L_J).eqz().or();
+  const rep = c.if_(); // rep movsd ; jmp (or the table's entry 0: the jmp) — cmp ecx, 8's flags
+  c.i32(0).set(P.ECX); c.get(L_N).i32(2).add().set(L_N);
+  c.get(L_J).i32(8).sub().set(P.LZRES); c.get(L_J).set(P.LZA); c.i32(8).set(P.LZB); c.i32((LZ.SUB << 2) | 2).set(P.LZOP);
+  c.else_(); // jmp [table] ; n / 4 moves ; lea ; add esi ; add edi ; jmp — add edi's flags
+  c.get(L_J).set(P.ECX); c.get(L_N).get(L_J).i32(1).shl().add().i32(5).add().set(L_N);
+  c.get(L_B1).get(L_J).i32(2).shl().tee(P.LZB).add().set(P.LZRES); c.get(L_B1).set(P.LZA); c.i32((LZ.ADD << 2) | 2).set(P.LZOP);
+  c.end(); void rep;
+  c.get(L_N).i32(5).add().get(P.EDX).i32(1).shl().add().set(L_N); // (the tail: n % 4 byte moves, mov eax / pops / leave / ret)
 }

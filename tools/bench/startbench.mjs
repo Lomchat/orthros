@@ -168,7 +168,7 @@ const report = (why) => {
   const wall = (performance.now() - t0) / 1000, cpu = process.cpuUsage(c0).user / 1e6, minsns = vm.guestInsns / 1e6;
   if (process.env.ORTHROS_JIT_STATS) {
     const j = vm.jit?.stats ?? {}; console.log(Object.entries(j).filter(([, v]) => typeof v === 'number').map(([k, v]) => `${k}=${Math.round(v)}`).join(' '));
-    if (vm.jit?.libLive?.size) console.log(`[libkernels] ${vm.jit.libReport()}`);
+    for (const v of vm.group?.vms ?? [vm]) if (v.jit?.libLive?.size) console.log(`[libkernels] ${v.proc?.exe?.name ?? '?'}: ${v.jit.libReport()}`);
     // the instructions the regions leave to the interpreter (EXIT_STEP), by address, with the x87 control word then
     if (vm.jit?.stepHist) for (const [a, n] of [...vm.jit.stepHist].sort((x, y) => y[1] - x[1]).slice(0, 12)) { let d = '?'; try { d = fmtInsn(decode(vm.mem, a)); } catch { /* */ } console.log(`  step ${n} x ${vm.proc.symbolize(a)}  ${d}  ${(vm.jit.stepSamples?.get(a) ?? []).join(' | ')}`); }
   }

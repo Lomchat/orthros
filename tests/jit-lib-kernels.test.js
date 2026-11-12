@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { GuestMemory } from '../src/cpu/memory.js';
+import { GuestMemory, SMC_MAP_BASE, SMC_CODE } from '../src/cpu/memory.js';
 import { CpuState, THREAD_STATES_BASE, ST } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
@@ -37,6 +37,13 @@ function memcmpCase() {
   if (n && rnd(4)) { const i = rnd(n); buf[(rnd(2) ? o1 : o2) + i] = rnd(256); }
   for (let i = n; i < n + 8; i++) buf[o2 + i] = rnd(256); // (past the end: never compared, read by the tail's words)
   return { args: [BUF + o1, BUF + o2, n], buf };
+}
+/** memcpy's arguments and buffer: random bytes, a destination mostly 4-aligned, sometimes overlapping the source */
+function memcpyCase() {
+  const n = rnd(4) ? rnd(64) : rnd(1200), buf = new Uint8Array(0x1000);
+  for (let i = 0; i < buf.length; i++) buf[i] = rnd(256);
+  const src = 0x400 + rnd(64), dst = rnd(4) ? (rnd(3) ? 0x900 + 4 * rnd(16) : src - 4 * rnd(4)) : rnd(3) ? src + rnd(8) : 0x901 + rnd(3);
+  return { args: [BUF + dst, BUF + src, n], buf };
 }
 /** an argument: [low word, high word] */
 function arg() {
@@ -68,7 +75,7 @@ function setup(M, entry, c) {
   mem.fill(STACK - 0x2000, 0x3000, 0);
   for (let i = 0; i < 0x200; i += 4) mem.write32(c.esp - 0x100 + i, c.garbage[i >> 2]);
   mem.write32(c.esp, RET); (c.args ?? c.x).forEach((v, i) => mem.write32(c.esp + 4 + 4 * i, v));
-  if (c.buf) mem.writeBytes(BUF, c.buf);
+  if (c.buf) mem.writeBytes(BUF, c.buf); else mem.fill(BUF, 0x1000, 0);
   c.regs.forEach((v, i) => cpu.setReg(i, v)); cpu.esp = c.esp; cpu.eip = entry;
   cpu.eflags = c.eflags;
   mem.write16(cpu.base + ST.FPU_CW, c.cw); mem.write16(cpu.base + ST.FPU_SW, c.sw); mem.write16(cpu.base + ST.FPU_TW, c.tw); mem.write8(cpu.base + ST.FPU_TOP, c.top);
@@ -84,11 +91,12 @@ function snapshot(M, c, data) {
     fpr: Array.from(mem.u8.subarray(cpu.base + ST.FPR, cpu.base + ST.FPR + 64)),
     sse: [mem.read32(cpu.base + ST.MXCSR), ...Array.from({ length: 32 }, (_, i) => mem.read32(cpu.base + ST.XMM + 4 * i))],
     stack: Buffer.from(mem.u8.subarray(c.esp - 0x100, c.esp + 0x100)).toString('hex'),
+    buf: Buffer.from(mem.u8.subarray(BUF, BUF + 0x1000)).toString('base64'),
     data: Buffer.from(mem.u8.subarray(data[0], data[1])).toString('base64'),
   };
 }
 
-test('library kernels: floor, ceil, fabs, memcmp against the interpreter running msvcr71', { skip }, () => {
+test('library kernels: floor, ceil, fabs, memcmp, memcpy against the interpreter running msvcr71', { skip }, () => {
   const img = new PeImage(new Uint8Array(fs.readFileSync(DLL)));
   const dataSec = img.sections.find((s) => s.name === '.data');
   const n = depth(800, 100);
@@ -112,6 +120,7 @@ test('library kernels: floor, ceil, fabs, memcmp against the interpreter running
           sse2: rnd(2), sse2Addr, mxcsr: rnd(6) ? 0x1f80 : [0x1f00, 0x9fc0, 0x1fc0, 0x7f80, 0x3f80, 0x1f81][rnd(6)], xmm: Array.from({ length: 32 }, r32), cwg: rnd(10) ? cwg0 : rnd(2) ? 0x133f : r32() & 0xffff, cwgAddr,
         };
         if (def.kind === 'memcmp') { Object.assign(c, memcmpCase()); if (!rnd(10)) c.eflags |= 0x400; }
+        if (def.kind === 'memcpy') { Object.assign(c, memcpyCase()); if (!rnd(10)) c.eflags |= 0x400; }
         setup(A, entry, c); setup(B, entry, c); setup(D, entry, c);
         const ra = A.I.run({ stopAt: RET, maxInsns: 20000 }); const na = 20000 - A.I.remaining() - 1;
         const rb = B.jit.run({ stopAt: RET, maxInsns: 20000 }); const nb = 20000 - B.jit.remaining();
@@ -124,6 +133,7 @@ test('library kernels: floor, ceil, fabs, memcmp against the interpreter running
         const t = c.top, pushes = def.kind === 'round' ? 2 : 1;
         let free = true; for (let p = 1; p <= pushes; p++) if (c.tw & (1 << ((t - p) & 7))) free = false;
         let path = def.kind === 'memcmp' ? !(c.eflags & 0x400) : finite && free;
+        if (def.kind === 'memcpy') { const [d, s, len] = c.args; path = !(c.eflags & 0x400) && !(d & 3) && !(d > s && d < s + len); }
         if (def.kind === 'round') {
           const lo = c.x[0], dv = new DataView(new ArrayBuffer(8)); dv.setUint32(0, lo, true); dv.setUint32(4, hi, true);
           const x = dv.getFloat64(0, true), r = k.rc === 1 ? Math.floor(x) : Math.ceil(x);
@@ -137,6 +147,16 @@ test('library kernels: floor, ceil, fabs, memcmp against the interpreter running
       assert.ok(B.jit.libLive?.has(entry), `${def.name}: recognised`);
       assert.equal(B.jit.stats.libFallbacks - fallbacks0, expectFallbacks, `${def.name}: kernel taken exactly on its path`);
       assert.ok(expectFallbacks < 0.7 * n, `${def.name}: enough cases take the kernel path (${expectFallbacks} of ${n} off it)`);
+      if (def.kind === 'memcpy') { // a destination page holding translated code: the exact way (the copy's SMC exit)
+        const c = { x: [0, 0], esp: STACK - 0x400, regs: Array(8).fill(0x1234), eflags: 2, cw: 0x27f, sw: 0, top: 0, tw: 0, fpr: Array(8).fill([0, 0]), garbage: Array(0x80).fill(7), sse2Addr, cwgAddr, sse2: A.mem.read32(sse2Addr), cwg: cwg0, ...memcpyCase() };
+        c.args = [BUF + 0x900, BUF + 0x400, 0x100];
+        const f0 = B.jit.stats.libFallbacks;
+        setup(A, entry, c); for (const M of [B, D]) { setup(M, entry, c); M.mem.u8[SMC_MAP_BASE + (BUF >>> 12)] |= SMC_CODE; }
+        const rb = B.jit.run({ stopAt: RET, maxInsns: 20000 }), rd = D.jit.run({ stopAt: RET, maxInsns: 20000 });
+        assert.equal(rb, rd); assert.deepEqual(snapshot(B, c, data), snapshot(D, c, data));
+        assert.equal(B.jit.stats.libFallbacks - f0, 1, 'memcpy into a code page: the exact way');
+        for (const M of [B, D]) M.mem.u8[SMC_MAP_BASE + (BUF >>> 12)] &= ~SMC_CODE;
+      }
     }
     // a write to the code a kernel depends on drops it; the changed code is not recognised again and runs translated
     const def = LIB_KERNELS[0], entry = B.mod.exports.get(def.name.split('!')[1]);
