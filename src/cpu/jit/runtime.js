@@ -116,6 +116,9 @@ export const FAST_TABLE = JIT_SCRATCH_BASE;
 export const PROC_CONSTS = JIT_SCRATCH_BASE + 0x10000; // +0 process heap handle, +4 non-zero: the bindings' filter off (DEFER_F_TEX / STREAM / IB; measurement)
 /** the objects whose reference counts queued calls may change (REFS_SLOTS words, see DEFER_REFS) */
 export const REFS_SET = PROC_CONSTS + 0x100;
+/** u32 bumped at every region drop (Jit.dropOne): a region call nested as a WASM call (translate.js nestCall) goes on in
+ * its caller's code only when nothing was dropped meanwhile */
+export const NEST_EPOCH = PROC_CONSTS + 8;
 /**
  * Deferred COM calls: state setters of the Direct3D devices (they always succeed and their effect is
  * only observable through other device calls) are recorded by the WASM fast path in a queue in guest

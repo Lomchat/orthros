@@ -16,7 +16,7 @@ import { inlineDeps } from './code-cache.js';
 import { decode, OP, OT } from '../decoder.js';
 import { ST, EXIT, F, SEG } from '../state.js';
 import { NULL_PAGE_END, USER_END, nullChecks, nullCheckApplies } from '../nullpage.js';
-import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, EXIT_T2MODE, FAST_TABLE, PROC_CONSTS } from './runtime.js';
+import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, NEST_EPOCH, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, EXIT_T2MODE, FAST_TABLE, PROC_CONSTS } from './runtime.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../memory.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
@@ -62,11 +62,16 @@ const L_SW = L_NCK + 1;
 // the mask clearing an f64's 29 low significand bits in both lanes (x87 regions translated for a static truncating 24-bit
 // mode: translate-x87.js pushCut24), set once by the prologue
 const L_CUT24 = L_SW + 1;
+// opts.linkExits (see linkOf): a static exit's target region as found in the hash table at translation — its table index
+// + 1 (0: not linked), its block, the offset of its hash entry — set before the branch to the shared exit tail
+const L_LINK = L_CUT24 + 1, L_LBLK = L_CUT24 + 2, L_LSLOT = L_CUT24 + 3;
 const CUT24_BYTES = new Uint8Array(new BigUint64Array([0xffffffffe0000000n, 0xffffffffe0000000n]).buffer);
 const L_FIRST_DECLARED = 16;
+/** region calls nested as WASM calls at most (opts.nestCalls, ST.NEST_STACK) */
+export const NEST_MAX = 32;
 const LOCAL_TYPES = [...Array(8).fill(T.i32), T.i64, T.i64, T.f64, T.f64, T.i32, T.i32, T.v128, T.v128, T.v128, ...Array(8).fill(T.f64), T.i32, T.i32, T.f64, T.i32, ...Array(8).fill(T.f32), T.f32, T.f32, T.f32, ...Array(8).fill(T.v128), T.f64, T.f64, T.f64, T.f64, ...Array(8).fill(T.f32), ...Array(8).fill(T.f64),
-  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32), T.i32, T.i32, T.i32, T.v128]; // indices 16..114
-if (LOCAL_TYPES.length !== L_CUT24 + 1 - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
+  T.i32, ...Array(2 * IFCVT_SLOTS).fill(T.i32), T.i32, T.i32, T.i32, T.v128, T.i32, T.i32, T.i32]; // indices 16..117
+if (LOCAL_TYPES.length !== L_LSLOT + 1 - L_FIRST_DECLARED || L_IC !== L_XD0 + 8 || REGION_PARAMS.length !== L_FIRST_DECLARED) throw new Error('region local layout mismatch');
 /**
  * Instructions whose handlers access their XMM operands only through the lane-0 shadow helpers of
  * translate-sse-common.js (scalarF32 / xmmStoreF32 / xmmShadowStore...), filled by translate-sse-float.js: the scalar
@@ -134,7 +139,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: false, nestCalls: false, linkExits: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -1097,6 +1102,11 @@ class Emitter {
     // module, depth: the global counting nested calls, maxDepth } — calls to them are WASM calls, every exit returns
     this.t2 = opts.t2 ?? null;
     this.chainStub = !!(opts.chainStub ?? JIT_DEFAULTS.chainStub); // (see the jump exit in run)
+    // region calls nested as WASM calls (see nestCall): needs chaining and the shared exit tail; not in tier 2 nor in
+    // profiling translations (their exits count chains by kind)
+    // static exits chained with their target's table index as a constant of the code (see linkOf): shared exit tail only
+    this.link = !!(opts.linkExits ?? JIT_DEFAULTS.linkExits) && this.chain && !this.t2 && !opts.profile && !this.chainStub && !!(opts.exitShare ?? JIT_DEFAULTS.exitShare);
+    this.nest = !!(opts.nestCalls ?? JIT_DEFAULTS.nestCalls) && this.chain && !this.t2 && !opts.profile && !this.chainStub && !!(opts.exitShare ?? JIT_DEFAULTS.exitShare);
     this.swLocal = !!(opts.swLocal ?? JIT_DEFAULTS.swLocal); // (the x87 status word in a local: see L_SW)
     this.prof = !!opts.profile; // count block transitions by kind (ST.PROF); opts.fnIdx tells self-chains apart
     // x87 mode the region is specialized for (opts.fpcAssume, null: tested at run time): the precision/rounding control
@@ -1261,6 +1271,15 @@ class Emitter {
         c.get(L_TV);
         for (let i = L_STATE; i <= L_ICOUNT; i++) c.get(i);
         c.return_call(IMP_CHAIN);
+      } else if (this.nest) {
+        // a jump to the return site of the innermost region call nested as a WASM call (nestCall), budget left: back to
+        // that caller (a WASM return, the state block written below), which goes on at its return site
+        const back = c.block();
+        c.get(L_STATE).i32load(ST.NEST_DEPTH).tee(L_T3).i32(2).shl().get(L_STATE).add().i32load(ST.NEST_STACK - 4).get(L_TV).eq();
+        c.get(L_T3).i32(0).ne().and().get(L_ICOUNT).i32(0).gt_s().and();
+        { const i = c.if_(); c.get(L_STATE).get(L_T3).i32(1).sub().i32store(ST.NEST_DEPTH); c.br(back); c.end(); void i; }
+        this.emitChain(false);
+        c.end(); // back
       } else if (this.chain) this.emitChain(false); // (falls through when the target is not chained)
       c.end(); void jmp;
       c.get(L_STATE).get(L_ICOUNT).i32store(ST.ICOUNT);
@@ -1359,9 +1378,52 @@ class Emitter {
    * state (TOP, and the cached stack of an x87 region) goes through the state block. Falls
    * through (to the flush + return path) otherwise.
    */
+  /**
+   * opts.linkExits: the hash entry of static exit target `eip` as it is now (translation time), or null — read from the
+   * table in guest memory with the probe sequence of emitChain.
+   */
+  linkOf(eip) {
+    const u32 = this.mem.u32, home = Math.imul(eip, 0x9e3779b1) >>> (32 - JIT_HASH_BITS);
+    for (let p = 0; p < HASH_PROBES; p++) {
+      const slot = ((home + p) & ((1 << JIT_HASH_BITS) - 1)) * HASH_ENTRY, k = (JIT_HASH_BASE + slot) >>> 2;
+      if (u32[k] === eip >>> 0) return { slot, idx: u32[k + 1], blk: u32[k + 2] };
+    }
+    return null;
+  }
+  /**
+   * A static exit to `eip` whose target is translated already: its table index, block and hash entry as constants for
+   * the shared exit tail (emitChain), which chains with them when the entry still holds them — the next region's
+   * function then comes from a constant table index (a load of the table and of the function's instance, whatever the
+   * hash entry: the compares of the entry only decide a predicted branch) instead of the index loaded from the hash entry
+   * found from the target (a chain of dependent loads every chained transition waits on: tools/bench/transition-floor.mjs).
+   */
+  linkExit(eip) {
+    const l = this.linkOf(eip);
+    if (!l) return;
+    this.stats.linked = (this.stats.linked ?? 0) + 1;
+    this.c.i32(l.idx + 1).set(L_LINK).i32(l.blk).set(L_LBLK).i32(l.slot).set(L_LSLOT);
+  }
   emitChain(flush = true) {
     const c = this.c;
     const noChain = c.block();
+    if (this.link && !flush) {
+      // a linked exit (linkExit): its hash entry still the one seen at translation, budget left, not the stop address
+      c.get(L_LINK);
+      const l = c.if_();
+      c.get(L_LSLOT).i32load(JIT_HASH_BASE).get(L_TV).eq();
+      c.get(L_LSLOT).i32load(JIT_HASH_BASE + 4).get(L_LINK).i32(1).sub().eq().and();
+      c.get(L_LSLOT).i32load(JIT_HASH_BASE + 8).get(L_LBLK).eq().and();
+      c.get(L_ICOUNT).i32(0).gt_s().and();
+      c.get(L_TV).get(L_STATE).i32load(ST.STOP_AT).ne().and();
+      const ok = c.hint(true).if_();
+      c.get(L_STATE).get(L_TV).i32store(ST.EIP);
+      if (this.opts.countChains !== false) c.get(L_STATE).get(L_STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS);
+      c.get(L_LBLK);
+      for (let i = L_STATE; i < L_FIRST_DECLARED; i++) c.get(i);
+      c.get(L_LINK).i32(1).sub().return_call_indirect(REGION_TYPE, 0);
+      c.end(); void ok;
+      c.end(); void l;
+    }
     // profiling translations count why a transition is not chained (PROF_OPS_BASE + NOCHAIN_PROF: thunk, stop, budget, miss)
     const why = (k) => { if (this.prof) c.i32(0).i32(0).i32load(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k).i32(1).add().i32store(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k); };
     c.get(L_ICOUNT).i32(0).le_s(); { const t = c.hint(false).if_(); why(2); c.br(noChain); c.end(); void t; }
@@ -1722,7 +1784,7 @@ class Emitter {
     const i = c.if_(); c.i32(0).i32(0).i32load(a + 8).i32(1).add().i32store(a + 8); c.i32(0).get(L_TV).i32store(a + 4); c.end(); void i;
   }
   exitToStack() { this.c.set(L_TV); this.charge(this.insnIdx); const s = this.x87ExitState(); this.c.br(this.exitJmpL); this.x87Restore(s); }
-  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); this.siteProf(eip, (this.limited?.has(eip) ? 'exitLim' : 'exit') + (this.inCall ? 'Call' : '')); this.charge(n); const s = this.x87ExitState(); this.c.br(this.exitJmpL); this.x87Restore(s); }
+  exitTo(eip, n = this.insnIdx) { this.count(PF.exit); this.c.i32(eip).set(L_TV); if (this.link) this.linkExit(eip); this.siteProf(eip, (this.limited?.has(eip) ? 'exitLim' : 'exit') + (this.inCall ? 'Call' : '')); this.charge(n); const s = this.x87ExitState(); this.c.br(this.exitJmpL); this.x87Restore(s); }
   exitCode(code, eip, arg) {
     const c = this.c;
     if (arg !== undefined) c.get(L_STATE).i32(arg).i32store(ST.EXIT_ARG);
@@ -1873,6 +1935,73 @@ class Emitter {
     c.return_call(this.t2.calls.get(target));
     this.stats.t2Tails = (this.stats.t2Tails ?? 0) + 1;
     this.x87Restore(s);
+  }
+  /**
+   * opts.nestCalls: a guest CALL leaving the region (target in L_TV, its return address pushed; `n` instructions to charge)
+   * whose return site `ret` is a block of this region, made a WASM call of the target's region instead of a chained tail
+   * call — when the target is translated and the budget left, as for a chain, and fewer than NEST_MAX calls are nested.
+   * The return site goes on the thread's NEST_STACK; a jump exit of any region to the innermost one (the callee's RET,
+   * see the shared exit tail) writes the state block and returns, and this region goes on at `ret` with the registers
+   * reloaded: no hash probe, no 16-value tail call into a region prologue and its block dispatch on the way back.
+   * Whatever came back, it is exact: the state block holds the registers of every exit not chained, so a return of
+   * `ret` (budget left, nothing dropped meanwhile: NEST_EPOCH) is a jump to `ret`, and anything else (an API thunk, a
+   * time slice, a fault, a RET elsewhere — longjmp, SEH) is returned on to this region's caller as it is, down to the
+   * dispatcher. Falls through (to the ordinary exit) when it does not apply.
+   */
+  nestCall(ret, n) {
+    const c = this.c, fail = c.block(), found = c.block();
+    c.get(L_ICOUNT).i32(n).sub().tee(L_T7).i32(0).le_s().br_if(fail); // (charged only on the way in: the exit below charges)
+    c.get(L_TV).i32(1).sub().i32(THUNK_BASE - 1).ge_u().br_if(fail); // (address 0, the thunks and above: see emitChain)
+    c.get(L_STATE).i32load(ST.NEST_DEPTH).tee(L_T5).i32(NEST_MAX).ge_u().br_if(fail);
+    c.get(L_STATE).i32load(ST.STOP_AT).tee(L_T6).get(L_TV).eq().get(L_T6).i32(ret).eq().or().br_if(fail);
+    c.get(L_TV).i32(0x9e3779b1 | 0).mul().i32(32 - JIT_HASH_BITS).shr_u().set(L_T3);
+    for (let p = 0; p < HASH_PROBES; p++) {
+      c.get(L_T3); if (p) c.i32(p).add().i32((1 << JIT_HASH_BITS) - 1).and();
+      c.i32(HASH_ENTRY).mul().tee(L_TA);
+      c.i32load(JIT_HASH_BASE).get(L_TV).eq().br_if(found);
+    }
+    c.br(fail);
+    c.end(); // found
+    const s = this.x87Normalize(0), fpc = this.fpcStatic;
+    this.flushFpu(false); this.flushXmm();
+    c.get(L_T7).set(L_ICOUNT);
+    c.get(L_STATE).get(L_T5).i32(2).shl().add().i32(ret).i32store(ST.NEST_STACK);
+    c.get(L_STATE).get(L_T5).i32(1).add().i32store(ST.NEST_DEPTH);
+    c.i32(0).i32load(NEST_EPOCH).set(L_T6);
+    c.get(L_STATE).get(L_TV).i32store(ST.EIP); // (as a chain: the region entered)
+    if (this.opts.countChains !== false) c.get(L_STATE).get(L_STATE).i32load(ST.TRANSITIONS).i32(1).add().i32store(ST.TRANSITIONS); // (stats)
+    c.get(L_TA).i32load(JIT_HASH_BASE + 8);
+    for (let i = L_STATE; i < L_FIRST_DECLARED; i++) c.get(i);
+    c.get(L_TA).i32load(JIT_HASH_BASE + 4).call_indirect(REGION_TYPE, 0);
+    c.set(L_TV);
+    // (back from a nested return — the only way this call's entry leaves NEST_STACK while this frame is live —, whose
+    // jump exit had the budget left and `ret` for target: see the shared exit tail; nothing dropped since the call)
+    c.get(L_TV).i32(ret).eq();
+    c.get(L_STATE).i32load(ST.NEST_DEPTH).get(L_T5).eq().and();
+    c.i32(0).i32load(NEST_EPOCH).get(L_T6).eq().and();
+    {
+      const i = c.hint(true).if_();
+      this.stats.nestCalls = (this.stats.nestCalls ?? 0) + 1;
+      for (let k = 0; k < 8; k++) c.get(L_STATE).i32load(ST.GPR + 4 * k).set(L_REG + k);
+      c.get(L_STATE).i32load(ST.EFLAGS).set(L_EFLAGS);
+      c.get(L_STATE).i32load(ST.LZ_OP).set(L_LZOP);
+      c.get(L_STATE).i32load(ST.LZ_RES).set(L_LZRES);
+      c.get(L_STATE).i32load(ST.LZ_SRC1).set(L_LZA);
+      c.get(L_STATE).i32load(ST.LZ_SRC2).set(L_LZB);
+      c.get(L_STATE).i32load(ST.ICOUNT).set(L_ICOUNT);
+      if (this.usesFs) c.get(L_STATE).i32load(ST.FS_BASE).set(L_FS);
+      if (this.usesX87) { c.get(L_STATE).i32load8u(ST.FPU_TOP).set(L_TOP); this.loadX87(); }
+      this.loadXmm();
+      this.fpcStatic = null; // (the callee may have changed the x87 mode: the return site's guard tests it)
+      this.jumpTo(ret, 0);
+      c.end(); void i;
+    }
+    // anything else: the frame that left wrote the state block; this call's entry (and any above it) off the stack
+    c.get(L_STATE).get(L_T5).i32store(ST.NEST_DEPTH);
+    c.get(L_TV).return_();
+    this.fpcStatic = fpc;
+    this.x87Restore(s);
+    c.end(); // fail
   }
   /** A RET (address in L_TV) of a tier-2 function: back to the WASM caller, which compares it with its return site. */
   t2Ret() {
@@ -3180,6 +3309,9 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   if (t.t === OT.REL) {
     c.i32(insn.next).set(L_TV); pushValue(E, insn.opsize);
     if (E.t2 && insn.opsize === 4 && E.t2.calls.has(t.v)) { E.t2Call(t.v, insn.next, b.insns.length); return; }
+    if (E.nest && insn.opsize === 4 && !E.byEip.has(t.v) && E.byEip.has(insn.next)) { // (see nestCall)
+      c.i32(t.v).set(L_TV); E.nestCall(insn.next, b.insns.length);
+    }
     E.inCall = true; E.jumpTo(insn.opsize === 2 ? t.v & 0xffff : t.v, b.insns.length); E.inCall = false; // (inCall: see siteProf)
     return;
   }
@@ -3199,6 +3331,7 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   // a call through an import slot holding a tier-2 function: that function called, guarded by the slot's value
   const t2s = insn.opsize === 4 ? E.t2Slot(t) : -1;
   if (t2s >= 0) { c.get(L_T4).i32(t2s).eq(); const i = c.hint(true).if_(); E.t2Call(t2s, insn.next, b.insns.length); c.end(); void i; }
+  if (E.nest && insn.opsize === 4 && E.byEip.has(insn.next)) { c.get(L_T4).set(L_TV); E.nestCall(insn.next, E.insnIdx); } // (see nestCall)
   c.get(L_T4); if (insn.opsize === 2) c.i32(0xffff).and();
   E.count(PF.indirect);
   if (globalThis.ORTHROS_SITE_PROF) { c.set(L_TV); E.siteProf(insn.addr, t.t === OT.MEM && t.base < 0 && t.index < 0 ? 'icallAbs' : 'icall'); c.get(L_TV); }

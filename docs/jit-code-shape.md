@@ -1427,6 +1427,99 @@ own heat already covers 70 % of the lent bytes gets nothing lent (`OWN_ENOUGH`, 
 served its own data again (live learn data: RotWK 2.02 37 743 entries served, 37 435 own; BFME 1.08 34 807, all own;
 AotR 31 474, 31 367 own); a first session (own 0 %) keeps the whole loan. Defaults: code share on (server), MP3 host off, every hot* option off.
 
+## Cheaper transitions (2026-11-12): what a chained transition waits on, nested region calls, linked exits — no-go, off by default
+
+The study of 2026-11-12 put region transitions at ~7-10 % of guest time in play (RotWK: 22 per 1 000 guest instructions;
+returns leaving their region 51 %, static exits 20 %, calls through registers 12 %, IAT jumps 12 %). Gate: the
+transition's cost halved in chain-bench **and** ≥ 4 % less guest time per instruction in play on RotWK and AotR, nowhere
+worse, without more copies of the code. Earlier attempts made transitions *fewer* (predicted transfers, jump tables, region
+size: more copies) or moved the same work elsewhere (return-site records, a shared chain stub, fewer parameters); the two
+built here change the transition's mechanism: the return becomes a native WASM return, and a static exit's next function
+comes from a constant instead of the hash table.
+
+**What a transition waits on** (tools/bench/transition-floor.mjs: two functions of the region signature in two modules
+handing control to each other through the shared table, 20 M times; Node 24, EPYC 7402P):
+
+| handover | ns per transition |
+|---|---|
+| `return_call_indirect` to a constant table index (`bare`) | 2.70 |
+| + the chained exit's checks, one hash probe hitting, EIP store, counter, index and block from the entry (`checks`) | 6.33-6.45 |
+| budget + hash probe only (`nocheck`) | 5.41 |
+| index and block from a per-site cache in memory instead of the hash (`cache`) | 5.41 |
+| index and block as constants of the code, the cache only compared (`linked`) | 3.12 |
+| index from a stack in memory whose depth is loaded first (`shadow`, a return-address stack) | 7.56 |
+| direct `return_call` within one module (`direct`) | 2.44 |
+| `call_indirect` + return, 14 values reloaded from memory (`nested`) | 6.4-7.9 |
+
+The checks and the probe are not what costs: a cache in memory instead of the hash costs the same (5.41). What costs is
+that the next function's *instance* (rsi, from the table entry) is a load whose address comes from a load: every
+region's prologue reloads its memory base from its instance (`movq rdi,[rsi+0x1f]`), the hash entry (or any cache) is
+read through that base, its table index selects the table entry that holds the next instance — a loop-carried chain of
+dependent loads (3-5 of them, ~4-5 cycles each, plus the hash's multiply when the target is read from the guest stack)
+that each transition waits for before the next region can address memory. With the index a constant of the code
+(`bare`, `linked`) the chain is the table and the instance (2 loads): half the time. A stack in memory adds a link
+(`shadow`): a return-address prediction stack whose region index is *loaded* is slower than the hash. Return-site records
+(above, neutral) loaded their index too.
+
+**Nested region calls** (`nestCalls`, translate.js nestCall): a guest CALL leaving its region whose return site the region
+holds becomes a WASM `call_indirect` of the callee's region (found by the same hash probe as a chain, with the budget, the
+stop address and the address range checked; at most `NEST_MAX` = 32 deep on a per-thread stack of return sites,
+`ST.NEST_STACK`); any region's jump exit to the innermost return site (the callee's RET, or any jump there) writes the
+state block and *returns* — a native return, predicted, no hash probe, no 16-value tail call into the caller's prologue
+and block dispatch — and the caller goes on at its return site with the registers reloaded. Exact whatever comes back: a
+return of that address with the stack depth as pushed and nothing dropped since the call (`NEST_EPOCH`, bumped by
+`Jit.dropOne`) is a jump to it; anything else (API thunk, time slice, fault, a RET elsewhere — longjmp, SEH, a moved
+return address) is returned on as it is down to the dispatcher, the state block already written by the frame that left.
+Measured:
+- chain-bench `--local-ret` (the callee's entry the only boundary: the call leaves, the RET comes back into the caller's
+  region; int): 16.3-17.2 → 20.0-21.3 ns per call/return (+23 %), host instructions 190 → 229 per iteration. The call
+  pushes all ten stack arguments (a tail call rewrites only those that changed), the caller's live values are spilled
+  around the call, the return writes 14 values to the state block and the caller reloads them: the native return saves
+  less than that costs.
+- RotWK play (`ab-virtual --perf-phase`, tools/scenarios/rotwk-nest-ab.txt, the same 7 469 M guest instructions in both
+  arms, perf over 50 s of play): region code 7.23 → 7.68 host instructions and 4.88 → 5.21 cycles per guest instruction,
+  translated code 6.22 → 6.59 c/g (+6 %), guest time 1.752 → 1.888 ns per instruction (+7.8 %), thread CPU per frame
+  +6.3 %. Instruction-cache fills per 1 000 guest instructions 229 / 111 → 245 / 119 (L2 / beyond): the per-site
+  call-and-reload code is more code. Not run on AotR (the gate failed in chain-bench and on RotWK).
+
+**Linked exits** (`linkExits`, translate.js linkOf / linkExit): a static exit (a jump, a direct call leaving the region,
+an exit for space) whose target is in the hash table when the region is translated sets three locals — the target's
+table index, its block and the offset of its hash entry, all constants — before the branch to the shared exit tail;
+there the chain checks that the entry still holds that target, index and block (and the budget, the stop address) and
+tail-calls the *constant* index: the comparisons only decide a predicted branch, the call's target no longer waits on
+the hash entry's load. Exact: an entry that changed (the target dropped, translated again elsewhere, its slot reused)
+fails the comparison and the exit takes the ordinary probe (tests/jit-tier2.test.js: random programs with small regions
+and SMC, and a target rewritten and translated again while its caller, linked to it, stays — a mutation skipping the
+comparison fails it with a null-function trap). Measured:
+- chain-bench `--pre` (the callee translated first: the call and the loop's jump back linked, the RET not; int): 22.1-22.3
+  → 19.9-20.3 ns per iteration of three transitions (−9 %), host instructions 178 → 191 (+13: the site constants and
+  the entry's comparisons); with the return site local, 16.3 → 15.7 ns. Not halved: only static exits can be linked,
+  and the return (half of the transitions) cannot — its target is a guest stack value, and any index read from memory
+  puts the chain back.
+- RotWK play (same scenario, one run per arm, load average 25-35 during the batch): guest time 1.981 → 1.955 ns (−1.3 %,
+  thread CPU per frame −2.0 %; the same pre-play phases +2 to +5 % — noise at that load), region code 7.28 → 7.46 host
+  instructions per guest instruction (+2.5 %: the constants at every static exit site, executed or not on the way to the
+  tail), 5.56 → 5.45 cycles (−2 %), fills from L2 per 1 000 guest instructions 236 → 250.
+- AotR play (tools/scenarios/aotr-nest-ab.txt, `--child --until-api none`, the same 9 327 M guest instructions in both
+  arms, load average ~30): region code 6.66 → 6.80 host instructions (+2.1 %) and 4.51 → 4.83 cycles per guest
+  instruction (+7 %), translated code 5.99 → 6.36 c/g, guest time 1.710 → 1.816 ns (+6.2 %), every earlier phase +0.3 to
+  +8.5 %; fills from L2 166 → 176 per 1 000 guest instructions. Slower: the gate's play half fails on both games.
+
+Exactness: tests/jit-tier2.test.js runs its random programs of functions (direct calls, calls through slots and import
+stubs, tail jumps, recursion deeper than `NEST_MAX`, return addresses moved by the callee, early returns, x87 under a
+switched precision, SSE, SMC) with function entries as region boundaries, both options, slices of 5 000 / 97 / 7
+(quick depth in `make test`, full depth passed once; a mutation continuing at the return site without the stack-depth
+check fails it), plus the rewritten-target case above. The whole suite under
+`ORTHROS_JIT_DEFAULTS='{"nestCalls":true,"linkExits":true}'` passes except jit-site-prof's exit counts (a nested call
+does not take the counted exit; its state comparison passes).
+
+Why the gate cannot be met this way: half of the transitions are returns, whose target is data; a native return (nested
+calls) breaks the load chain but V8's call protocol (all arguments pushed, everything spilled, 14 values back through
+memory) costs more than the chain; static exits linked save ~1 ns each, ~20 % of the transitions, ~1-2 % of the guest
+time at best, inside the noise of a single play run. Both off by default (`JIT_DEFAULTS.nestCalls`, `linkExits`;
+`ORTHROS_JIT_DEFAULTS` / `?jitopts` / `dbg:ORTHROS_JIT_AB` to measure). Tools kept: transition-floor.mjs, chain-bench
+`--opts`, `--local-ret`, `--pre`, `--kinds`.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
