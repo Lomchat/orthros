@@ -924,12 +924,18 @@ harness's `[cpu]` line), over the same guest instructions.
 | Vice City, Node | 30 | 7.6 G | 2.64 | 3.48 |
 | Vice City, Chrome, quota alone | 9.1 | 1.8 G | **11.56** | 6.55 |
 | Vice City, Chrome, pinned to 4 cores | 23.9 | 4.3 G | **2.30** | 2.80 |
+| AotR 10 (game.dat), Node, the study's runs (play2) | 30 | — | 1.55-2.38 | ~3.4 |
+| AotR, Chrome, quota alone, `--gl-discard` (play / play2) | 8.8 / 10.5 | 3.4 / 6.6 G | **6.29 / 5.46** | 3.11 / 2.90 |
+| AotR, Chrome, pinned to 4 cores, `--gl-discard` (play / play2) | 20.4 / 22.4 | 5.7 / 11.8 G | **3.05 / 2.73** | 2.90 / 2.76 |
+
+(AotR: `learn-aotr-skirmish` with its play lengthened to 30 + 60 s; no Node run of this scenario was made here — the
+launcher's game.dat child needs the study's preload — so its Node line is the study's, another moment of the game.)
 
 **Why.** The slot's scope capped the browser at 400 % (`CPUQuota`) on this 48-core host. SwiftShader's pool in the GPU
 process (16 threads, sized from the host's cores) burns that quota early in each 100 ms period — the GPU process took
 3.2-3.5 cores in play even with `--gl-discard` — and CFS then stops the whole scope, the emulator's thread included,
-until the next period: 572 of 590 periods throttled in Vice City's play, the emulator thread running ~13 % of the wall
-clock in RotWK's. The page measures its categories on the wall clock, so the stopped time lands in `guest`: 7-12 ns
+until the next period: 572 of 590 periods throttled in Vice City's play, 595 of 595 in AotR's, the emulator thread
+running ~13 % of the wall clock in RotWK's. The page measures its categories on the wall clock, so the stopped time lands in `guest`: 7-12 ns
 per instruction for code whose CPU cost is ~3 ns. The 4.8 ns figure is this artifact (docs/render-worker.md 11.1 saw the
 same throttling on AotR's loading screens), not the translated code.
 
@@ -971,7 +977,7 @@ thread's cycles (tier-up compiles starved on the 4 shared cores) — the server'
 (`ORTHROS_BROWSER_CPUS=auto`: as many as the quota gives, counted from the last core per slot — 44-47, 40-43, 36-39;
 `ORTHROS_BROWSER_CPUS=` restores the quota alone, a CPU list picks the cores). Before/after on two games (the table:
 quota alone → pinned): RotWK 3 → 5.9 fps (`--gl-discard` 13 → 28 fps, guest 7.21 → 2.51 ns), Vice City 9.1 → 23.9 fps
-(guest 11.56 → 2.30 ns); nothing slower. The harness's `[cpu]` mark lines now give the scope's throttled periods
+(guest 11.56 → 2.30 ns), AotR (`--gl-discard`) 10.5 → 22.4 fps (guest 5.46 → 2.73 ns); nothing slower. The harness's `[cpu]` mark lines now give the scope's throttled periods
 (`CPU quota: throttled in N of M periods`), with a note when more than a tenth were: a phase measured under throttling
 does not measure the translated code. Browser numbers taken with the quota alone (the 4.8 ns quoted for AotR among
 them) carry this artifact in proportion to the GPU process's activity; compare them only with runs made the same way.
