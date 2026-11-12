@@ -283,6 +283,21 @@ const apiPhase = (label, frames) => {
   for (let i = 0; i < 32; i++) { const x = u32[b + i] - fastLast[i]; fastLast[i] = u32[b + i]; if (x) fd.push([names[i] ?? i, x]); }
   console.log(`[apiphase] ${label} per frame (${frames} frames): JS ${d.sort((a, c) => c[1] - a[1]).slice(0, Number(process.env.API_HIST_N || 25)).map(([k, v]) => `${k} ${(v / f).toFixed(1)}`).join(', ')}; fast ${fd.sort((a, c) => c[1] - a[1]).map(([k, v]) => `${k} ${(v / f).toFixed(1)}`).join(', ')}`);
 };
+// --stall-report <ms>: while no frame has been presented for that long (a loading screen's frozen frame), once a second
+// the API calls dispatched to JavaScript since the last line, per thread with their callers, the guest instructions run,
+// and the threads' states ([stall] lines): what a long frame's threads do (polling, waiting, working)
+const stallRep = opt('stall-report') ? { ms: Number(opt('stall-report')), frameAt: performance.now(), lastAt: 0, hist: new Map(), g0: 0 } : null;
+const stallTick = (t, th) => {
+  const now = performance.now(), s = stallRep;
+  const caller = (vm.mem.read32(t.cpu.esp >>> 0) >>> 0);
+  const k = `t${t.id} ${th.name}${th.name === 'Sleep' || th.name === 'WaitForSingleObject' ? `(${vm.mem.read32((t.cpu.esp + (th.name === 'Sleep' ? 4 : 8)) >>> 0) | 0})` : ''}@${vm.proc.symbolize(caller)}`;
+  s.hist.set(k, (s.hist.get(k) ?? 0) + 1);
+  if (now - s.frameAt < s.ms || now - s.lastAt < 1000) return;
+  if (s.lastAt < s.frameAt) { s.hist.clear(); s.g0 = vm.guestInsns; s.lastAt = now; return; } // (the stall's first second starts here)
+  console.log(`[stall] ${((now - s.frameAt) / 1000).toFixed(1)} s without a frame (frames ${vm.d3dDevice?.frames ?? 0}), ${((vm.guestInsns - s.g0) / 1e6).toFixed(0)} M guest instructions in the last second; calls: ${[...s.hist].sort((a, b) => b[1] - a[1]).slice(0, 14).map(([x, n]) => `${x} x${n}`).join(', ')}`);
+  console.log(`[stall] ${vm.threadsReport().split('\nsync objects')[0].replace(/\n/g, '\n[stall]   ')}`);
+  s.hist.clear(); s.g0 = vm.guestInsns; s.lastAt = now;
+};
 // --threads: guest instructions per thread (nested runs charged to the outermost), with the report
 const threadInsns = args.includes('--threads') ? new Map() : null;
 if (threadInsns) {
@@ -303,6 +318,8 @@ const scenarioFile = benchDef ? new URL('../scenarios/bench/' + benchDef.file, i
 const scenarioFrom = benchDef?.coords ?? (opt('coords') ? opt('coords').split(',').map(Number) : null);
 const scenario = scenarioFile ? new NodeScenario(fs.readFileSync(scenarioFile, 'utf8'), vm, (l) => console.log(l), args.includes('--virtual') ? () => clock.now() : undefined, { from: scenarioFrom }) : null;
 // --slow-apis <ms>: with a scenario, the APIs' time in the frames longer than that, per phase ([slowapis] lines)
+// (--stall-report: after the scenario's own frame hook)
+if (stallRep) { const fh = vm.host.frameHook; vm.host.frameHook = () => { stallRep.frameAt = performance.now(); stallRep.hist.clear(); return fh?.(); }; }
 if (scenario && opt('slow-apis')) scenario.enableSlowApis(Number(opt('slow-apis')));
 if (scenario && apiHist) (scenario.phaseReports ??= []).push(apiPhase);
 // --gc <ms>: with a scenario, this thread's garbage collections per phase and in the frames longer than that ([gc] lines)
@@ -326,13 +343,16 @@ if (scenario && args.includes('--sleeps')) {
   let last = new Map(), picks0 = 0;
   (scenario.phaseReports ??= []).push((label, frames) => {
     const f = Math.max(1, frames), out = [];
-    for (const t of vm.proc?.threads ?? []) {
+    const threads = [...new Set([rootVm, vm])].flatMap((v) => v.proc?.threads ?? []); // (with --child: the launcher's threads too)
+    for (const t of threads) {
       const s = t.sleepStats; if (!s) continue;
-      const cur = { zero: s.zero, yields: s.yields ?? 0, lower: s.lowerReady ?? 0, throttled: s.throttled, gap: s.brokeGap ?? 0, api: s.brokeApi ?? 0, short: s.short, long: s.long, insns: t.insnsRun ?? 0 }, p = last.get(t.id) ?? {};
+      const cur = { zero: s.zero, yields: s.yields ?? 0, lower: s.lowerReady ?? 0, throttled: s.throttled, gap: s.brokeGap ?? 0, api: s.brokeApi ?? 0, work: s.brokeWork ?? 0, short: s.short, long: s.long, insns: t.insnsRun ?? 0 }, p = last.get(t.id) ?? {};
       last.set(t.id, cur);
       const d = (k) => ((cur[k] - (p[k] ?? 0)) / f).toFixed(1);
-      if (cur.zero + cur.short + cur.long - (p.zero ?? 0) - (p.short ?? 0) - (p.long ?? 0) > 0) out.push(`t${t.id}(prio ${t.priority ?? 0}) Sleep(0) ${d('zero')} [ran another ${d('yields')}, only lower ready ${d('lower')}, throttled ${d('throttled')}, streak ends: gap ${d('gap')} calls ${d('api')}] Sleep(1-2) ${d('short')} longer ${d('long')}`);
+      if (cur.zero + cur.short + cur.long - (p.zero ?? 0) - (p.short ?? 0) - (p.long ?? 0) > 0) out.push(`t${t.id}(prio ${t.priority ?? 0}) Sleep(0) ${d('zero')} [ran another ${d('yields')}, only lower ready ${d('lower')}, throttled ${d('throttled')}, streak ends: gap ${d('gap')} calls ${d('api')} work ${d('work')}] Sleep(1-2) ${d('short')} longer ${d('long')}`);
     }
+    // (?dbg=ORTHROS_SLEEP0_INSNS_HIST=1: guest instructions between two Sleep(0) of a streak's pattern, log2 buckets, per thread)
+    for (const t of threads) if (t.sleepStats?.insnsHist) { const h = t.sleepStats.insnsHist; out.push(`t${t.id} Sleep(0) gaps in instructions ${h.map((n, i) => n ? `<2^${i}:${n}` : '').filter(Boolean).join(' ')}`); h.fill(0); }
     const picks = vm.sched?.picks ?? 0;
     console.log(`[sleeps] ${label} per frame: ${out.join('; ')}; scheduler picks ${((picks - picks0) / f).toFixed(0)}`); picks0 = picks;
   });
@@ -386,7 +406,8 @@ const onThunk = (v, t, i) => {
     const l = apiSeq.list; if (l.length && l[l.length - 1][0] === k) l[l.length - 1][1]++; else l.push([k, 1]);
     if (--apiSeq.n === 0) { console.log(`[apiseq] ${l.map(([x, c]) => c > 1 ? `${x} x${c}` : x).join('\n  ')}`); apiSeq = null; }
   }
-  if (apiHist && th) { apiHist.set(th.name, (apiHist.get(th.name) ?? 0) + 1); if (th.name === 'Sleep') { const k = `Sleep(${vm.mem.read32((t.cpu.esp + 4) >>> 0)}) t${t.id} from ${(vm.mem.read32(t.cpu.esp >>> 0) >>> 0).toString(16)}`; apiHist.set(k, (apiHist.get(k) ?? 0) + 1); } }
+  if (stallRep && th) stallTick(t, th);
+  if (apiHist && th) { apiHist.set(th.name,(apiHist.get(th.name) ?? 0) + 1); if (th.name === 'Sleep') { const k = `Sleep(${vm.mem.read32((t.cpu.esp + 4) >>> 0)}) t${t.id} from ${(vm.mem.read32(t.cpu.esp >>> 0) >>> 0).toString(16)}`; apiHist.set(k, (apiHist.get(k) ?? 0) + 1); } }
   if (scenario) {
     scenario.tick();
     if (scenario.finished) { if (opt('phases')) fs.writeFileSync(opt('phases'), JSON.stringify(scenario.results, null, 1)); report('scenario end'); process.exit(0); }

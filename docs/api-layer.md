@@ -190,6 +190,45 @@ CPU 15.4 / 21.2 → 10.7 / 16.7 s (19.3 / 29.0 → 13.5 / 23.3 ms per frame), fr
 (tools/pe/sleepspin_lower.c: 100 paced frames beside a busy BELOW_NORMAL thread, `Sleep(0)` 1 998 801 → 4 200, scheduling
 decisions 2 002 004 → 7 403, same run length), tests/sched-priority.test.js.
 
+**Sleep(0) between units of work is not a spin (2026-11-12).** BFME 1.08's skirmish load froze its loading screen on
+its first frame for 12-16 s in Node (one frame of 13.6-16.4 s, `wait` 12-16 s of the 51-54 s `load` phase), 21.7 s of
+a 23.6 s frame on the owner's laptop. `startbench --stall-report 2500` (once a second while no frame comes: each
+thread's calls with their callers, and the threads' states) showed the main thread *working*, not waiting: a loader
+that calls `Sleep(0)` at the start of its item functions (lotrbfme.exe 0x5038d0, 0x503450, three more around 0x758500)
+and `PeekMessageA` between them, ~9 000 `Sleep(0)` a second, with a `THREAD_PRIORITY_BELOW_NORMAL` thread ready —
+only ~30 M guest instructions a second. The throttle took it for a spin: 32 calls within 50 µs with at most two API
+calls between, and only a lower priority ready (the 2026-10-22 rule above): each `Sleep(0)` parked 1 ms (`throttled`
+179-267 per frame, 12.7-15.5 k over the phase ≈ its `wait`). On Windows `Sleep(0)` returns at once when no thread of
+its priority is ready: an emulator artifact. The streak now also requires at most `SLEEP0_SPIN_INSNS` = 128 guest
+instructions since the previous `Sleep(0)` (kernel32.js): `?dbg=ORTHROS_SLEEP0_INSNS_HIST=1` with `startbench --sleeps`
+gives the gaps per thread, log2 buckets — every frame limiter seen spins under 32 (BFME 1.08 menu and play; RotWK,
+BFME II and Age of the Ring below); the BFME 1.08 load phase's main thread 75 % over 256 (most 512-2 048), 20 % under
+128 — short runs among the long ones, which no longer reach 32. `?dbg=ORTHROS_SLEEP0_SPIN_INSNS=0`:
+the former rule (read at each call).
+Measured in Node (`startbench bfme1-108 --bench <name> --sleeps`, warm, one run at a time, load phase = Start click to
+the first play frame; same guest work: 34.7-34.9 G instructions in every run):
+
+| bench | before (`=0`) | after | longest frame before → after | main thread throttles per frame |
+|---|---|---|---|---|
+| bfme1-108-quick | 50.9, 53.9 s | 36.3, 36.7 s | 13.6, 16.4 → 1.8, 2.1 s | 179, 267 → 11, 9 |
+| bfme1-108-skirmish | 52.4, 51.4 s | 38.3, 37.3 s | 15.4, 14.7 → 1.8, 1.9 s | 226, 167 → 8, 8 |
+
+A last quick run of the committed code (the yield rule below included): 35.8 s, longest frame 1.8 s, 9.9 throttles per
+frame, 1 208 streaks per frame ended by work. `wait` in the phase 14.3-16.2 → 0.7-0.8 s. Menu and play unchanged (quick, play 120 s: 3 592 / 3 591 frames, frame p50
+33.0 ms both, p99 44.0 / 44.6 ms, main thread `Sleep(0)` gaps all under 32 instructions, throttles 17.3 per frame).
+tests/sleep-throttle.test.js (tools/pe/sleepwork.c: 3 000 units of ~1 500 instructions, each followed by `Sleep(0)`:
+no throttle, against > 2 000 with the former rule).
+`vm.guestInsns` counts every thread of the machine: after a `Sleep(0)` whose yield ran another thread, the next gap
+holds that thread's work and is not taken as the caller's (`sleepStats.yielded`). The other games' loads, one run per
+arm (load + loading screen; the machine at load 30-48, so seconds are noisy): RotWK 2.02 `rotwk-quick` 3.5 + 7.7 s
+after / 6.1 + 11.5 s before (that run's menu was 3x slower: the machine, not the rule — its loading screen's gaps are
+under 32 instructions but 3); BFME II `bfme2-quick` 2.5 + 12.2 / 2.5 + 12.1 s; Age of the Ring `learn-aotr-skirmish`
+(`--child`) 5.0 + 12.9 / 5.0 + 12.3, 5.0 + 12.8 s — there the new rule never ended a streak (`work 0.0` in `--sleeps`,
+every gap under 32). Their frame limiters (menu, loading screen, play) spin under 32 instructions per `Sleep(0)`. (Two
+earlier Age of the Ring runs stayed 316-370 s in `loadscreen`: the skirmish had started, at 387 draws per frame, under
+the scenario's 400 — the same in a run where no decision of the rule differed; a variance of the scenario's last
+anchor, not of the load.)
+
 **The deferred queue's drain has its own accounting entry.** The calls the JIT queued (Direct3D state setters, D3DX
 parameter setters) run in JavaScript before the next call handled there (`Vm.drainDeferred`); the drain ran inside that
 call's timed window, so whichever call followed a batch (`IDirect3DTexture9::Release`, `GetTransform`...) carried the
