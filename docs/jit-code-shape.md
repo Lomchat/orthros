@@ -902,6 +902,80 @@ instruction fetch of a large, flat body of translated code, and a jump table add
 Off by default (`JIT_DEFAULTS.jumpTables`); `?jitopts={"jumpTables":true}` or `dbg:ORTHROS_JIT_JTAB_OFF=` (empty: on,
 `=1`: off; both retranslate everything) for measurement.
 
+## Chrome against Node (2026-11-12): the same code, the test browser starved by its CPU quota
+
+The guest-speed study of 2026-11-12 measured play at ~2-2.7 ns per guest instruction in Node and quoted ~4.8 ns for
+AotR in headless Chrome. Measured here on the same scenario in both (RotWK 2.02 `rotwk-quick`: first launch, menu,
+skirmish, 120 s of play; Vice City `vicecity-drive`: 60 s of driving), the same learned heat and regions (copies of the
+live server's), a fresh profile (`--profile-seed 0`); Node = `startbench --bg --cold --gfx recorder --heat --regions`
+(the page's background translator, cold tier and render-worker recorder); Chrome = `tools/headless.mjs` (Playwright's
+Chromium 153 headless shell, V8 ~15.3; Node 24 is V8 13.6) through `tools/with-browser-slot.sh`. Guest ns per
+instruction is the frame accounting's `guest` time (wall clock) per guest instruction of the play phase; thread CPU is
+the emulator thread's own CPU time (Node `threadCpuS`; Chrome: the busiest DedicatedWorker thread in /proc, the
+harness's `[cpu]` line), over the same guest instructions.
+
+| run (play phase) | fps | guest instructions | guest ns / insn | thread CPU ns / insn |
+|---|---|---|---|---|
+| RotWK, Node (4 runs) | 30 | 23.2-24.7 G | 2.06 / 2.54 / 2.09 / 2.12 | 2.59 / 3.04 / 2.61 / 2.66 |
+| RotWK, Chrome, quota 400 % alone (the slot's former default) | 3.0 | 4.8 G | **8.78** | 3.15 |
+| RotWK, Chrome, quota alone, `--gl-discard` | 13 | 11.3 G | **7.21** | 3.33 |
+| RotWK, Chrome, pinned to 4 cores | 5.9 (render-bound: 131 ms per frame waiting for SwiftShader) | 5.5 G | 3.34 | 2.74 |
+| RotWK, Chrome, pinned to 4 cores, `--gl-discard` (2 runs) | 28.2 / 28.1 | 24.7 / 23.4 G | **2.51 / 2.52** | 2.67 / 2.62 |
+| Vice City, Node | 30 | 7.6 G | 2.64 | 3.48 |
+| Vice City, Chrome, quota alone | 9.1 | 1.8 G | **11.56** | 6.55 |
+| Vice City, Chrome, pinned to 4 cores | 23.9 | 4.3 G | **2.30** | 2.80 |
+
+**Why.** The slot's scope capped the browser at 400 % (`CPUQuota`) on this 48-core host. SwiftShader's pool in the GPU
+process (16 threads, sized from the host's cores) burns that quota early in each 100 ms period — the GPU process took
+3.2-3.5 cores in play even with `--gl-discard` — and CFS then stops the whole scope, the emulator's thread included,
+until the next period: 572 of 590 periods throttled in Vice City's play, the emulator thread running ~13 % of the wall
+clock in RotWK's. The page measures its categories on the wall clock, so the stopped time lands in `guest`: 7-12 ns
+per instruction for code whose CPU cost is ~3 ns. The 4.8 ns figure is this artifact (docs/render-worker.md 11.1 saw the
+same throttling on AotR's loading screens), not the translated code.
+
+**The same code.** `perf record -e cycles:u,instructions:u` of the emulator thread over the whole play phase, symbols
+from V8's `--perf-basic-prof` (Chrome names its code mappings `[anon:v8]`, which perf does not look up in
+/tmp/perf-<pid>.map: resolved by hand), RotWK pinned + `--gl-discard` against Node, run at the same time (same load):
+
+| per guest instruction | Node: cycles / instructions (IPC) | Chrome: cycles / instructions (IPC) |
+|---|---|---|
+| translated regions, TurboFan | 4.66 / 6.85 (1.47) | 5.29 / 6.78 (1.28) |
+| translated regions, Liftoff | 0.24 / 0.14 | 0.27 / 0.12 |
+| runtime module (WASM) | 0.22 / 0.30 | 0.24 / 0.30 |
+| JavaScript (optimized + other) | 0.99 / 1.27 | 1.06 / 1.53 |
+| native (V8, Node / Chrome, Blink) | 0.50 / 0.68 | 0.94 / 1.31 |
+| whole thread (user) | 6.74 / 9.47 (1.40) | 8.05 / 10.38 (1.29) |
+
+The regions execute the same number of host instructions per guest instruction in both (6.78 vs 6.85: V8 15.3 and 13.6
+generate equivalent code for the translator's modules; Liftoff ~3.5 % of the cycles in both, so tier-up is not slower
+there). Chrome's thread runs ~10 % more instructions outside the regions (Blink and V8 runtime under the page worker's
+messages, timers and Atomics: +0.6 per guest instruction) and the regions run at a lower IPC (1.28 vs 1.47, +14 % cycles):
+the pinned 4 CPUs are shared with the GPU process's 2.6 busy cores (context switches, the L1/L2 caches shared; 44-47 are
+also the SMT siblings of 20-23, which other services use). The thread's clock was higher in Chrome (3.07 GHz vs 2.54 GHz
+for Node's floating thread), so its CPU time per guest instruction is the same (2.62 vs 2.66 ns), and its wall-clock
+guest time ~19 % higher (2.52 vs 2.12 ns: preempted on the shared cores). With SwiftShader rasterizing (no
+`--gl-discard`), RotWK play waits for the render worker (`render` 131 ms per frame) and Liftoff rises to 8 % of the
+thread's cycles (tier-up compiles starved on the 4 shared cores) — the server's software GPU, not the player's.
+
+**Ruled out:**
+- Explicit bounds checks on a shared memory: V8 keeps the trap handler (guard regions) for a shared
+  `WebAssembly.Memory` — Node's TurboFan code for a shared memory's load is a protected `movl` with no compare, and a
+  load loop in a Chrome page worker (cross-origin isolated) runs at the same speed on a shared and an unshared memory
+  (2.40-2.43 ns per iteration, as in Node 2.41), while `--js-flags=--wasm-enforce-bounds-checks` makes the shared one
+  +5 % slower: the default is not explicit checks.
+- V8 version and tiering (above: equal region instructions, equal Liftoff share at full speed).
+- Headless shell against full Chromium: the same microbenchmark speed (2.40 vs 2.40 ns).
+- The DevTools GC artifact (memory "DevTools GC artifact") needs a CPU profile or heap tool attached; none was.
+
+**Changed:** `tools/with-browser-slot.sh` pins each slot's browser to cores of its own by default
+(`ORTHROS_BROWSER_CPUS=auto`: as many as the quota gives, counted from the last core per slot — 44-47, 40-43, 36-39;
+`ORTHROS_BROWSER_CPUS=` restores the quota alone, a CPU list picks the cores). Before/after on two games (the table:
+quota alone → pinned): RotWK 3 → 5.9 fps (`--gl-discard` 13 → 28 fps, guest 7.21 → 2.51 ns), Vice City 9.1 → 23.9 fps
+(guest 11.56 → 2.30 ns); nothing slower. The harness's `[cpu]` mark lines now give the scope's throttled periods
+(`CPU quota: throttled in N of M periods`), with a note when more than a tenth were: a phase measured under throttling
+does not measure the translated code. Browser numbers taken with the quota alone (the 4.8 ns quoted for AotR among
+them) carry this artifact in proportion to the GPU process's activity; compare them only with runs made the same way.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for

@@ -15,22 +15,33 @@ max=${ORTHROS_BROWSERS:-3}
 loadmax=${ORTHROS_LOAD_MAX:-$(( $(nproc) / 2 ))}
 memmin=${ORTHROS_MEM_MIN_GB:-12}
 mem=${ORTHROS_BROWSER_MEM:-12G}
-scope=()
+scope=() pinned=0
+cpu=${ORTHROS_BROWSER_CPU:-400%}
+cpus=${ORTHROS_BROWSER_CPUS-auto}
 if [ "$mem" != "0" ] && command -v systemd-run >/dev/null && systemd-run --scope --quiet -p MemoryMax=64M -- true 2>/dev/null; then
-  scope=(systemd-run --scope --quiet -p "MemoryMax=$mem" -p MemorySwapMax=0 -p "CPUQuota=${ORTHROS_BROWSER_CPU:-400%}" -p CPUWeight=20)
-  # ORTHROS_BROWSER_CPUS=<cpu list> (e.g. 44-47): the browser also pinned to those cores. A quota alone on this 48-core
-  # host lets SwiftShader's 16 worker threads burn the quota in a few ms of each 100 ms period, then the whole scope —
-  # the emulator's thread included — is throttled for the rest (docs/render-worker.md section 11): pinned, the model is
-  # closer to a real 4-core PC
-  [ -n "${ORTHROS_BROWSER_CPUS:-}" ] && scope+=(-p "AllowedCPUs=$ORTHROS_BROWSER_CPUS")
-  scope+=(--)
+  scope=(systemd-run --scope --quiet -p "MemoryMax=$mem" -p MemorySwapMax=0 -p "CPUQuota=$cpu" -p CPUWeight=20)
+  # ORTHROS_BROWSER_CPUS: the cores the browser is pinned to besides its quota. auto (the default): as many cores as the
+  # quota gives (400 %: 4), a set of its own per slot counted from the last core (48 cores: slot 1 44-47, slot 2 40-43,
+  # slot 3 36-39); <cpu list> (e.g. 44-47): those; empty (ORTHROS_BROWSER_CPUS=): the quota alone. A quota alone on
+  # this 48-core host lets SwiftShader's 16 worker threads burn the quota in a few ms of each 100 ms period, then the
+  # whole scope — the emulator's thread included — is stopped for the rest (docs/render-worker.md section 11): RotWK play
+  # ran at 3 fps and 8.8 ns per guest instruction in the frame accounting with the quota alone, 28 fps and 2.4 ns pinned
+  # (docs/jit-code-shape.md "Chrome against Node"). Pinned, the model is a 4-core PC, where at most 4 threads run at once.
+  if [ "$cpus" = auto ]; then pinned=$(( (${cpu%\%} + 99) / 100 ))
+  elif [ -n "$cpus" ]; then scope+=(-p "AllowedCPUs=$cpus"); fi
 fi
 while :; do
   load=$(cut -d' ' -f1 /proc/loadavg)
   if awk -v l="$load" -v m="$loadmax" 'BEGIN { exit !(l < m) }' && "$(dirname "$0")/mem-check.sh" -q "$memmin"; then
     for i in $(seq 1 "$max"); do
+      run=("${scope[@]}")
+      if [ ${#run[@]} -gt 0 ] && [ "$pinned" -gt 0 ]; then
+        hi=$(( $(nproc) - (i - 1) * pinned - 1 )); lo=$(( hi - pinned + 1 ))
+        [ "$lo" -ge 0 ] && run+=(-p "AllowedCPUs=$lo-$hi")
+      fi
+      [ ${#run[@]} -gt 0 ] && run+=(--)
       # (-E 75: "slot busy" is told apart from the command's own exit status)
-      flock -n -E 75 "/tmp/orthros-browser-slot.$i" "${scope[@]}" "$@"
+      flock -n -E 75 "/tmp/orthros-browser-slot.$i" "${run[@]}" "$@"
       rc=$?
       [ "$rc" -ne 75 ] && exit "$rc"
     done

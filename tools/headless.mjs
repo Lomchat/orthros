@@ -470,6 +470,26 @@ function workerThreadTicks() {
   }
   return out;
 }
+// The CPU bandwidth limit of this process's cgroup (tools/with-browser-slot.sh's scope: CPUQuota=400 % by default) —
+// when the browser's threads (SwiftShader's pool in the GPU process: ~3.5 cores in RotWK play) use up a period's quota,
+// CFS stops the whole scope, the emulator's thread included, until the next 100 ms period. The page measures its
+// categories on the wall clock, so that stopped time lands in `guest` (RotWK play, quota alone: 8.8 ns per guest
+// instruction in the frame accounting for ~3 ns of the worker thread's own CPU; docs/jit-code-shape.md "Chrome
+// against Node"). Each mark's [cpu] line gives the periods throttled and the time stopped: a phase with throttling
+// does not measure the translated code's speed.
+function scopeCpuStat() {
+  try {
+    const cg = fs.readFileSync('/proc/self/cgroup', 'utf8').split('\n').find((l) => l.startsWith('0::'))?.slice(3);
+    if (!cg) return null;
+    const st = Object.fromEntries(fs.readFileSync(`/sys/fs/cgroup${cg}/cpu.stat`, 'utf8').trim().split('\n').map((l) => l.split(' ')).map(([k, v]) => [k, Number(v)]));
+    return 'nr_periods' in st ? st : null; // (no limit set: no bandwidth fields)
+  } catch { return null; }
+}
+function throttleText(a, b) {
+  if (!a || !b) return '';
+  const periods = b.nr_periods - a.nr_periods, thr = b.nr_throttled - a.nr_throttled;
+  return `; CPU quota: throttled in ${thr} of ${periods} periods, ${((b.throttled_usec - a.throttled_usec) / 1e6).toFixed(1)} s throttled (summed over the CPUs)${thr > periods / 10 ? ' (wall-clock times of the phase include it)' : ''}`;
+}
 for (;;) {
   const s = await status();
   const t = (Date.now() - t0) / 1000;
@@ -566,9 +586,9 @@ for (;;) {
     // mark:<label> — a phase boundary: worker-thread and GPU-process CPU since the previous mark, and the worker's
     // texture work / API time over the phase (logged as [gfx] mark)
     if (ev.kind === 'mark') {
-      const ticks = workerThreadTicks(), frames = s.stats?.frames ?? 0;
-      if (markState) { let best = 0, next = 0, gpu = 0; for (const [k, v] of ticks) { const d = v - (markState.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else if (d > best) { next = best; best = d; } else if (d > next) next = d; } console.log(`[cpu] phase ${markState.label} -> ${ev.args[0]}: ${(t - markState.t).toFixed(0)} s, worker thread ${(best / 100).toFixed(1)} s CPU, next worker thread ${(next / 100).toFixed(1)} s CPU, GPU process ${(gpu / 100).toFixed(1)} s CPU, ${frames - markState.frames} frames`); }
-      markState = { ticks, frames, t, label: ev.args[0] };
+      const ticks = workerThreadTicks(), frames = s.stats?.frames ?? 0, quota = scopeCpuStat();
+      if (markState) { let best = 0, next = 0, gpu = 0; for (const [k, v] of ticks) { const d = v - (markState.ticks.get(k) ?? v); if (k.startsWith('gpu:')) gpu += d; else if (d > best) { next = best; best = d; } else if (d > next) next = d; } console.log(`[cpu] phase ${markState.label} -> ${ev.args[0]}: ${(t - markState.t).toFixed(0)} s, worker thread ${(best / 100).toFixed(1)} s CPU, next worker thread ${(next / 100).toFixed(1)} s CPU, GPU process ${(gpu / 100).toFixed(1)} s CPU, ${frames - markState.frames} frames${throttleText(markState.quota, quota)}`); }
+      markState = { ticks, frames, t, label: ev.args[0], quota };
       // (what the network had carried by then: time to a phase on a simulated link reads with it)
       try { const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json(); if (ns.demand) console.log(`[mark] ${ev.args[0]} at ${t.toFixed(0)} s: ${(ns.sent / 1048576).toFixed(1)} MB sent (demand ${(ns.demand.sent / 1048576).toFixed(1)} MB in ${ns.demand.requests} requests, background ${(ns.bg.sent / 1048576).toFixed(1)} MB in ${ns.bg.requests} requests${ns.batches ? `, ${ns.batches} of them batches of ${ns.batchItems} runs` : ''})`); } catch { /* no stats */ }
       await page.evaluate((label) => window.orthros.worker?.postMessage({ type: 'mark', label }), String(ev.args[0]));
