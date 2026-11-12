@@ -22,7 +22,7 @@ import { decode, fmtInsn } from '../../src/cpu/decoder.js';
 import { listRegion } from '../../src/cpu/jit/listing.js';
 import { PROF_OPS_BASE, NOCHAIN_PROF, SITE_PROF, T2_PROF, T2_PROF_NAMES } from '../../src/cpu/jit/translate.js';
 import { FAST_PROF, FAST_NAMES } from '../../src/cpu/jit/runtime.js';
-import { jitMix, jitShape } from './jit-mix.mjs';
+import { jitMix, jitShape, stackSlotMix } from './jit-mix.mjs';
 import { NodeScenario } from './node-scenario.mjs';
 import { installNodeGfx, programsLine } from './node-gfx.mjs';
 import { LearnedHeat, RangeHeat } from '../../src/cpu/jit/heat.js';
@@ -232,6 +232,8 @@ const report = (why) => {
     console.log(`[x87modes] live regions by x87 mode: ${[...h].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')}`);
   }
   if (vm.jit?.stats.smcChecks) console.log(`[smc] store checks emitted ${vm.jit.stats.smcChecks}, of which group checks ${vm.jit.stats.smcGroups}; stores covered by a group ${vm.jit.stats.smcGrouped}`);
+  // --stack-mix: the guest frame-slot accesses of the counted regions (jit-mix.mjs stackSlotMix; with --mix too)
+  if ((args.includes('--mix') || args.includes('--stack-mix')) && vm.jit) console.log(stackSlotMix(vm.jit));
   if (args.includes('--mix') && vm.jit) { console.log(jitMix(vm.jit)); console.log(jitShape(vm.jit, listRegion)); const st = vm.jit.stats; console.log(`[mix] chained transitions ${(st.chained / 1e6).toFixed(1)} M, misses ${st.misses}, fallback steps ${st.fallbackSteps}, interpreter steps ${st.steps}`); }
   if (args.includes('--jit-profile') && vm.jit) { for (const t of vm.proc?.threads ?? []) vm.jit.harvest(t.cpu.b4); console.log(`[jitprof] ${Object.entries(vm.jit.stats.prof ?? {}).filter(([, v]) => v).map(([k, v]) => `${k} ${(v / 1e6).toFixed(1)}M`).join(', ')}; chained ${(vm.jit.stats.chained / 1e6).toFixed(1)}M; unchained (thunk, stop, budget, miss) ${[0, 1, 2, 3].map((k) => (vm.mem.read32(PROF_OPS_BASE + NOCHAIN_PROF + 4 * k) / 1e6).toFixed(1) + 'M').join(' ')}; API calls ${(vm.apiCalls / 1e6).toFixed(1)}M`);
     // (the fast-path API calls the dispatcher ran in WASM, per API)

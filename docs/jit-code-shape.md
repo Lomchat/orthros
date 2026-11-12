@@ -1617,6 +1617,65 @@ cycles at the load's IPC; removing them left the regions' data-bound cycles (and
 24 bits, and the rule is two games. Adding the key changes the translated-code cache's key (JIT_DEFAULTS): one
 retranslation per player after the update, as for any new option.
 
+## Guest stack slots in WASM locals (2026-11-12): the opportunity measured first — no-go, nothing built
+
+The idea: 32-bit game code spills to `[esp+d]` / `[ebp+d]`; within a region, keep the frame slots whose address is
+provably region-entry ESP / EBP + a constant in WASM locals (loaded lazily, written back at exits, stores through other
+bases range-checked against the promoted window). Unlike every variant above it would remove guest *memory* accesses
+rather than reshape control flow, region extents or the x87 / flags code. Gate: ≥ 6 % less guest time per instruction in
+play on two games. The opportunity was measured before writing any translator code, and it is too small.
+
+**What runs.** `startbench --stack-mix` (tools/bench/jit-mix.mjs `stackSlotMix`): the counted regions' blocks are decoded
+again and weighted by their execution counts. Each memory access is classified, and the ESP / EBP bases are tracked
+relative to the region's entry through ADD / SUB by a constant, PUSH / POP, MOV, LEA and LEAVE, over the region's own jumps
+and branches. A call, a return or any other write makes the base unknown. A load counts as one a local could serve when
+its slot was accessed earlier in the same block execution, or on every path from the region's entry (must-availability).
+A third line estimates loop iterations beyond one per region entry: a region-frame slot loaded in a block that runs more
+often than the region's entry block. This estimate leans generous. Node, real clock, the live server's learned heat and
+regions, block counters switched on in play (`dbg:ORTHROS_JIT_AB={"blockCounts":true}` 30-46 s into play, then 60-70 s
+counted). Shares are per executed guest instruction:
+
+| game (counted) | loads | stores | `[esp+d]` loads | `[ebp+d]` loads | POP | stores, other bases | servable: same block | every path | loop estimate | total servable |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RotWK 2.02 (8.4 G) | 35.6 % | 18.7 % | 4.7 % | 5.0 % | 4.1 % | 5.7 % | 1.9 % | 0.7 % | 0.1 % | **2.7 %** |
+| AotR 10, game.dat (11.5 G) | 35.3 % | 20.3 % | 4.8 % | 4.0 % | 4.3 % | 6.5 % | 1.4 % | 0.8 % | 0.2 % | **2.4 %** |
+| BFME1 1.08 (5.9 G) | 35.3 % | 18.3 % | 9.1 % | 1.1 % | 2.6 % | 7.1 % | 3.1 % | 1.2 % | 0.2 % | **4.5 %** |
+
+(A first run of the same scenarios without the every-path line gave the same shares to within 0.1 point: RotWK 1.9 / 0.5,
+BFME1 3.1 / 0.7.) Frame loads with an index register, or with an unknown base, are ≤ 0.2 %.
+
+**What a served load would save.** tools/bench/memop-bench.mjs (cases added; Node, branch hints, 7 runs): 8 × `mov edx,
+[esp+8]` costs +0.092 ns a load over the loop, 8 × `mov edx, [ebp-8]` +0.084 ns, a register move ~0. `add eax, [esp+8]`
+costs the same as `add eax, edx` (0.181 vs 0.183 ns a group): the load is off the dependency chain. On the machine code, a
+served load drops the `lea` and the `mov` (2 host instructions out of ~7 a guest instruction in regions; `memarg` above
+already measured what removing the `lea` from every `[base+disp]` load buys: −0.2 to −1.3 % JIT instructions, no time
+resolved). In play the TurboFan code already spills (stack slots were 12-14 % of the region samples in BFME1's 3D menu, above), so a promoted slot would
+often live in a spill slot and save only the `lea`.
+
+**Bound.**
+- **Servable loads.** 2.4-4.5 % of guest instructions × 2 host instructions ≈ 0.05-0.09 of ~7 region instructions per
+  guest instruction: 0.7-1.3 % of the region code's instructions. In time, at ~0.1-0.3 ns a load against ~2.4 ns a
+  guest instruction in play, that is 0.1-0.5 %.
+- **The ceiling.** Every frame load with a known base, including POP: 13.8 % RotWK, 13.1 % AotR, 12.8 % BFME1. Serving
+  them all, at 2 host instructions each, gives at most ~4 % of region instructions and ~1.7 % of guest time. That is under
+  the 6 % gate before any cost.
+- **The costs.**
+  - Stores through other bases run 5.7-7.1 % of guest instructions, more than the servable loads. With write-back, each
+    needs a range compare against the promoted window, and loads through other bases need one too, for pointers to locals.
+    With write-through, only the loads gain.
+  - Every promoted slot is one more value live to every exit, at the merges where TurboFan's register shuffling is
+    already the largest overhead (plan.md: 0.9-1.0 host instruction per guest instruction). Rebuilding the lazy flags at
+    exits so they die earlier measured +1-2 %, and moving the registers from the parameters into the state block
+    measured +17 % per chained call/return.
+  - Write-back adds code at every exit, in a profile bound by instruction fetch.
+- **Why the share is small.** The game code here is mostly MSVC release code. A slot is typically loaded once per
+  function body, for an argument or a spilled value, not reloaded within the same region. The reuse sits in PUSH / POP
+  pairs across calls, and calls leave the frame unknown. Hot loops keep their counters in registers: loop-carried
+  re-loads beyond one per region entry are ≤ 0.2 %.
+
+Not built: no translator change, no switch. Kept for measurement: `startbench --stack-mix` (also printed with `--mix`) and
+the frame-load cases of memop-bench.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
