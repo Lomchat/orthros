@@ -1769,6 +1769,110 @@ time at best, inside the noise of a single play run. Both off by default (`JIT_D
 `ORTHROS_JIT_DEFAULTS` / `?jitopts` / `dbg:ORTHROS_JIT_AB` to measure). Tools kept: transition-floor.mjs, chain-bench
 `--opts`, `--local-ret`, `--pre`, `--kinds`.
 
+## Guest registers in the state block (2026-11-12, `regsMem`): fewer host instructions, not fewer cycles — no-go, not merged
+
+*Not in the tree:* the code is on branch `worktree-wf_927ea028-9cd-1` (commit 2cae55c), left out of the 2026-11-12 third-round
+integration: a no-go whose default path changes too (the 13 register locals copied from the parameters at every region
+entry — the same TurboFan code, Liftoff's not measured), whose modes are not exact (review: `block`, `flow` and `carry`
+drop the lazy-flag values at a transfer into a block with `flagsOut === 0`; an SMC exit there that rewrites a JMP into
+a JCC — `cmp eax, eax ; jmp t` / `t: mov word [X], 0x0274 ; X: cmp ecx, ecx …` — stores stale flags: eax 5 instead of 1;
+the V fixpoint of `flow` / `carry` stops after 64 rounds without a convergence check), and whose locals 115..127 fill the
+one-byte LEB local indexes that the merged `linkExits` locals need. The measurements below stand.
+
+The study of 2026-11-12 (plan.md) put TurboFan's register shuffling first among the per-instruction costs (~1.0 host
+instruction per guest instruction in the hottest regions): every region exit carries the 16 values (8 registers,
+EFLAGS, 4 lazy-flag values, budget) as parameters, so all of them are live to every exit and every merge. Gate: ≥ 8 %
+less guest time per instruction in play on RotWK and AotR, host instructions per guest instruction clearly down.
+
+**What differs from the earlier attempts** ("Registers, region exits and loops…", "Measured, not kept": the flags in the
+state block, packed or reordered parameters, flags rebuilt at exits): those kept the 13 guest values in locals from a
+region's entry to all its exits and only changed how they cross the boundary. Here the *inside* of the region changes:
+the guest register file lives in the thread's state block at region boundaries, a value is held in a WASM local only
+where the code uses it, and an exit stores only what was set on the way to it. The region signature is unchanged
+(16 i32, so the table, dispatcher and x87 versions are untouched); its parameters 2..14 are no longer read — the
+chained tail calls pass them on unchanged (no move) — and the register file became 13 declared locals (`L_REG`.. =
+115..127; in the default mode the prologue copies the parameters into them: the same machine code, chain-bench
+22.7 / 31.5 ns and 6.39 G instructions before and after). Modes (`JIT_DEFAULTS.regsMem`, `ORTHROS_JIT_DEFAULTS` /
+`dbg:ORTHROS_JIT_AB={"regsMem":"…"}`; library kernels, tier 2 and the shared chain stub stay off with it, they pass
+the registers as parameters):
+- `region`: the prologue loads the registers the body reads or sets (13 loads made `nop` otherwise, like x87Live), the
+  exit tail stores those it sets before chaining. Only removes unused / read-only registers from the live sets.
+- `block`: no guest value crosses a block boundary in a local. Each block loads at its start the registers it reads
+  before setting them (or sets inside a conditional, so that a later store writes the right value on every path), and
+  where the block is left — any exit, a transfer to another block, the fallthrough, an interpreter fallback — stores
+  the ones it has set so far (Code.rfTrack records gets / sets with their control depth; the lazy-flag values are not
+  stored where no successor reads the flags, as deadFlagsExit already allows).
+- `flow`: `block`, and a register a block reads stays in its local across the transfers straight into it (fallthrough,
+  forward branches, a loop's back edge to its header — recorded as emitted) when every such predecessor holds it: a
+  backward-dataflow fixpoint at the region's end; forward predecessors at no deeper loop level are made to load it
+  (the load moves out of the block, onto a path that runs no more often), back edges and loop exits pass only what they
+  hold; a dispatcher entry (a chain, a time slice) loads it in the block's trampoline. A loop's registers then stay in
+  locals around the loop, written to the state block at each block's end but never read back on the loop's path.
+- `carry`: `flow`, and a register set by the blocks before is not stored on a transfer straight into a block that keeps
+  it (that block stores it where it is left instead). Translated twice: a first pass finds what each block needs and
+  sets and the transfers, the second emits exactly the loads and stores of that plan.
+- Tested (not exact, see above): tests/jit-regs-mem.test.js — random programs (partial registers, a shift by CL whose count 0 sets nothing,
+  flags read across blocks, an interpreter fallback (DAA) and an SMC exit in the middle of a block, an overlapping
+  `rep movsb` into the code's page, PUSHF / POPF, DF, in-region calls, LOOP) against the interpreter, whole and in time
+  slices of 1, 3 and 29 instructions (quick pass: `block` and `carry`; full depth: the four modes). Mutations caught: no
+  load for a conditional set, the lazy values never stored at a transfer, a carried register not stored at a backward
+  transfer's budget exit, a register carried that the block does not keep, no forced load in a predecessor, no
+  trampoline load, `region` storing after the chain. The whole JIT suite passes under each mode but the tests that
+  assert library kernels or tier 2 run, a code-shape assertion on the lazy flags at a dead-flags exit, and the code cache's
+  eviction counts (the regions' sizes differ).
+
+**Measured** (Node 24, EPYC 7402P, `tools/bench/ab-virtual.mjs --perf-phase --perf-label regsplay`, the arms run
+together on the same virtual-clock play: tools/scenarios/rotwk-regs-ab.txt — 40 s of play, 5 901 M guest instructions —
+and aotr-regs-ab.txt with `--child --until-api none --profile-dir build/saves/aotr-10` — 50 s of play, 9 341 M; the live
+server's learned heat; one run per arm per batch, `--no-liftoff`; regions = the `r_*` functions; per guest instruction):
+
+| RotWK arm | guest ns | regions i/g | regions c/g | IPC | uop queue empty | fills L2 / beyond per k guest | translated + runtime + JS c/g | translation (whole run) |
+|---|---|---|---|---|---|---|---|---|
+| default (batch 1) | 1.890 | 7.30 | 5.28 | 1.38 | 30.8 % | 243 / 111 | 6.69 | 14.2 s |
+| `block` | 1.950 (+3.2 %) | 7.31 | 5.54 | 1.32 | 27.2 % | 236 / 103 | 6.91 | 16.6 s |
+| default (batch 2) | 1.816 | 7.33 | 5.00 | 1.47 | 32.2 % | 233 / 119 | 6.37 | 14.0 s |
+| `flow` | 1.769 (−2.6 %) | 6.84 | 4.89 | 1.40 | 28.4 % | 222 / 110 | 6.29 | 18.0 s |
+| default (batch 3) | 1.815 | 7.35 | 5.04 | 1.46 | 30.4 % | 241 / 114 | 6.39 | 14.3 s |
+| `carry` | 1.801 (−0.8 %; 5 947 M guest instructions) | 6.67 | 4.90 | 1.36 | 29.7 % | 218 / 113 | 6.30 | 25.2 s |
+
+| AotR arm | guest ns | regions i/g | regions c/g | IPC | uop queue empty | fills L2 / beyond per k guest | process c/g |
+|---|---|---|---|---|---|---|---|
+| default | 1.716 | 6.71 | 4.49 | 1.49 | 31.3 % | 170 / 88 | 6.53 |
+| `carry` | 1.676 (−2.3 %) | 6.22 | 4.42 | 1.41 | 29.6 % | 162 / 87 | 6.37 |
+
+The phases before play were 7-13 % faster with every mode in these `--no-liftoff` runs (RotWK menu `block` −13 %,
+`flow` −10 %, `carry` −11 %; AotR profile −13.5 %): TurboFan compiles the regions on the emulator thread there, and a
+function whose guest values are short-lived costs its register allocator much less. With V8's own tiers (Liftoff,
+TurboFan in the background, as in the browser; no perf), the same scenario, play phase regsplay, default / `carry`:
+1.696 / 1.746 ns (+3.0 %) and 1.727 / 1.718 (−0.5 %) in two batches (order of the arms swapped); the phases before
+play +6 to +19 % guest time and +16 to +35 % thread CPU per frame for `carry` — its two translation passes in JavaScript
+(24-25 s of translation over the run against 13.5-14 s). Default / `flow`, one batch: regsplay 1.737 / 1.738 ns
+(+0.1 %), menu +5.7 %.
+
+**Why it does not pay.** Instruction classes in the regions (RotWK regsplay, `perf record` with `node --perf-prof`,
+`perf inject -j`, the samples mapped to the disassembly of each region; per guest instruction, default → `carry`):
+register-to-register moves 0.95 → 0.55 i/g (0.77 → 0.47 c/g), spill stores 0.58 → 0.20, spill reloads 0.34 → 0.17,
+stack parameter loads 0.22 → 0.04, constants into registers 0.09 → 0.06 — the shuffling falls from 2.17 to 1.01 host
+instructions (1.72 → 0.78 cycles) per guest instruction, as intended. But the state block traffic that replaces it
+costs nearly as much in cycles: stores 0.16 → 0.73 i/g (0.12 → 0.58 c/g), loads 0.02 → 0.43 i/g (0.02 → 0.37 c/g).
+Register moves are cheap in cycles (Zen 2 eliminates many at rename) and spills were partly off the hot paths; a store
+of every register a block set and a load after a merge are memory operations on the critical path (store-to-load
+forwarding where a loop's value goes through the state block, `block`: IPC 1.38 → 1.32, +5 % cycles at equal
+instructions). `flow` keeps the loop-carried values in locals (the cycles finally drop) and `carry` also skips the
+stores of values the next block keeps — but a value carried dirty must reach every exit after it, which is the
+default's problem again: stores stayed at 0.73 per guest instruction (a block's successor rarely reads every register
+it set). Chained transitions pay the memory round trip too (chain-bench int call/return 22.7 → 27.0-27.5 ns, x87 31.5 →
+33 ns). Net: regions −7 to −9 % host instructions, −2 to −3 % cycles, guest time −1 to −3 % with `--no-liftoff` and
+−0.5 / +3 % with V8's tiers, translation work +30-75 % — far from the 8 % gate on either game, so not measured on BFME1,
+Vice City or Chrome.
+
+What it says: the shuffling is the price of keeping guest state in registers across a region, and memory is not a
+cheaper home for it on this machine; what removes both is fewer values crossing exits *and* fewer exits that need them
+— e.g. lazy flags that never reach the exits (the flag values are 4 of the 13 and are stored at every exit leaving the
+region with flags live), or an exit that stores a dirty set only on its cold path while the hot path chains with the
+values in parameters. Kept for measurement: `regsMem` (`region`, `block`, `flow`, `carry`), off by default;
+tools/scenarios/rotwk-regs-ab.txt, aotr-regs-ab.txt.
+
 ## Measured, not kept
 
 - Region parameters reordered so that the budget rides in a register and the state block's address (the same for
