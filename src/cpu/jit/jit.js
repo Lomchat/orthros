@@ -8,6 +8,7 @@ import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXI
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
+import { LIB_KERNELS, matchLibKernel, buildLibKernelModule } from './libkernels.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -31,6 +32,10 @@ const COLD_BITSTRING = new Set([OP.BT, OP.BTS, OP.BTR, OP.BTC]);
 const SMC_MAP_LIMIT = 0x80000000;
 /** x87-mode versions of a region before it is translated with the mode tested at run time */
 const MAX_FPU_VERSIONS = 4; // (24/53-bit precision x nearest/truncation: the four modes seen for code shared by a game's threads)
+/** a library kernel left this many times the exact way (EXIT_STEP at its entry) is dropped: the translation runs instead */
+const LIB_FALLBACK_MAX = 4096;
+/** ORTHROS_LIBKERNELS=0 (debug global or environment): no library kernels (libkernels.js) */
+const libKernelsOff = () => { const g = globalThis.ORTHROS_LIBKERNELS ?? globalThis.process?.env?.ORTHROS_LIBKERNELS; return g === 0 || g === '0' || g === false || g === 'false'; };
 
 /** Fold a pending lazy flag operation (left in the state block by JIT'd code) into the thread's EFLAGS. */
 function foldLazyFlags(cpu) {
@@ -106,7 +111,7 @@ export class Jit {
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, libKernels: 0, libFallbacks: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -114,6 +119,9 @@ export class Jit {
     // (fields set later, declared here: one hidden class for the dispatcher's loads, see Vm's constructor)
     this.refFast = null; this.refFastOff = false; this.lockFast = null; this.drawFast = null; this.fxSpecs = null; this.drawOptPending = false; this.xformOff = !globalThis.ORTHROS_XFORM_FILTER; this.xformPending = false; this.optFast = null; this.bg = null; this.stormAt = 0; this.stormCount = 0; this.fxDefer = null; this.fxDeferOff = false; // (xformOff: the SetTransform filter, off by default — docs/api-layer.md)
     this.abOpts = null; this.abEpoch = 0; this.watches = null;
+    // library kernels (libkernels.js): the live ones by entry, the table index of each definition's function (-1: not
+    // yet; the module made at the first), the entries dropped for leaving the exact way too often
+    this.libLive = null; this.libFns = null; this.libExports = null; this.libOff = null;
     this.clearTables();
   }
 
@@ -215,6 +223,7 @@ export class Jit {
     this.byFn?.clear();
     this.genericFpu?.clear();
     this.genericTop?.clear();
+    this.libLive?.clear();
   }
 
   /** Drop every translation (e.g. between conformance cases). */
@@ -263,6 +272,9 @@ export class Jit {
   }
   translateNow(eip, version, assume) {
     const t0 = performance.now();
+    // a library function a kernel runs (libkernels.js): its kernel, not a translation
+    const lib = version ? null : this.libKernel(eip);
+    if (lib) return lib;
     // already translated (its hash entry was evicted): re-insert instead of retranslating
     const known = version ? null : this.blockMap.get(eip);
     if (known) { this.hashInsert(eip, known.region.fnIdx, known.block); this.stats.reinserts = (this.stats.reinserts ?? 0) + 1; return known.region; }
@@ -456,7 +468,7 @@ export class Jit {
     if (fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * fnIdx, 0); // (no next version yet)
     if (!version) {
       this.byEntry.set(eip, region);
-      for (const b of blocks) { this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); }
+      for (const b of blocks) { if (this.libLive === null || !this.libLive.has(b.eip)) this.hashInsert(b.eip, fnIdx, b.index); this.blockMap.set(b.eip, { region, block: b.index }); } // (a kernel's entry keeps its kernel)
     }
     // mark code pages for SMC detection (and the page before each: a store crossing into a code page, see smcCheck)
     for (const p of region.pages) {
@@ -466,6 +478,52 @@ export class Jit {
     }
     this.stats.regions++; this.stats.blocks += blocks.length; this.stats.native += stats.native; this.stats.fallback += stats.fallback; this.stats.ifcvt += stats.ifcvt ?? 0;
     return region;
+  }
+
+  // ------------------------------------------------------------------ library kernels
+  /** are library kernels on (opts.libKernels, the in-session options, JIT_DEFAULTS; ORTHROS_LIBKERNELS=0: off)? */
+  libKernelsOn() { return (this.abOpts?.libKernels ?? this.opts.libKernels ?? JIT_DEFAULTS.libKernels) !== false && !libKernelsOff(); }
+  /**
+   * The kernel at `eip` (libkernels.js), hash entry (re)inserted, or null: one live already, else the code there
+   * recognised (its fingerprint, in a library: opts.libScope) and the kernel installed — its function in the table, a
+   * hash entry whose block is the entry address, the pages of the bytes it depends on flagged for SMC detection like a
+   * region's (a write there drops it, see dropOne; recognised again or not at the next miss).
+   */
+  libKernel(eip) {
+    let rec = this.libLive?.get(eip);
+    if (!rec) {
+      if (!this.libKernelsOn() || this.libOff?.has(eip)) return null;
+      const d = matchLibKernel(this.mem.u8, eip);
+      if (!d || (this.opts.libScope && !this.opts.libScope(eip))) return null;
+      const i = LIB_KERNELS.indexOf(d);
+      if (!this.libExports) {
+        const mod = new WebAssembly.Module(buildLibKernelModule({ shared: this.shared, chain: this.chaining }));
+        this.libExports = new WebAssembly.Instance(mod, { env: { memory: this.mem.memory, table: this.table, chain: this.runtime.chain } }).exports;
+        this.libFns = LIB_KERNELS.map(() => -1);
+      }
+      if (this.libFns[i] < 0) { const f = this.reserveFn(); this.table.set(f, this.libExports['k' + i]); if (f < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * f, 0); this.libFns[i] = f; }
+      const pages = new Set();
+      for (const [o, n] of d.ranges) for (let p = (eip + o) >>> 12; p <= (eip + o + n - 1) >>> 12; p++) pages.add(p);
+      rec = { entry: eip, pages: [...pages], blocks: [], fnIdx: this.libFns[i], kernel: d, fallbacks: 0, first: null, versions: null };
+      for (const p of rec.pages) {
+        this.mem.u8[SMC_MAP_BASE + p] |= SMC_CODE;
+        if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] |= SMC_NEXT;
+        let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(rec);
+      }
+      (this.libLive ??= new Map()).set(eip, rec);
+      this.stats.libKernels++;
+      if (this.opts.log) this.opts.log(`jit: library kernel ${d.name} at ${eip.toString(16)}`);
+    }
+    this.hashInsert(eip, rec.fnIdx, eip);
+    return rec;
+  }
+  /** A kernel left the exact way (EXIT_STEP at its entry): counted; too often, dropped for good (its translation runs). */
+  libFallback(rec) {
+    this.stats.libFallbacks++;
+    if (++rec.fallbacks < LIB_FALLBACK_MAX) return;
+    (this.libOff ??= new Set()).add(rec.entry);
+    this.dropOne(rec);
+    this.opts.warn?.(`jit: library kernel ${rec.kernel.name} at ${rec.entry.toString(16)} dropped: ${rec.fallbacks} calls outside its path`);
   }
 
   // ------------------------------------------------------------------ background translation
@@ -493,6 +551,7 @@ export class Jit {
       const eip = eip0 >>> 0;
       if (this.blockMap.has(eip) || !this.interp.executable(eip)) continue;
       if (this.opts.interpRanges?.some(([lo, hi]) => eip >= lo && eip < hi)) continue; // (debugging: left to the interpreter)
+      if (this.libKernel(eip)) continue; // (a library kernel's entry)
       let mode = this.opts.fpuSpecialize === false || this.genericFpu.has(eip) ? null : this.learnedMode(fpc);
       if (mode !== null && mode !== undefined && this.genericTop.has(eip)) mode &= 0xf00;
       items.push({ eip, fpc: mode === null ? null : fpc, mode, fnIdx: this.reserveFn() }); // (fpc: as learned, for the reports below)
@@ -645,17 +704,26 @@ export class Jit {
     (r.first ?? r).versions = null;
   }
   dropOne(r) {
+    if (r.kernel) { // (a library kernel: its hash entry and SMC pages; its function stays in the table for the next one)
+      if (this.libLive?.get(r.entry) === r) { this.libLive.delete(r.entry); this.hashRemove(r.entry); }
+      this.dropPages(r);
+      return;
+    }
     if (r.fnIdx < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * r.fnIdx, 0);
     for (const b of r.blocks) { this.hashRemove(b.eip); const k = this.blockMap.get(b.eip); if (k && k.region === r) this.blockMap.delete(b.eip); }
     this.byEntry.delete(r.entry);
     const i = this.regions.indexOf(r); if (i >= 0) this.regions.splice(i, 1);
     r.visits = null; // (its flags are no longer harvested: harvestVisitsStep drops it from visitRegions)
+    this.dropPages(r);
+    this.table.set(r.fnIdx, null);
+    this.byFn.delete(r.fnIdx);
+  }
+  /** a dropped region's (or kernel's) code pages: no longer flagged for SMC detection once nothing else is there */
+  dropPages(r) {
     for (const p of r.pages) {
       const s = this.pageRegions.get(p);
       if (s) { s.delete(r); if (!s.size) { this.pageRegions.delete(p); this.mem.u8[SMC_MAP_BASE + p] &= ~SMC_CODE; if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] &= ~SMC_NEXT; } }
     }
-    this.table.set(r.fnIdx, null);
-    this.byFn.delete(r.fnIdx);
   }
 
   // ------------------------------------------------------------------ fallback
@@ -720,7 +788,7 @@ export class Jit {
       // (after a transfer: translated code, a thunk or the stop address end the interpretation; a fall-through into a
       // translated block goes on interpreting, as exact)
       const e = cpu.eip >>> 0;
-      if (e !== insn.next && (e === stopAt || (e >= THUNK_BASE && e < THUNK_END) || this.blockMap.has(e))) break;
+      if (e !== insn.next && (e === stopAt || (e >= THUNK_BASE && e < THUNK_END) || this.blockMap.has(e) || this.libLive?.has(e))) break;
     }
     cold.set(eip, n + k);
     m.i32[b4 + ST.ICOUNT / 4] = budget - k;
@@ -849,6 +917,7 @@ export class Jit {
           cpu.exit = EXIT.FAULT; cpu.exitArg = 14;
           return EXIT.FAULT;
         }
+        if (this.libKernel(eip)) continue; // (a library function: its kernel, see libkernels.js)
         if (this.coldTier && this.bg) {
           const c = this.runCold(eip);
           if (c === COLD_CONTINUE) continue;
@@ -871,6 +940,7 @@ export class Jit {
       if (r === EXIT_STEP) { // an instruction the translation leaves to the interpreter in rare cases
         this.interp.cpu = cpu;
         cpu.exit = EXIT.NONE;
+        if (this.libLive !== null) { const k = this.libLive.get(cpu.eip >>> 0); if (k) this.libFallback(k); } // (a library kernel's input off its path)
         if (this.stepHist) { const k = cpu.eip >>> 0; this.stepHist.set(k, (this.stepHist.get(k) ?? 0) + 1); this.stepSample?.(cpu); } // (diagnostics: which instructions)
         let s;
         if (acct.interpTimed()) { const p = acct.enter(ACCT.interp), a0 = acct.acc[ACCT.interp]; try { s = this.interp.step(); } finally { acct.interpEnd(p, a0); } }

@@ -189,7 +189,12 @@ export class Vm {
    */
   /** A JIT on this machine's memory and interpreter, with the options the page or the tests ask for. */
   newJit(nullPage, interpRanges, opts) {
-    return new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), nullPage, interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), mmTime: () => this.timerRes.mmTime(this.clock.now()), tickCount: () => this.timerRes.tickCount(this.clock.now()), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m) });
+    return new Jit(this.mem, this.interp, { ...(globalThis.ORTHROS_JIT_OPTS ?? {}), nullPage, interpRanges, smc: true, deferCom: !globalThis.ORTHROS_NO_DEFER, profile: !!globalThis.ORTHROS_JIT_PROFILE, countChains: !!globalThis.ORTHROS_JIT_PROFILE, fallbackHist: opts.apiHist, now: () => this.clock.now(), mmTime: () => this.timerRes.mmTime(this.clock.now()), tickCount: () => this.timerRes.tickCount(this.clock.now()), log: opts.logKinds?.includes('jit') ? (m) => this.log('jit', m) : null, warn: (m) => this.warn(m), libScope: (a) => this.inLibrary(a) });
+  }
+  /** Is `addr` in a DLL the process mapped (not its executable)? Library kernels (jit/libkernels.js) look only there. */
+  inLibrary(addr) {
+    const p = this.proc, m = p?.moduleByAddr(addr);
+    return !!m && m !== p.exe && !!m.isDll;
   }
 
   /**
