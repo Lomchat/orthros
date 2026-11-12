@@ -22,7 +22,10 @@
 // runs each kernel against the reference interpreter running the original code on randomized inputs.
 import { ModuleBuilder, Code, T } from './wasm.js';
 import { ST } from '../state.js';
-import { REGION_PARAMS, REGION_RESULTS, REGION_ARG_OFFSETS, EXIT_STEP, LZ } from './runtime.js';
+import { REGION_PARAMS, REGION_RESULTS, REGION_ARG_OFFSETS, EXIT_STEP, LZ, FAST_STATS } from './runtime.js';
+
+/** the calls of each kernel (u32 per definition, counted by the kernel: the share of calls off its path, see Jit.libFallback) */
+export const LIB_CALLS = FAST_STATS + 0x100;
 
 // x87 status word condition codes (interp-x87.js)
 const C0 = 0x100, C1 = 0x200, C3 = 0x4000, SW_CC = 0x4700;
@@ -124,6 +127,7 @@ export function buildLibKernelModule(opts = {}) {
   const chainIdx = m.importFunc('env', 'chain', REGION_PARAMS, REGION_RESULTS);
   LIB_KERNELS.forEach((d, i) => {
     const c = new Code();
+    c.i32(0).i32(0).i32load(LIB_CALLS + 4 * i).i32(1).add().i32store(LIB_CALLS + 4 * i);
     const fallback = c.block();
     const ret = () => emitReturn(c, chainIdx, opts.chain !== false);
     if (d.kind === 'round') emitRound(c, d.k, fallback, ret);

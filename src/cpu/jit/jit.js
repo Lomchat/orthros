@@ -8,7 +8,7 @@ import { buildRuntime, materializeFlags, supportsReturnCall, EXIT_TRANSLATE, EXI
 import { translateRegion, buildRegionModule, JIT_PROF, PROF_OPS_BASE, JIT_DEFAULTS, profOffset, VisitSlots, x87ModeOf, X87_MODE_TOP } from './translate.js';
 import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
-import { LIB_KERNELS, matchLibKernel, buildLibKernelModule } from './libkernels.js';
+import { LIB_KERNELS, LIB_CALLS, matchLibKernel, buildLibKernelModule } from './libkernels.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -32,8 +32,11 @@ const COLD_BITSTRING = new Set([OP.BT, OP.BTS, OP.BTR, OP.BTC]);
 const SMC_MAP_LIMIT = 0x80000000;
 /** x87-mode versions of a region before it is translated with the mode tested at run time */
 const MAX_FPU_VERSIONS = 4; // (24/53-bit precision x nearest/truncation: the four modes seen for code shared by a game's threads)
-/** a library kernel left this many times the exact way (EXIT_STEP at its entry) is dropped: the translation runs instead */
-const LIB_FALLBACK_MAX = 4096;
+/**
+ * a library kernel is dropped — its translation runs instead — once more than a quarter of its calls left the exact way
+ * (EXIT_STEP at its entry: an input its path does not cover), looked at every LIB_FALLBACK_CHECK such calls
+ */
+const LIB_FALLBACK_CHECK = 4096;
 /** ORTHROS_LIBKERNELS=0 (debug global or environment): no library kernels (libkernels.js) */
 const libKernelsOff = () => { const g = globalThis.ORTHROS_LIBKERNELS ?? globalThis.process?.env?.ORTHROS_LIBKERNELS; return g === 0 || g === '0' || g === false || g === 'false'; };
 
@@ -504,7 +507,7 @@ export class Jit {
       if (this.libFns[i] < 0) { const f = this.reserveFn(); this.table.set(f, this.libExports['k' + i]); if (f < JIT_ALT_SLOTS) this.mem.write32(JIT_ALT_BASE + 4 * f, 0); this.libFns[i] = f; }
       const pages = new Set();
       for (const [o, n] of d.ranges) for (let p = (eip + o) >>> 12; p <= (eip + o + n - 1) >>> 12; p++) pages.add(p);
-      rec = { entry: eip, pages: [...pages], blocks: [], fnIdx: this.libFns[i], kernel: d, fallbacks: 0, first: null, versions: null };
+      rec = { entry: eip, pages: [...pages], blocks: [], fnIdx: this.libFns[i], kernel: d, fallbacks: 0, calls0: this.mem.read32(LIB_CALLS + 4 * i) >>> 0, index: i, first: null, versions: null };
       for (const p of rec.pages) {
         this.mem.u8[SMC_MAP_BASE + p] |= SMC_CODE;
         if (p > 0) this.mem.u8[SMC_MAP_BASE + p - 1] |= SMC_NEXT;
@@ -518,14 +521,16 @@ export class Jit {
     return rec;
   }
   /** (diagnostics) the live kernels: name, entry, calls that left the exact way */
-  libReport() { return [...(this.libLive?.values() ?? [])].map((r) => `${r.kernel.name}@${r.entry.toString(16)} ${r.fallbacks} off its path`).join(', '); }
+  libReport() { return [...(this.libLive?.values() ?? [])].map((r) => `${r.kernel.name}@${r.entry.toString(16)} ${this.libCalls(r)} calls, ${r.fallbacks} off its path`).join(', '); }
+  /** calls of a live kernel since it was installed */
+  libCalls(rec) { return ((this.mem.read32(LIB_CALLS + 4 * rec.index) >>> 0) - rec.calls0) >>> 0; }
   /** A kernel left the exact way (EXIT_STEP at its entry): counted; too often, dropped for good (its translation runs). */
   libFallback(rec) {
     this.stats.libFallbacks++;
-    if (++rec.fallbacks < LIB_FALLBACK_MAX) return;
+    if (++rec.fallbacks % LIB_FALLBACK_CHECK !== 0 || rec.fallbacks * 4 <= this.libCalls(rec)) return;
     (this.libOff ??= new Set()).add(rec.entry);
     this.dropOne(rec);
-    this.opts.warn?.(`jit: library kernel ${rec.kernel.name} at ${rec.entry.toString(16)} dropped: ${rec.fallbacks} calls outside its path`);
+    this.opts.warn?.(`jit: library kernel ${rec.kernel.name} at ${rec.entry.toString(16)} dropped: ${rec.fallbacks} of ${this.libCalls(rec)} calls outside its path`);
   }
 
   // ------------------------------------------------------------------ background translation
