@@ -391,7 +391,8 @@ export class Process {
         if (!dep) { this.vm.log('loader', `${mod.name}: missing DLL ${imp.dll} (stubbing)`); dep = { name: imp.dll, builtin: true, missing: true }; this.modules.set(ApiRegistry.norm(imp.dll), dep); }
         dlls.set(imp.dll, dep);
       }
-      const addr = this.resolveExport(dep, imp.name, imp.ordinal, mod);
+      let addr = this.resolveExport(dep, imp.name, imp.ordinal, mod);
+      if (imp.name !== null && this.vm.milesImport) addr = this.vm.milesImport(mod, dep, imp.name, addr) ?? addr; // (a library's import through the host: miles-mp3.js)
       this.mem.write32(imp.iat, addr);
     }
   }

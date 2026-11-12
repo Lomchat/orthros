@@ -37,6 +37,10 @@ const jitOpts = new Map();
 for (let i = 0; i < args.length; i++) if (args[i] === '--jit-opts') { const v = args[i + 1], e = v.indexOf('='); jitOpts.set(v.slice(0, e), v.slice(e + 1)); }
 for (const v of variants) JSON.parse(v.json); // (fails early on a typo)
 for (const j of jitOpts.values()) JSON.parse(j);
+// --variant-env NAME='K=V,...': environment variables of that variant's runs (a switch outside the JIT's options, e.g.
+// B='ORTHROS_MP3_HOST=1': Miles' MP3 decoding by the host, src/win32/miles-mp3.js)
+const variantEnv = new Map();
+for (let i = 0; i < args.length; i++) if (args[i] === '--variant-env') { const v = args[i + 1], e = v.indexOf('='); variantEnv.set(v.slice(0, e), Object.fromEntries(v.slice(e + 1).split(',').filter(Boolean).map((kv) => [kv.slice(0, kv.indexOf('=')), kv.slice(kv.indexOf('=') + 1)]))); }
 const perf = args.includes('--perf');
 // --perf-phase (tier 2, 2026-11-12): each run under `perf record` of user cycles, instructions and instruction-cache fills
 // (from L2, from beyond) with symbols (node --perf-basic-prof), counting only while the scenario has
@@ -64,7 +68,7 @@ const started = jobs.map((j) => new Promise((resolve) => {
   if (perfPhase) { fs.rmSync(ctl, { force: true }); spawnSync('mkfifo', [ctl]); }
   const [cmd, cargs] = perfPhase ? ['perf', ['record', '-q', '-e', 'instructions:u,cycles:u,ic_cache_fill_l2:u,ic_cache_fill_sys:u', '-c', '1000000', '-D', '-1', '--control', 'fifo:' + ctl, '-o', path.join(dir, j.name + '.perf'), process.execPath, '--no-liftoff', '--perf-basic-prof', ...a]]
     : perf ? ['perf', ['record', '-q', '-e', 'instructions:u,cycles:u', '-c', '1000000', '-o', path.join(dir, j.name + '.perf'), process.execPath, '--no-liftoff', ...a]] : [process.execPath, a];
-  const c = spawn(cmd, cargs, { stdio: ['ignore', log, log], env: { ...process.env, ORTHROS_JIT_DEFAULTS: j.v.json, ...(perfPhase ? { ORTHROS_PERF_FIFO: ctl, ORTHROS_TIER2_LOG: '1' } : {}) } });
+  const c = spawn(cmd, cargs, { stdio: ['ignore', log, log], env: { ...process.env, ORTHROS_JIT_DEFAULTS: j.v.json, ...(variantEnv.get(j.v.name) ?? {}), ...(perfPhase ? { ORTHROS_PERF_FIFO: ctl, ORTHROS_TIER2_LOG: '1' } : {}) } });
   c.on('exit', (code) => { fs.closeSync(log); resolve(code); });
 }));
 console.log(`${jobs.length} runs in ${dir}`);
