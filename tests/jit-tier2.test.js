@@ -3,7 +3,8 @@
 // jumps, tail jumps, recursion deeper than the nesting bound, loops, early returns, a callee replacing its return
 // address, flags read after a call, x87 and SSE functions — run under the JIT with a profile window that builds tier 2
 // in the middle of the run, in time slices: the same registers, flags, stack and data as the reference interpreter.
-// Also code written over on a tier-2 page (tier 2 dropped), and the hot-code experiment (hotcode.js) on the same programs.
+// Also code written over on a tier-2 page (tier 2 dropped), the hot-code experiment (hotcode.js) and region calls nested
+// as WASM calls (translate.js nestCall) on the same programs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GuestMemory } from '../src/cpu/memory.js';
@@ -102,10 +103,11 @@ function state(r, mem, cpu) {
   return [r, cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esp, cpu.ebp, cpu.edi, cpu.eflags & ARITH, cpu.eip].map((v) => (v >>> 0).toString(16)).join(' ') + ' ' + Buffer.from(mem.bytes(DATA + 0x100, 0x80)).toString('hex') + ' ' + Buffer.from(mem.bytes(DATA + 0xc00, 0x300)).toString('hex');
 }
 /** under the JIT, tier 2 profiled for `window` instructions then built, in slices of `slice`; `hook(jit, mem)` between slices */
-function runJit(g, slice, window, hook = null, ab = null) {
+function runJit(g, slice, window, hook = null, ab = null, bounds = null) {
   const { mem, cpu } = setup(g);
   const jit = new Jit(mem, new Interp(mem, cpu), { smc: true });
   jit.cpu = cpu;
+  if (bounds) jit.boundaries = bounds; // (region boundaries: the functions' entries)
   jit.switchOpts(ab ?? { tier2: true, tier2Window: window, tier2Share: 0.9 });
   let r, n = 0;
   for (;;) {
@@ -166,4 +168,65 @@ test('hot code: regions shaped and grouped from a profile window match the inter
     }
   }
   assert.ok(grouped > depth(24, 6), `regions grouped in ${grouped} runs`);
+});
+
+// (opts.nestCalls, translate.js nestCall: a call leaving its region whose return site the region holds made a WASM call,
+// the callee's return to it a WASM return; opts.linkExits, linkExit: static exits chained with the target's table index
+// found at translation — regions cut small so that calls leave them; recursion past NEST_MAX, return addresses moved by
+// the callee, early returns, x87 under a switched precision, SMC (linked entries dropped), slices down to 7 instructions)
+test('nested region calls and linked exits: random programs of functions match the interpreter', () => {
+  let sites = 0, linked = 0;
+  for (let t = 0, n = depth(48, 8); t < n; t++) {
+    const g = gen(t % 4 === 3);
+    const ref = setup(g);
+    const want = state(new Interp(ref.mem, ref.cpu).run({ stopAt: CODE + g.end, maxInsns: 1e8 }), ref.mem, ref.cpu);
+    for (const slice of [5000, 97, 7]) {
+      // (every function entry a region boundary but in one run of four: calls leave their region, return sites stay)
+      const { s, jit } = runJit(g, slice, 0, null, { nestCalls: t % 3 !== 1, linkExits: t % 3 !== 0, maxBlocks: 2 + (t % 6) * 4, coldExits: false }, t % 4 === 1 ? null : new Set(g.fns));
+      assert.equal(s, want, `program ${t} slice ${slice}: ${Buffer.from(g.code).toString('hex')}`);
+      sites += jit.stats.nestSites ?? 0; linked += jit.stats.linkedSites ?? 0;
+    }
+  }
+  assert.ok(sites > 0 && linked > 0, `nested call sites: ${sites}, linked exits: ${linked}`);
+});
+
+test('linked exits: a target rewritten (SMC) and translated again is not entered through its old table index', () => {
+  // main: mov edi, 5 ; L: call G ; call P ; dec edi ; jnz L ; hlt     G: mov eax, imm32 ; add ebx, eax ; ret
+  // P: mov [G+1], ecx ; add ecx, 3 ; ret (G rewritten; main, linked to G, stays)
+  const G = 0x200, P = 0x300, end = 18;
+  const bytes = new Uint8Array(0x402).fill(0xf4); // (hlt between the functions: no block runs into the next one)
+  bytes.set([0xbf, ...le(5), 0xe8, ...le(G - 10), 0xe8, ...le(P - 15), 0x4f, 0x75, 0xf3, 0xf4]);
+  bytes.set([0xb8, ...le(7), 0x01, 0xc3, 0xc3], G); bytes.set([0x89, 0x0d, ...le(CODE + G + 1), 0x83, 0xc1, 0x03, 0xc3], P);
+  bytes.set([0x46, 0xc3], 0x400); // (inc esi ; ret: a filler region taking the dropped region's table index, if reused)
+  const mem = new GuestMemory(), cpu = new CpuState(mem, THREAD_STATES_BASE);
+  mem.fill(CODE, 0x1000, 0xf4); mem.writeBytes(CODE, bytes);
+  cpu.reset(); cpu.ecx = 100; cpu.ebx = 0; cpu.esp = DATA + 0xf00; cpu.eip = CODE; cpu.eflags = F.RESERVED1 | F.IF;
+  const jit = new Jit(mem, new Interp(mem, cpu), { smc: true });
+  jit.cpu = cpu; jit.boundaries = new Set([CODE + G, CODE + P]);
+  jit.switchOpts({ linkExits: true });
+  jit.translate(CODE + G); // (G first: main's call to it is linked)
+  let r, n = 0;
+  for (;;) {
+    r = jit.run({ stopAt: CODE + end, maxInsns: 1e6 });
+    if (r === EXIT.SMC && ++n < 100) { jit.invalidate(cpu.exitArg >>> 0, 4); jit.translate(CODE + 0x400); continue; }
+    break;
+  }
+  assert.ok(jit.stats.linkedSites > 0 && jit.regions.some((x) => x.entry === CODE), 'main linked, kept');
+  // (G's immediate 7, then 100, 103, 106, 109 written by P: spelled out — the interpreter's decode cache would need the
+  // invalidation the VM does)
+  assert.equal([r, cpu.eax, cpu.ebx, cpu.ecx, cpu.edi].join(' '), [EXIT.HALT, 109, 7 + 100 + 103 + 106 + 109, 115, 0].join(' '));
+});
+
+test('linked exits: a static exit to address 0 faults (0 is the hash table\'s empty key, never linked)', () => {
+  // R (translated first: table index 0): inc ebx ; hlt      main: mov eax, 1 ; jmp 0
+  const R = CODE + 0x200, mem = new GuestMemory(), cpu = new CpuState(mem, THREAD_STATES_BASE);
+  mem.fill(CODE, 0x1000, 0xf4); mem.writeBytes(R, [0x43, 0xf4]);
+  mem.writeBytes(CODE, [0xb8, ...le(1), 0xe9, ...le(-(CODE + 10))]);
+  cpu.reset(); cpu.esp = DATA + 0xf00; cpu.eip = CODE; cpu.eflags = F.RESERVED1 | F.IF;
+  const jit = new Jit(mem, new Interp(mem, cpu), { smc: true });
+  jit.cpu = cpu; jit.boundaries = new Set([0, R]);
+  jit.switchOpts({ linkExits: true });
+  jit.translate(R);
+  const r = jit.run({ stopAt: R + 1, maxInsns: 1e6 });
+  assert.equal([r, cpu.eip >>> 0, cpu.ebx].join(' '), [EXIT.FAULT, 0, 0].join(' '));
 });
