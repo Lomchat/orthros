@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/server/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--covers <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue] [--no-learn-borrow]
+// Usage: node src/server/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--covers <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue] [--no-learn-borrow] [--no-code-share]
 //   --engines-dir: the installed engine releases of the browser ports (default data/engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
@@ -12,7 +12,9 @@
 //            distinct sessions that must report a set identical before it is offered, default 2; an operator-made set,
 //            seedcanon-<manifest>.json written by tools/ops/profile-seed-make.mjs, is offered first), and the shared snapshots
 //            of the games' machines new players start from (docs/snapshot.md, stage 3); --no-learn-borrow: a version's
-//            prefetch order without the entries borrowed from other versions' orders for the files they share (borrowedFor)
+//            prefetch order without the entries borrowed from other versions' orders for the files they share (borrowedFor);
+//            --no-code-share: a version's learned heat and regions without what other versions learned of the same code
+//            pages (code-share.js)
 //   --br-cache: where /gamez keeps its precompressed transport units (br-cache.js; default <learn>/../brcache, none
 //            without --learn; `off`: none), at most --br-cache-bytes of them (default: 1.5 GiB grown to hold the launch sets)
 //   --snapshot-jobs: when a page asks for a shared snapshot there is none of, a headless browser session of a new
@@ -56,6 +58,7 @@ import { SimLink } from './sim-link.js';
 import { programSourceId, ffKeyRegenerable } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64, seedCanonFile, canonSets } from '../shared/profile-seed.js';
 import { RangeHeat } from '../cpu/jit/heat.js';
+import { CodeShare, servedHeat, servedRegions } from './code-share.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
 import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY } from './snapshot-store.js';
 import { Warmer, LearnedScenarios, learnScenarios } from './warm-jobs.js';
@@ -1363,8 +1366,8 @@ export function createServer(opts = {}) {
       regionsTimer.unref?.();
     }
   };
-  /** [module, rva, fpc] by earliest use */
-  const regionsList = (name) => [...regionsOf(name)].sort((a, b) => a[1].t - b[1].t).slice(0, 40000).map(([k]) => { const [mod, rva, fpc] = k.split(':'); return [mod, Number(rva), fpc === '' ? null : Number(fpc)]; });
+  /** [module, rva, fpc] by earliest use: its own, then what other versions' sessions learned of the same code (codeShare) */
+  const regionsList = (name, share = true) => servedRegions(regionsOf(name), share ? lentTo(name) : null);
 
   /**
    * Shared first-launch profile, per manifest and game language (see profile-seed.js): the sets of small profile files
@@ -1537,6 +1540,28 @@ export function createServer(opts = {}) {
       heatTimer.unref?.();
     }
   };
+
+  /**
+   * Learned code shared by content (code-share.js, docs/startup.md "Learned code shared by content"): what the other
+   * Win32 versions' sessions learned (heat, region entries) about the code pages a version's modules share with theirs
+   * — the same libraries in every game, the same executable under several releases — served with its own: a version
+   * new on the server starts with it. Derived from the versions' own files (the record, unchanged), again after
+   * CODE_SHARE_STALE_MS; `--no-code-share` (opts.codeShare false) or `?share=0` on a request: its own only.
+   */
+  const CODE_SHARE_STALE_MS = opts.codeShareStaleMs ?? 600e3;
+  const codeShare = opts.codeShare === false || !opts.learnDir ? null : new CodeShare({
+    staleMs: CODE_SHARE_STALE_MS,
+    versions: () => [...manifests.keys()].filter((id) => runtimeOf(manifests.get(id)) === 'win32'),
+    manifestOf: (id) => manifests.get(id),
+    tree: (id) => { const man = manifests.get(id); return man ? gameTree(id, man) : null; },
+    resolve: (id, rel) => { const man = manifests.get(id); return man ? resolveGameFile(man, rel, listings) : null; },
+    heatOf, regionsOf,
+    hasData: (id) => heatLearned.has(id) || regionsLearned.has(id) || fs.existsSync(heatFile(id)) || fs.existsSync(regionsFile(id)),
+  });
+  /** what the other versions lend `name` (null: sharing off, or it failed — its own data is served as before) */
+  const lentTo = (name) => { try { return codeShare?.lend(name) ?? null; } catch (e) { console.warn(`[orthros] code share: ${e.message}`); return null; } };
+  // (the index made once ahead of the first session's request: hashing the libraries' pages takes a moment)
+  if (codeShare) setTimeout(() => { try { codeShare.build(); } catch { /* at the first request */ } }, opts.codeShareWarmMs ?? 20000).unref?.();
 
   /** compressed range transport totals (requests, bytes read, bytes sent, encoding time) */
   // (split by kind: `demand` the game's own reads (&s=), `bg` the background downloads (&p=1); `ms` the time from the
@@ -1953,7 +1978,7 @@ export function createServer(opts = {}) {
           });
           return;
         }
-        return send(res, 200, JSON.stringify(regionsList(m[1])), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify(regionsList(m[1], url.searchParams.get('share') !== '0')), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/heat\/([^/]+)$/.exec(p);
       if (m) {
@@ -1969,7 +1994,7 @@ export function createServer(opts = {}) {
           });
           return;
         }
-        return send(res, 200, JSON.stringify(heatJson(m[1])), { 'Content-Type': 'application/json' });
+        return send(res, 200, JSON.stringify(url.searchParams.get('share') === '0' ? heatJson(m[1]) : servedHeat(heatOf(m[1]), lentTo(m[1]))), { 'Content-Type': 'application/json' });
       }
       m = /^\/api\/programs\/([^/]+)$/.exec(p);
       if (m) {
@@ -2257,7 +2282,7 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   // (--no-home-preload: the home without its modulepreload links — a trial's other arm, sendHome)
   // (--br-cache-frozen: the units served as they are, none made — a measurement's copy of another server's)
   const brCacheOptions = args.includes('--br-cache-frozen') ? { generate: false } : undefined;
-  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), warmJobs: args.includes('--warm-jobs') ? { ...(arg('--warm-only') ? { only: arg('--warm-only').split(',') } : {}), ...(arg('--warm-delay') ? { delayMs: Number(arg('--warm-delay')) * 1000 } : {}), ...(arg('--warm-every') ? { everyMs: Number(arg('--warm-every')) * 1000 } : {}) } : false, learnBorrow: !args.includes('--no-learn-borrow'), homePreload: !args.includes('--no-home-preload') });
+  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), warmJobs: args.includes('--warm-jobs') ? { ...(arg('--warm-only') ? { only: arg('--warm-only').split(',') } : {}), ...(arg('--warm-delay') ? { delayMs: Number(arg('--warm-delay')) * 1000 } : {}), ...(arg('--warm-every') ? { everyMs: Number(arg('--warm-every')) * 1000 } : {}) } : false, learnBorrow: !args.includes('--no-learn-borrow'), codeShare: !args.includes('--no-code-share'), homePreload: !args.includes('--no-home-preload') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes and the units' miss queue first: they are
   // written a few seconds after)

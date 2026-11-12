@@ -106,33 +106,36 @@ if (process.env.ORTHROS_PERF_FIFO) {
     console.log(`[perf] ${v ? 'enable' : 'disable'} at ${(fg.guestInsns / 1e6).toFixed(0)} M guest instructions${t2}`);
   } });
 }
-if (bgWanted && vm.jit) {
-  const { Worker, MessageChannel, receiveMessageOnPort } = await import('node:worker_threads');
+// --regions <file>: learned region entries (the server's regions-<manifest>.json) translated ahead in the background
+// worker as the page worker does (feedBackground), in their order of first use
+const learnedRegions = opt('regions') ? JSON.parse(fs.readFileSync(opt('regions'), 'utf8')).sort((x, y) => x[1] - y[1]).map(([k]) => { const [m, rva, fpc] = k.split(':'); return [m, Number(rva), fpc === '' ? null : Number(fpc)]; }) : null;
+const bgThreads = bgWanted ? await import('node:worker_threads') : null;
+/** a background translator for VM `v` (the process at start, and with --child each child process: its own worker) */
+const attachBg = (v) => {
+  const { Worker, MessageChannel, receiveMessageOnPort } = bgThreads;
   const ch = new MessageChannel();
   const w = new Worker(`import { workerData } from 'node:worker_threads'; import { handleMessage } from ${JSON.stringify(new URL('../../src/cpu/jit/bg-translate.js', import.meta.url).href)};
     workerData.port.on('message', (m) => handleMessage(m, (r) => workerData.port.postMessage(r)));`, { eval: true, workerData: { port: ch.port2 }, transferList: [ch.port2] });
   w.unref();
-  vm.jit.attachBackground({ postMessage: (m) => ch.port1.postMessage(m) });
-  vm.jit.coldTier = args.includes('--cold');
-  // --regions <file>: learned region entries (the server's regions-<manifest>.json) translated ahead in the background
-  // worker as the page worker does (feedBackground), in their order of first use
-  const learnedRegions = opt('regions') ? JSON.parse(fs.readFileSync(opt('regions'), 'utf8')).sort((x, y) => x[1] - y[1]).map(([k]) => { const [m, rva, fpc] = k.split(':'); return [m, Number(rva), fpc === '' ? null : Number(fpc)]; }) : null;
+  v.jit.attachBackground({ postMessage: (m) => ch.port1.postMessage(m) });
+  v.jit.coldTier = args.includes('--cold');
   let regionPos = 0, regionMods = -1, modMap = null;
-  const sliceEnd = vm.sliceEnd.bind(vm);
-  vm.sliceEnd = (t, o) => {
-    if (learnedRegions && vm.proc) {
-      if (regionMods !== vm.proc.moduleList.length) { regionMods = vm.proc.moduleList.length; modMap = new Map(vm.proc.moduleList.map((x) => [x.name.toLowerCase(), x])); regionPos = 0; }
-      while (vm.jit.bgPending() < 2 && regionPos < learnedRegions.length) {
+  const sliceEnd = v.sliceEnd.bind(v);
+  v.sliceEnd = (t, o) => {
+    if (learnedRegions && v.proc) {
+      if (regionMods !== v.proc.moduleList.length) { regionMods = v.proc.moduleList.length; modMap = new Map(v.proc.moduleList.map((x) => [x.name.toLowerCase(), x])); regionPos = 0; }
+      while (v.jit.bgPending() < 2 && regionPos < learnedRegions.length) {
         const list = [];
         while (list.length < 48 && regionPos < learnedRegions.length) { const [m, rva, fpc] = learnedRegions[regionPos++]; const mod = modMap.get(m); if (mod && rva < mod.size) list.push([mod.base + rva, fpc]); }
-        if (list.length) vm.jit.bgPrewarm(list);
+        if (list.length) v.jit.bgPrewarm(list);
       }
     }
-    if (vm.jit.coldQueue.length) vm.jit.flushCold();
-    for (let m; (m = receiveMessageOnPort(ch.port1)); ) vm.jit.bgInstall(m.message);
+    if (v.jit.coldQueue.length) v.jit.flushCold();
+    for (let m; (m = receiveMessageOnPort(ch.port1)); ) v.jit.bgInstall(m.message);
     return sliceEnd(t, o);
   };
-}
+};
+if (bgWanted && vm.jit) attachBg(vm);
 globalThis.__vm = vm; // (wrappers: tools reading the VM after the run)
 // --d3dx-prof: D3DX image work timed by kind of operation (d3dx9.js prof, as the harness's --api-times), printed with
 // the surface lock patterns at each scenario mark ([d3dx] lines); a clock read per API call
@@ -229,6 +232,8 @@ const report = (why) => {
   if (args.includes('--sleeps')) console.log(`[sleeps] threads: ${(vm.proc?.threads ?? []).map((t) => `t${t.id} prio ${t.priority ?? 0} ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.blockReason ? ` [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}]` : ''}`).join(', ')}`);
   for (const t of vm.proc?.threads ?? []) if (t.peekIdle) { const s = t.peekIdle; console.log(`[peekidle] t${t.id}: ${s.parks} waits (${s.longParks} long), polling ended ${s.ends} times (${s.cut} right after a wait), wait overshoot ${s.over.toFixed(2)} ms, interval min ${s.ivs.length ? Math.min(...s.ivs).toFixed(2) : '-'} of [${s.ivs.map((x) => x.toFixed(1)).join(' ')}] ms, spins near the expected end ${s.near}, ends after it ${s.late} (by ${(s.lateMs / Math.max(1, s.late)).toFixed(2)} ms), streaks broken by guest work ${s.loose}${s.hist ? `, guest instructions between calls (log2 histogram) ${s.hist.map((n, i) => n ? `2^${i}:${n}` : '').filter(Boolean).join(' ')}` : ''}`); }
   for (const l of vm.peekReport()) console.log(l);
+  // (--bg: the background translator's work — the learned regions translated ahead, as the page's "regions:" line)
+  for (const v of vm.group?.vms ?? [vm]) if (v.jit?.bg) { const b = v.jit.bg; console.log(`[bg] ${v.proc?.exe?.name ?? '?'}: ${b.sent} sent, ${b.installed} installed, ${b.rejected} dropped, ${b.covered} skipped; ${Math.round(b.bgMs)} ms there (${Math.round(b.translateMs)} translating, ${Math.round(b.compileMs)} compiling); misses here ${v.jit.stats.misses}, ${v.jit.stats.regions} regions translated here in ${Math.round(v.jit.stats.translateMs)} ms`); }
   console.log(`${why}: wall ${wall.toFixed(1)} s, CPU ${cpu.toFixed(1)} s, ~${minsns.toFixed(0)} M guest instructions (${(minsns / cpu).toFixed(0)} MIPS per CPU second), ${vm.jit?.stats.regions ?? 0} regions, translation ${(vm.jit?.stats.translateMs ?? 0).toFixed(0)} ms`);
 };
 // --stall <ms>:<n>[:<from>]: the process stops <ms> ms (Atomics.wait) at one budget slice end in <n> (xorshift, seed
@@ -381,6 +386,7 @@ if (args.includes('--child')) {
   Vm.prototype.spawnProcess = function (o) {
     const c = spawn.call(this, o);
     vm = c; globalThis.__vm = c; jitSetup(c); heatModules = -1; // (the scenario follows the foreground process by itself)
+    if (bgWanted && c.jit) attachBg(c); // (its own background translator, fed the learned regions of its modules)
     c.dispatchThunk = (t, i) => onThunk(c, t, i);
     console.log(`[child] following ${o?.exePath ?? 'a child process'}`);
     return c;
