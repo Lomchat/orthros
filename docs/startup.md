@@ -256,6 +256,95 @@ copy of the live learn directory and br-cache, two runs side by side on the shar
 predictions of these reads measured on the same logs and left aside: the blocks next to each missed one (±2 blocks)
 would have held 18-25 % of the waited time for 520-630 extra MiB; the whole archives (wantWhole) are GBs.
 
+## Learned code shared by content (`src/server/code-share.js`, 2026-11-12)
+
+The learned heat and region entries above are recorded per version, by module name and offset. The same code bytes
+appear in many versions: msvcr71.dll, mss32.dll and the Miles plugins are the same files in BFME, BFME II, RotWK and
+Age of the Ring, and four versions run the same executable code under other names and files (compared page by page,
+by RVA, from the files' bytes: RotWK 2.01 `game.dat` against RotWK 2.02 `lotrbfme2ep1.exe` 1 994 of 1 999 code pages
+identical, BFME II 1.09 `game.dat` against them 1 994-1 996, Age of the Ring's `rotwk/game.dat` 1 977-1 979 — a patch
+changed a few pages, a launcher renamed the game; BFME II 1.06 `game.dat` is another build, 0 pages in common). What one
+version's sessions learned about a module now serves every version whose modules hold the same pages, from its first
+session.
+
+- **Identity: a page of code.** Every module named in a version's learned data is resolved to its file in that
+  version's tree (beside its executable, in its working folder, at its root, else the shallowest file of that name —
+  Miles' plugins under `mss/`); its image is cut into 4 KiB pages by RVA from the file's bytes — before relocation and
+  before the manifest's `patches`, so a DLL loaded at another base or a patched executable has the same pages — and each
+  page is identified by a hash of its bytes (SHA-1, 64 bits kept; a page of one repeated byte — zeroes, padding — is
+  never an identity). A whole-module hash would miss the four SAGE executables above; a page also matches at another
+  RVA (code moved by whole pages).
+- **Lending.** For a version, each page of its modules whose hash a page of another version has with learned data
+  receives that page's heat ranges (clipped to the page) and region entries, moved to the page's RVA in this version's
+  module. A source page lends to one module of the version, its executable first, then the modules its own sessions
+  named: RotWK 2.02 keeps 2.01's `game.dat` in its base beside its `lotrbfme2ep1.exe`, the same code — lent to the one
+  it runs, not twice (entries for a module never loaded would take room in the served list).
+- **Served with the version's own data, which stays the record.** `/api/heat/<manifest>` answers its own ranges and
+  the lent ones merged per module (heat only grows across a version's sessions, which differ in what they play as much
+  as versions do: the lent ranges are merged like another session's); `/api/regions/<manifest>` its own entries first
+  (as before: by first use, the earliest 40 000), then the lent entries it lacks by their first use where they were
+  learned, up to 40 000 in all — on a first session they are the whole list. The POSTs, the files (`heat-*.json`,
+  `regions-*.json`) and every tool reading them are unchanged: nothing to migrate, nothing lost; the shared view is
+  derived from them (index made 20 s after the start, again after 10 minutes at a request; ~0.1 s, the first one ~1.3 s
+  with the pages hashed — once per file — and the trees listed; ~65 ms per version lent). The client is unchanged: it
+  applies heat per loaded module name at its load base and translates the entries ahead as before.
+- **Always a hint.** Heat only chooses a region's extent (exact whatever it says); a lent entry is translated ahead
+  and installed only when the code bytes in memory are those it was translated from, like any learned entry.
+- **Off:** `--no-code-share` (server), `?share=0` on a request (its own data only). Not shared: the browser's code
+  cache (OPFS, per version — a file per game would need a shared bound; its entries are checked byte for byte, so it
+  could be shared later), GL programs (not code: their own keys). `tools/dev/code-share.mjs <manifest> --learn <dir>
+  [--own 0]` writes what a server would serve (`--own 0`: a first session's view) as files for `startbench --heat
+  --regions`.
+
+What the other versions predict of a version's own learned data (the live learn directory of 2026-11-12, each version's
+own data left out): RotWK 2.01 — 99.8 % of its own heat bytes in `game.dat`, 99.8-100 % in the DLLs, 16 983 of its
+23 732 `game.dat` entries; RotWK 2.02 — 97.2 % of `lotrbfme2ep1.exe`'s heat, 24 065 of 35 040 entries; BFME II 1.09 —
+98.7 %; Age of the Ring — 84.9 % of `game.dat`'s heat, 15 728 of 30 146 entries; BFME 1.08 (the same `lotrbfme.exe` as
+the original release and 1.03, learned separately until now) — 80.4 %, 5 919 of 33 005 entries (the region entries
+are where sessions missed: different entries can cover the same code); BFME II 1.06 — its DLLs only (96.6-100 %), its
+`game.dat` nothing; Vice City — nothing (no other version shares its code).
+
+**Measured** (Node, `startbench --bg` with the version's canonical first-launch profile, the bench scenarios — `rotwk-short`,
+`bfme1-108-short`, `bfme2-short`, `learn-aotr-skirmish` with `--child` —, a copy of the live learn directory; the three
+conditions run side by side, two rounds; shared server at load 10-25). "none" = no learned data (a version new on the
+server before this), "lent" = only what the other versions taught (`--own 0`: a first session now), "own" = its own
+learned data (its sessions so far). Menu = the scenario's first anchor (the menu drawn), s from the start; translation
+here = the regions translated on the game's thread at a miss (count, time).
+
+| version | condition | first frame s | menu s | map load s (load + loading screen; BFME: its load phase) | translation here | play ns / instruction |
+|---|---|---|---|---|---|---|
+| RotWK 2.01 | none | 23.7, 26.5 | 45, 48 | 14.4, 15.1 | 17 243, 17 156 (17.0, 17.7 s) | 2.59, 2.53 |
+| | lent | 14.1, 16.2 | 36, 38 | 9.2, 8.7 | 3 915, 4 254 (3.4, 4.3 s) | 2.45, 2.37 |
+| | own | 13.8, 16.5 | 35, 38 | 9.2, 9.1 | 4 466, 4 615 (4.0, 4.8 s) | 2.36, 2.36 |
+| BFME 1.08 | none | 22.2 | 44 | 60.5 | 16 303 (16.7 s) | 2.80 |
+| | lent | 12.6, 13.9 | 34, 35 | 49.6, 48.7 | 2 532, 2 914 (2.8, 3.6 s) | 2.96, 2.79 |
+| | own | 13.7, 14.8 | 35, 36 | 52.7, 49.6 | 2 645, 2 478 (2.7, 2.9 s) | 2.78, 2.85 |
+| Age of the Ring 10 | none | 94.0, 94.1 | 116, 116 | 345 (1), 19.3 | 19 090, 16 809 (20.4, 17.8 s) | (2) |
+| | lent | 76.5, 77.2 | 98, 99 | 13.5, 13.4 | 4 576, 4 662 (4.3, 4.4 s) | |
+| | own | 78.6, 83.1 | 100, 105 | 14.1, 14.2 | 2 250, 2 262 (1.9, 2.0 s) | |
+| BFME II 1.06 | none | 24.2 | 50 | 12.9 | 17 291 (18.3 s) | 2.40 |
+| | lent | 24.6 | 50 | 13.7 | 16 763 (17.5 s) | 2.66 |
+| | own | 14.7 | 37 | 10.7 | 4 378 (4.2 s) | 2.59 |
+
+(1) that run's loading screen took 340 s (not reproduced: 13.6 s in the second round). (2) AotR's play phases ran
+different amounts of work (4.9-8.5 G instructions in 20 s): not comparable per instruction.
+
+- A first session with what the other versions taught reaches its menu 9-10 s (RotWK 2.01, BFME 1.08) and 17-18 s
+  (Age of the Ring) earlier than with nothing, as early as with its own data; its map load is 5-6 s (RotWK), 11-12 s
+  (BFME) and ~6 s (AotR) shorter; the regions translated on the game's thread at a miss fall by 3.5-6 times (13-16 s
+  of the game's thread). The background worker does that work instead, on its own core (19-28 s there; own data:
+  17-30 s).
+- BFME II 1.06 shares only its libraries with the others (its executable is another build): 1 459 lent regions
+  installed, ~500 fewer misses (0.8 s of the game's thread), menu unchanged.
+- A version with its own data, given the lent data too (own + lent merged, as served now): RotWK 2.01 menu 40 s / map
+  load 9.2 s / translation here 5.5 s / play 2.36 ns against own alone 40 s / 9.3 s / 5.1 s / 2.44 ns (the same round);
+  BFME 1.08 menu 36, 36 s / map load 49.1, 49.6 s / play 2.71, 2.80 ns against own 35, 36 / 52.7, 49.6 / 2.78, 2.85: no
+  difference beyond the spread.
+- In the browser (headless Chromium through the slot guard, RotWK 2.01 first session, 70 s, the harness's own server
+  on a learn directory with the other versions' files only, against one with none): the menu's Direct3D frames from
+  t = 28 s against 39 s; 22 467 regions installed against 10 415; 496 translated at a miss (1.2 s) against 1 723 (4.3 s);
+  the cold tier interpreted 9 485 entries (1.6 M instructions) against 29 182 (5.4 M).
+
 ## Measurements (2026-10-02, headless Chromium, `--gl-discard`, shared 48-core server under load)
 
 Scenarios `tools/scenarios/{bfme2,rotwk,bfme}-first.txt` (the settings a first launch writes), one private server for
