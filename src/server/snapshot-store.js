@@ -122,8 +122,18 @@ export class SnapshotQueue {
   }
   want(name, lang, key, kind = 'publish') {
     const now = Date.now();
-    this.jobs = this.jobs.filter((j) => now - j.at < Math.max(this.ttlMs, this.retryMs));
-    if (this.jobs.some((j) => j.name === name && j.lang === lang && j.key === key && (j.kind ?? 'publish') === kind) || this.jobs.length >= this.max) return false;
+    // (a job past its ttl only keeps its key from being queued again within retryMs: one of the same version, language
+    // and kind under another key is moot — a deploy changed the key — and goes; when full, the oldest past ttl go first:
+    // a few deploys a day of 11-16 jobs each must not fill the queue and refuse a player's 404 for hours)
+    this.jobs = this.jobs.filter((j) => now - j.at < Math.max(this.ttlMs, this.retryMs)
+      && !(now - j.at >= this.ttlMs && j.name === name && j.lang === lang && (j.kind ?? 'publish') === kind && j.key !== key));
+    if (this.jobs.some((j) => j.name === name && j.lang === lang && j.key === key && (j.kind ?? 'publish') === kind)) return false;
+    if (this.jobs.length >= this.max) {
+      const old = this.jobs.filter((j) => now - j.at >= this.ttlMs).sort((a, b) => a.at - b.at);
+      const drop = new Set(old.slice(0, this.jobs.length - this.max + 1));
+      this.jobs = this.jobs.filter((j) => !drop.has(j));
+      if (this.jobs.length >= this.max) return false;
+    }
     this.jobs.push({ name, lang, key, kind, token: crypto.randomBytes(16).toString('hex'), at: now });
     this.save();
     return true;

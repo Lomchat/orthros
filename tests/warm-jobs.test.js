@@ -83,3 +83,20 @@ test('players\' languages: every version\'s first one (its snapshot, then its le
     assert.deepEqual(learnArgs('/r', 'a', 1, '/o', null, { lang: 'fr' }).slice(-2), ['--game-lang', 'fr']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a full queue of finished jobs from earlier deploys still takes a new key (a player\'s 404 is not refused for hours)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'warm-q-'));
+  try {
+    const q = new SnapshotQueue(path.join(dir, 'queue.json'), { max: 4 });
+    const now = Date.now();
+    // (four jobs past their ttl but within retryMs: the old code kept them all and refused anything new)
+    q.jobs = ['a', 'b', 'c', 'd'].map((n, i) => ({ name: n, lang: 'en', key: 'old', kind: 'publish', token: 't' + i, at: now - 3 * 3600e3 + i }));
+    assert.equal(q.want('a', 'en', 'old'), false, 'the same key is not queued again within retryMs');
+    assert.equal(q.want('a', 'en', 'new'), true, 'a new key replaces its version\'s stale job');
+    assert.ok(!q.jobs.some((j) => j.name === 'a' && j.key === 'old'));
+    assert.equal(q.want('e', 'en', 'new'), true, 'full: the oldest job past its ttl goes');
+    assert.equal(q.jobs.length, 4);
+    q.jobs.forEach((j) => { j.at = now; }); // (all running: none may go)
+    assert.equal(q.want('f', 'en', 'new'), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
