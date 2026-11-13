@@ -13,8 +13,11 @@
 // sharp), the second stage stopped like the first (Play, another download).
 // "Probe" (the home, on its arrival: `probe`): what the stores of the versions played before hold — their launch sets
 // and their whole files —, so that the card says "Ready" from the store's contents, not only after a Prepare.
+// "Import" (a game of the player's own, src/vfs/local-games.js — the home's "Lancer mon jeu"): a folder's files (File
+// objects of the page, read here) copied into the version's store, block by block under the reader's keys; resumed the
+// same way (the stored blocks are skipped). Nothing goes to the network.
 // Messages in: { type: 'download' | 'launch', name, bw, lang?, engine?, reloads? }, { type: 'probe', items: [{ name, lang?,
-// engine?, reloads? }], bw }, { type: 'stop' }. Out: { type: 'progress', kind ('whole' | 'launch'), bytes, total, stored,
+// engine?, reloads? }], bw }, { type: 'import', name, files: [{ path, file, size, mtime }] }, { type: 'stop' }. Out: { type: 'progress', kind ('whole' | 'launch'), bytes, total, stored,
 // engine (of them: the engine's wire bytes), bw, ratio, running, done, error, upgrade? ({ bytes, total }: the second
 // stage's) }, { type: 'probed', name, lang, missing?, launch?, whole? }
 // (probe), then { type: 'stopped' } once the stores are closed (the game's worker may open them).
@@ -26,6 +29,7 @@
 // ownerLegacy) counts too: a player who played one version has the base of the others.
 import { openVersion, openData, openStore, openStoreNow, openLegacyStore, storeExists, storeLocks, learnedOrders, UnderStore } from '../vfs/game-data.js';
 import { launchSet, setBytes, lightLaunch } from '../vfs/launch-set.js';
+import { copyIntoStore } from '../vfs/local-games.js';
 
 let stopping = false, running = false;
 /** the engine files' requests in flight (stop aborts them) */
@@ -306,11 +310,35 @@ export async function probe(items, bw, hooks = {}) {
   }
 }
 
+/** A local game's files copied into its store (see "Import" above): progress posted as a download's, kind 'import'. */
+async function importFiles(name, files) {
+  running = true; stopping = false;
+  const progress = { bytes: 0, total: 0, stored: 0 }, t0 = performance.now();
+  const report = (extra = {}) => post({ type: 'progress', kind: 'import', name, bytes: progress.bytes, total: progress.total, stored: progress.stored, running, ...extra });
+  const timer = setInterval(() => report(), 250);
+  let store = null;
+  try {
+    store = await openStore(name);
+    if (!store) throw new Error('the browser storage (OPFS) is not available or another tab is using this game');
+    const done = await copyIntoStore(files, store, progress, () => stopping);
+    running = false;
+    report({ done, ms: Math.round(performance.now() - t0) });
+  } catch (e) {
+    running = false;
+    report({ error: String(e?.message ?? e) });
+  } finally {
+    clearInterval(timer);
+    try { store?.close(); } catch { /* closed */ }
+    post({ type: 'stopped', name });
+  }
+}
+
 // (a worker's; imported elsewhere — a test — its helpers only)
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) self.onmessage = (e) => {
   const m = e.data ?? {};
   if (m.type === 'stop') { stopping = true; for (const c of aborts) c.abort(); if (!running) post({ type: 'stopped', name: m.name ?? null }); return; }
   if (m.type === 'probe' && !running) { probe(m.items, Number(m.bw) || undefined); return; }
+  if (m.type === 'import' && !running && Array.isArray(m.files)) { importFiles(String(m.name), m.files); return; }
   if ((m.type === 'download' || m.type === 'launch') && !running) {
     download(String(m.name), Number(m.bw) || undefined, m.type === 'launch' ? 'launch' : 'whole', typeof m.lang === 'string' && m.lang ? m.lang : null, m.engine ?? null, {}, m.reloads === true);
   }

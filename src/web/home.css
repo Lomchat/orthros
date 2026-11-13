@@ -262,3 +262,14 @@
 @media (prefers-reduced-motion: reduce) {
   #menu *, #menu *::before, #menu *::after { animation: none !important; transition-duration: .01ms !important; scroll-behavior: auto; }
 }
+/* "Lancer mon jeu" (drop-game.js, ?dropgame=1): a discreet entry under the library's heading */
+#menu .hm-drop { margin: 0 0 14px; }
+#menu .hm-drop-entry { height: 30px; font-size: 12px; opacity: .8; }
+#menu .hm-drop-panel { margin-top: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: rgba(20, 27, 46, .6); max-width: 640px; }
+#menu .hm-drop-panel h3 { margin: 0 0 6px; font: 600 14px var(--sans); color: var(--bone); }
+#menu .hm-drop-panel p { margin: 0 0 10px; font: 13px var(--sans); color: var(--faint); }
+#menu .hm-drop-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+#menu .hm-drop-status { margin-top: 8px; font: 12px var(--mono); color: var(--fg); }
+#menu .hm-drop-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+#menu .hm-drop-list li { display: flex; gap: 8px; align-items: center; font: 13px var(--sans); }
+#menu .hm-drop-list li span { flex: 1; }

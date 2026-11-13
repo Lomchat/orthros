@@ -9,7 +9,7 @@ import { inspectExecutable, machineName } from '../loader/pe-inspect.js';
 import { apiSetHost, APISET_FAMILY, VC_RUNTIME, SXS_ASSEMBLY } from '../win32/apiset.js';
 import { ApiRegistry } from '../win32/api.js';
 import { Vm } from '../core/vm.js';
-import { NOT_THE_GAME } from './manifest.js';
+import { NOT_THE_GAME } from '../shared/folder-manifest.js';
 import { loadGameCatalog } from './game-catalog.js';
 
 const PE_EXT = /\.(exe|dll|asi|ocx|cpl|scr|drv|flt|m3d|mix|dat|msi|bin|tmp|ax|acm|mod)$/i;

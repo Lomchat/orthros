@@ -195,6 +195,7 @@ export function mountHome({ onPlay }) {
     $('hmLang').setAttribute('aria-label', S().language);
     renderWho();
     renderView();
+    drop?.render();
   }
   // who plays: a warning while no Orthros account is signed in (nothing is then saved on an account), else the name
   let who = { accounts: null, user: null };
@@ -206,6 +207,11 @@ export function mountHome({ onPlay }) {
     if (!who.accounts) { whoEl.replaceChildren(); return; }
     whoEl.replaceChildren(who.user ? h('span', {}, S().signedAs(who.user.username))
       : h('span', {}, S().warn), who.user ? null : h('button', { type: 'button', class: 'hm-btn', onclick: () => window.orthrosData?.open?.('account') }, S().warnAction));
+  }
+  // "Lancer mon jeu": a game folder of the player's own (drop-game.js), behind ?dropgame=1 until validated
+  let drop = null;
+  if (new URLSearchParams(location.search).get('dropgame') === '1') {
+    import('./drop-game.js').then((d) => { drop = d.mountDropGame(whoEl, { lang: () => lang, onPlay }); cleanup.push(() => drop.destroy()); }).catch((e) => console.warn('drop-game:', e));
   }
   accountState().then((st) => { who = st; renderWho(); });
   cleanup.push(onAccountChange((st) => { who = st; renderWho(); }));

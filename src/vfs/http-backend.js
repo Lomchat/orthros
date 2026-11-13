@@ -8,6 +8,8 @@ import { LIGHT_DIR, isVideoFile, isLightPicture, treeLookup, treeStat, treeReadd
 import { decodePcm, PCM_MAGIC } from './pcm-codec.js';
 
 export const BLOCK = 1 << 20; // 1 MiB
+/** A block's key in the block store (opfs-store.js): the file's path, size and date as listed, the block's index. */
+export const storeKey = (path, size, mtime, index) => `${path}#${size}#${mtime}#${index}`;
 /**
  * The read fast path (on by default; ?dbg=ORTHROS_READ_FAST=0 turns it off, read at each read: in-session A/B): an
  * HttpFile keeps the block of its last read in hand (no `path#index` key, cache lookup or LRU move for the reads inside
@@ -252,6 +254,9 @@ export class HttpBackend {
     this.onFetch = opts.onFetch ?? null;
     this.onRetry = opts.onRetry ?? null;
     this.retryWaits = opts.retryWaits ?? RETRY_WAITS;
+    // (`offline`: a game of the player's own — local-games.js —, every block in its store: a miss never becomes a request,
+    // its folder's name and paths stay in the browser; the read fails, the folder is dropped again to refill the copy)
+    this.offline = !!opts.offline;
     // the server's compressed ranges (/gamez/...?r=start-end: zstd/gzip Content-Encoding, decoded by the browser)
     this.encoded = !!opts.encoded;
     // (the audio units: a unit-shaped compressed range may come as a PCM transport container, decoded here before any
@@ -382,6 +387,7 @@ export class HttpBackend {
    */
   /** URL of [start, end) of a file: a compressed range, or the file itself (with a Range header) */
   rangeUrl(path, start, end, background = false, ahead = false, announced = false) {
+    if (this.offline) throw new Error(`${path}: a block is missing from this game's copy in the browser (drop its folder again)`);
     const rel = path.split('/').map(encodeURIComponent).join('/');
     // (`ahead`: fetched ahead of the game but learned as its own read — the server counts it with the background;
     // `announced`: a background range the engine announced it reads next (wantList) — not learned either, queued by the
@@ -919,6 +925,7 @@ export class HttpBackend {
     try {
       const announced = reason === 'announced' || reason === 'predict'; // (the server's `w=1`: not learned — see unlearned)
       if (announced) { const d0 = deliver; deliver = (i, d) => { if (d instanceof Uint8Array) { const r = runs[i]; this.markUnlearned(r.path, Math.floor(r.start / CHUNK), Math.floor((r.end - 1) / CHUNK)); } d0(i, d); }; }
+      if (this.offline) throw new Error('offline copy: no request');
       const res = await fetch(`${this.batchUrl}?${announced ? 'w=1' : 'p=1'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(runs.map((r) => [r.path, r.start, r.end])) });
       this.net.firstByte(tok);
       if (res.status === 404 || res.status === 405 || res.status === 400 || res.status === 413 || res.status === 416) {
@@ -1668,7 +1675,7 @@ export class HttpBackend {
     let b = this.cache.get(key);
     if (b) { this.cache.delete(key); this.cache.set(key, b); return b; }
     // persistent store (the key names the file version: size and mtime of the listing)
-    const skey = `${path}#${size}#${mtime}#${index}`;
+    const skey = storeKey(path, size, mtime, index);
     b = this.store?.get(skey);
     // (a stored block must have the block's length: the whole block, or the file's tail for the last one)
     if (b && b.length === Math.min(BLOCK, size - index * BLOCK)) { this.cache.set(key, b); this.evict(); return b; }
