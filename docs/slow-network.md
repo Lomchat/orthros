@@ -2437,7 +2437,82 @@ the emulator thread; ABBA order; phase seconds from the scenario's marks; shares
   launch goes on. One run each: to be confirmed before the default changes.
 
 Next: the first answer's wait (2 ms, a parked read pays it whenever the data worker is busy) shorter or gone
-(`Atomics.waitAsync`), a thin-link launch measured to the menu, then the default reconsidered.
+(`Atomics.waitAsync`), a thin-link launch measured to the menu, then the default reconsidered (done: next section).
+
+## The first launch on a slow link (2026-11-12)
+
+A new browser always took the server's shared snapshot (`r.arrayBuffer()` of the whole file, no progress, nothing kept
+when the page went away), whatever it weighed: BFME1 1.08's is 92.4 MB of brotli, its launch set 57.3 MB. A browser
+that had measured a slow link before refused any snapshot that would take more than 60 s and started cold — for AotR or
+RotWK at 85 KB/s 24-28 minutes. Now (`src/web/snapshot-fetch.js`, the page; `src/server/server.js` `/api/snapshot`):
+
+- **Pieces into the store, resumable**: the server keeps each shared snapshot in pieces too (`snapshot-store.js
+  pieces`: 4 MiB of the snapshot each compressed alone with brotli — BFME1 1.08: 75 pieces, 92.3 MB against 92.4 MB
+  for the whole —, `<key>.brp` and its offsets `<key>.brp.json`; made at the publish, and a minute after a server's start
+  for those kept before, ~20 s of libuv threads each). `?piece=i` sends piece i with Content-Encoding (brotli, gzip for
+  a browser that does not take it): the browser decodes it — Chrome has no `DecompressionStream('brotli')` (Chrome 158
+  for Testing: gzip only, 14 % more bytes for a whole file), so a range of the whole brotli file could not be decoded
+  in the page. The page asks four pieces at a time (two left the link idle ~25 % of the time at 1.25 MB/s in Chrome: a
+  piece read late asks the next one late), each written whole to its own OPFS file (`orthros-snapshot-<manifest>/
+  shared/<i>`, `info.json` beside: key, language, the snapshot's id, piece size, count) while the next ones come. A page
+  that goes away resumes from the pieces there on its next visit (same key and id). Once all are here they are put
+  together (a Blob of the stored files read once: 0.4-0.5 s for 367 MiB); the pieces go once the game started from it
+  (then it is the player's own snapshot, stored as before). The loading screen says "Downloading the game, ready to play
+  — 12 of 92 MB · 83 KB/s · about 16 min".
+- **One choice, made early**: the first answer carries the snapshot's size and what a cold start costs instead — the
+  version's launch set in that language (`X-Launch-Wire`: its wire bytes with light copies, launch-set.js, as a link
+  that is not fast reads it) and the machine's start-up time the publishing session saw (`X-Boot-Ms`, posted with the
+  snapshot as `bootMs` from now on; 120 s when unknown) — summed over every piece's wire bytes (`X-Piece-Wire`). A
+  server just started waits for its brotli units' index before it answers (at most 10 s): a launch summary made before
+  counted every unit at the 0.75 estimate (BFME1: 127 MB instead of 57) and was kept ten minutes — now made again once the
+  index is read. After 3 s of the snapshot's own bytes (at least 192 KiB, at most
+  9 s) the link's rate is known: the snapshot is kept when `left / bw` (+ 0.01 s per decoded MiB to restore) is no more
+  than `launch / (bw × 0.75) + start-up`, and its download goes on; else it stops there and the game starts cold. 0.75:
+  the share of the link a cold start's reads use on average to the menu (measured below: BFME1 0.87 either way; AotR
+  ~0.15 with the reader on the emulator's thread, ~0.6 with the data worker, D121). Never reconsidered within the visit; the rate measured is given to the game's reader as
+  its starting estimate (`netBw`). `?snapfetch=0` (harness `--snapfetch 0`): the previous path. Telemetry: a
+  `snapshot-choice` event (rate, both estimates, bytes resumed).
+- **The data worker on a thin link**: a player's page reads the game data through the data worker when the link is below
+  384 KB/s (`THIN_BPS`) or not measured yet (`net-link.js dataWorkerWanted`; told to the worker as
+  `ORTHROS_DATA_WORKER=1`, a transport flag left out of the snapshot key: `snapshot-key.js TRANSPORT_DBG`; a harness run
+  only with `--dbg ORTHROS_DATA_WORKER=auto` or `=1`). Its guards: a data worker without heartbeat for 10 s is left and
+  the reads from then on are fetched on the emulator's thread (`FallbackReader`: the file by range, no store) instead of
+  failing them after 30 s; a parked read's completion wakes the emulator through `Atomics.waitAsync` on the shared
+  signal word (not only by the data worker's message); the first-answer wait drops from 2 to 0.25 ms while most of the
+  recent ones ended without an answer (a busy data worker on shared cores); a synchronous read that waits on the
+  network tells the page the link's progress every second (`netbeat`: the bytes received from the shared memory, which
+  the data worker updates with its heartbeat — the emulator's own statistics stop while it waits).
+
+Measured 2026-11-12/13 (`tools/headless.mjs <version> --net <ms>:<Mbit/s> --gl-discard --snapshot auto --game-lang en`,
+a fresh browser per run, a fresh copy of the live learned directory with the two versions' current shared snapshots
+(pieces made ahead, as the server does a minute after its start), the live brotli units frozen (`--br-cache-frozen`),
+through the slot guard (4 cores pinned), one browser at a time on the shared server; old = `--snapfetch 0`, the reader
+on the emulator's thread; new = this change with `--dbg ORTHROS_DATA_WORKER=auto`, as a player's page; time to the
+menu mark of `+3..+18: Escape, waitframe` scenarios, from the launch):
+
+| case | old | new |
+|---|---|---|
+| BFME1 1.08, 85 KB/s (50 ms, 0.68 Mbit/s) | 1121 s (the snapshot, 92.4 MB whole) | 722, 723 s (a cold start chosen after 3-6 s at 83-87 KB/s: ~1035-1083 s against ~977-1021 s estimated; 52.6 MB on the link) |
+| same, the old reader cold (snapshot off) | 720 s (53.5 MB; 87 % of the link) | — |
+| AotR 1.0, 85 KB/s | 687 s (the snapshot, 54.9 MB whole) | 703, 701, 702 s (the snapshot chosen; its pieces 56.2 MB, 2.3 % more than the whole file) |
+| BFME1 1.08, 1.25 MB/s (50 ms, 10 Mbit/s) | 106 s | 108, 106 s (the snapshot) |
+| AotR 1.0, 1.25 MB/s | 83, 86 s | 92, 89 (two pieces in flight), 90 (two, no store), 86 s (four in flight) |
+
+- **Gate** (BFME1 at 85 KB/s at least 20 % sooner, nothing worse at 1.25 MB/s): BFME1 −35.5 % (1121 → 722-723 s);
+  1.25 MB/s within the runs' spread with four pieces in flight (BFME1 106 / 106-108 s, AotR 83-86 / 86 s). AotR at
+  85 KB/s +2 % (687 → 701-703 s, one old run; the final code: 702 s): the pieces' 2.3 % more bytes — 4 MiB pieces compressed alone at quality
+  5 with a 4 MiB window; the old whole file used a 16 MiB window.
+- The choice's rate: measured on the decoded bytes of four pieces at once it read 48-58 KB/s on an 85 KB/s link (a brotli
+  decoder hands its output in blocks); now measured on the first piece alone, at its end (83 KB/s, 6 s for AotR's first
+  piece in Node through the same simulated link).
+- The data worker at 85 KB/s on BFME1's cold start: 722-723 s against 720 s for the old reader — the same; its gain is on
+  the launches the old reader stalls (AotR's 400 s synchronous request, D121), which a cold start of AotR on such a
+  link no longer is for a new player (the snapshot is chosen). Not measured: the 4-core A/B (ABBA) of the data worker
+  against the reader on the emulator's thread on a fast link — it stays off there (`THIN_BPS`).
+- Why the old reader used ~15 % of the link in AotR's launch (D121) is not settled: on BFME1 it used 87 %. A suspect in the
+  code: before the link is measured, a synchronous read's `abortBackground` aborts nothing (`NetLink.abortLong` needs a
+  rate), so requests in flight that the blocked worker cannot read share the link with it. The data worker on thin and
+  unmeasured links avoids that path for players.
 
 ## What the page says
 

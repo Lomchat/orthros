@@ -28,6 +28,17 @@ export const DEMAND_SECONDS = 0.25;
 export const FAST_BPS = 3 << 20;
 /** below this rate (bytes/s) the link is "thin": no speculative whole blocks in the background (see thin()) */
 export const THIN_BPS = 384 << 10;
+/**
+ * Whether a Windows game's data goes through the data worker (data-link.js; the page's choice before the worker starts,
+ * main.js): ?dbg's ORTHROS_DATA_WORKER=1 / 0 as told; else `auto` (a player's page, or =auto in a harness run; a
+ * harness run without it: off) — on a thin link or one not measured yet (`bw`: the rate this browser measured, its last
+ * visit's or the shared snapshot's download: snapshot-fetch.js). Measured: docs/slow-network.md "The first launch on a
+ * slow link".
+ */
+export function dataWorkerWanted(dbgValue, bw, auto) {
+  if (dbgValue === 'auto' || ((dbgValue === undefined || dbgValue === '') && auto)) return !(bw >= THIN_BPS);
+  return dbgValue !== undefined && dbgValue !== '' && Number(dbgValue) !== 0;
+}
 const MIN_BG = 64 << 10, MAX_BG = 4 << 20;
 /** request size bound while the link is not measured yet */
 const UNKNOWN_BG = 256 << 10;

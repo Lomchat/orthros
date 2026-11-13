@@ -10,20 +10,29 @@
 //   it between slices, no event loop turn needed) and by message;
 // - synchronous (a read that cannot park: a nested wait, a program image): the emulator's thread waits on shared memory
 //   (Atomics.wait) for the data worker's answer.
-// Off by default (measured 2026-11-11: no gain beyond noise on a local link nor at 50 ms / 10 Mbit/s, the first launch
-// on an 85 KB/s link better in a single 420 s run each way, to be confirmed — docs/slow-network.md "The data worker of the Windows games"); ?dbg=ORTHROS_DATA_WORKER=1:
-// on, else the reader on the emulator's thread (src/web/worker.js).
+// A player's page uses it on a thin or not yet measured link (net-link.js dataWorkerWanted: measured 2026-11-11/12,
+// docs/slow-network.md "The data worker of the Windows games" and "The first launch on a slow link"), the reader on the
+// emulator's thread otherwise (src/web/worker.js); ?dbg=ORTHROS_DATA_WORKER=1: always, =0: never, =auto: by the link in
+// a harness run too (a harness run without it: never). A data worker that stopped answering (no heartbeat for DEAD_MS) is left: the reads
+// from then on are fetched on the emulator's thread (FallbackReader: the files themselves, as the reader before the
+// data worker without its store). A synchronous read that waits long tells the page the link's progress every second
+// (onWait: the emulator's own statistics stop while it waits).
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { treeLookup, treeStat, treeReaddir, isVideoFile } from './game-tree.js';
 import { SharedBlocks, fileKeys, BLOCK, CHUNK } from './shared-blocks.js';
 import { NetLink } from './net-link.js';
 
-/** The data worker for the Windows games (off by default; ORTHROS_DATA_WORKER=1: on, read at the start). */
-export function dataWorkerOn() { const v = globalThis.ORTHROS_DATA_WORKER; return typeof Worker !== 'undefined' && !!globalThis.crossOriginIsolated && v !== undefined && v !== '' && Number(v) !== 0; }
+/**
+ * Whether the game's data goes through the data worker (read at the start): ORTHROS_DATA_WORKER=1 (the page sets it
+ * by its link: dataWorkerWanted).
+ */
+export function dataWorkerOn() { const v = globalThis.ORTHROS_DATA_WORKER; return typeof Worker !== 'undefined' && !!globalThis.crossOriginIsolated && v !== undefined && v !== '' && v !== 'auto' && Number(v) !== 0; }
 /** How long an asynchronous read waits for the data worker's first answer (ms: memory, the browser's store) before it parks. */
 const QUICK_MS = 2;
-/** A synchronous read fails once the data worker's heartbeat stopped this long (it died). */
-const DEAD_MS = 30000;
+/** ... once most of the recent waits ended without an answer (the data worker busy: cores shared): a shorter one. */
+const QUICK_BUSY_MS = 0.25;
+/** The data worker is left once its heartbeat stopped this long (it died, or hangs): the reads fetched here instead. */
+const DEAD_MS = 10000;
 
 export class DataLink {
   /**
@@ -61,7 +70,14 @@ export class DataLink {
     this.reads = { bytes: 0, videoBytes: 0 };
     /** the data worker's counters, as last told (every 250 ms) */
     this.state = null;
-    this.stats = { syncReads: 0, syncMs: 0, prepares: 0, quick: 0, parked: 0, settleMs: 0 };
+    this.stats = { syncReads: 0, syncMs: 0, prepares: 0, quick: 0, parked: 0, late: 0, settleMs: 0, fallbackReads: 0 };
+    /** the recent first-answer waits that ended without an answer, out of 16 (an average: QUICK_BUSY_MS above 8) */
+    this.lateness = 0;
+    /** a synchronous read waiting longer than a second: told every second ({ ms, rx: bytes received, bw }) — in the
+     * emulator's worker, to the page (main.js 'netbeat') */
+    this.onWait = typeof WorkerGlobalScope !== 'undefined' && typeof postMessage === 'function' ? ({ rx, bw }) => postMessage({ type: 'netbeat', net: { rx, bw: bw || null, waiting: true } }) : null;
+    /** the reader here once the data worker stopped answering (FallbackReader), null while it answers */
+    this.fallback = null;
   }
 
   message(m) {
@@ -99,24 +115,43 @@ export class DataLink {
    * put it there within QUICK_MS, else a promise (resolved when it is there; `ready()` says so before the message).
    */
   prepare(h, off, len, held) {
+    if (this.fallback) return null; // (read here, synchronously)
     const seq = this.seq = (this.seq + 1) & 0x3fffffff || 1, B = this.blocks;
     this.stats.prepares++;
     let resolve; const p = new Promise((r) => { resolve = r; });
     this.pending.set(seq, resolve);
     this.worker.postMessage({ w32prep: { seq, h, off, len, held: !!held } });
-    const t0 = performance.now(), how = B.settle(seq, Number(globalThis.ORTHROS_DATA_QUICK_MS ?? QUICK_MS));
+    // (the first answer waited for a moment — memory, the store —, shorter while the data worker is mostly late)
+    const quick = Number(globalThis.ORTHROS_DATA_QUICK_MS ?? (this.lateness > 8 ? QUICK_BUSY_MS : QUICK_MS));
+    const t0 = performance.now(), how = B.settle(seq, quick);
     this.stats.settleMs += performance.now() - t0;
+    this.lateness += ((how === 'late' ? 16 : 0) - this.lateness) / 8;
     if (how === 'done') { this.pending.delete(seq); this.stats.quick++; return null; }
-    this.stats.parked++;
+    this.stats.parked++; if (how === 'late') this.stats.late++;
     p.ready = () => B.isDone(seq);
+    // (its completion wakes this worker's event loop through the shared memory as soon as it is there — not only by the
+    // data worker's message, which queues behind its other messages)
+    if (typeof Atomics.waitAsync === 'function') this.wake(seq, resolve);
     return p;
+  }
+  /** Resolve the parked read `seq` as soon as the shared memory says it is here (Atomics.waitAsync on the signal word). */
+  wake(seq, resolve) {
+    const B = this.blocks, step = () => {
+      const v = B.signal;
+      if (B.isDone(seq) || this.fallback) { if (this.pending.delete(seq)) resolve(); return; }
+      if (!this.pending.has(seq)) return; // (answered by message)
+      const w = B.waitSignal(v, 5000);
+      if (w.async) w.value.then(step); else step();
+    };
+    step();
   }
 
   /**
    * A synchronous read: the data worker reads [off, end) of handle `h` (its reader state, its fetches) and answers the
    * bytes from `from` on, copied into `out` at `at`. Their count.
    */
-  syncRead(h, off, end, from, out, at) {
+  syncRead(h, off, end, from, out, at, file = null) {
+    if (this.fallback) return this.fallbackRead(file, from, end, out, at);
     const need = end - from, B = this.blocks, t0 = performance.now();
     let buf;
     if (!this.answer || this.answer.length < need) { let n = 1 << 20; while (n < need) n *= 2; this.answer = new Uint8Array(new SharedArrayBuffer(n)); buf = this.answer.buffer; }
@@ -134,9 +169,25 @@ export class DataLink {
           return k;
         }
         const now = performance.now();
-        if (B.beats !== beats) { beats = B.beats; beatAt = now; } else if (now - beatAt > DEAD_MS) throw new Error('the game data worker stopped answering');
+        if (B.beats !== beats) { beats = B.beats; beatAt = now; } else if (now - beatAt > DEAD_MS && file) { this.leave(); return this.fallbackRead(file, from, end, out, at); }
+        this.onWait?.({ ms: now - t0, rx: B.rx, bw: B.bw });
       }
     } finally { acct.leave(ap); this.stats.syncReads++; this.stats.syncMs += performance.now() - t0; }
+  }
+  /** The data worker stopped answering: left, the reads fetched on this thread from now on (FallbackReader). */
+  leave() {
+    if (this.fallback) return;
+    this.fallback = new FallbackReader();
+    this.log('warn', `the game data worker stopped answering for ${DEAD_MS / 1000} s: the game's files are read on the emulator's thread from now on`);
+    for (const [seq, r] of this.pending) { this.pending.delete(seq); r(); } // (their reads ask again, here)
+    try { this.worker.terminate(); } catch { /* gone */ }
+  }
+  /** [from, end) of RemoteFile `file` read here into `out` at `at` (the fallback): its count. */
+  fallbackRead(file, from, end, out, at) {
+    this.stats.fallbackReads++;
+    const bytes = this.fallback.read(file.readName, file.path, from, end);
+    out.set(bytes, at);
+    return bytes.length;
   }
 
   /** The browser's copy of the files synced (force: now). */
@@ -148,7 +199,7 @@ export class DataLink {
   /** A line for the exit report: how the reads were answered. */
   report() {
     const b = this.blocks?.stats ?? {}, w = this.state?.blocks ?? {}, s = this.stats;
-    return `reads from the shared blocks ${b.hits ?? 0}, sent to the data worker ${b.misses ?? 0} (${Math.round(s.syncMs)} ms waited; ${b.torn ?? 0} torn copies), asynchronous reads asked ${s.prepares} (${s.quick} answered within ${QUICK_MS} ms, ${s.parked} parked; ${Math.round(s.settleMs)} ms waiting for the first answers); blocks published ${w.published ?? 0}, slots replaced ${w.evicted ?? 0}, notes dropped ${w.drops ?? 0}`;
+    return `reads from the shared blocks ${b.hits ?? 0}, sent to the data worker ${b.misses ?? 0} (${Math.round(s.syncMs)} ms waited; ${b.torn ?? 0} torn copies), asynchronous reads asked ${s.prepares} (${s.quick} answered within ${QUICK_MS} ms, ${s.parked} parked, ${s.late} of them without an answer in time; ${Math.round(s.settleMs)} ms waiting for the first answers); blocks published ${w.published ?? 0}, slots replaced ${w.evicted ?? 0}, notes dropped ${w.drops ?? 0}${this.fallback ? `; LEFT (it stopped answering): ${s.fallbackReads} reads fetched on the emulator's thread` : ''}`;
   }
   /** Any message to the data worker (data-worker.js dispatch: mark, phase, …). */
   post(m) { this.worker.postMessage(m); }
@@ -248,11 +299,38 @@ class RemoteFile {
     if (pos === end) { B.stats.hits++; B.note(this.h, off, end); return out.length === end - off ? out : out.subarray(0, end - off); }
     // (the data worker reads it all — its reader's state follows every read —, the bytes from the first missing on come back)
     B.stats.misses++;
-    const n = link.syncRead(this.h, off, end, pos, out, pos - off);
+    const n = link.syncRead(this.h, off, end, pos, out, pos - off, this);
     const got = pos - off + n;
     return out.length === got ? out : out.subarray(0, got);
   }
   write() { return 0; }
   truncate() {}
   close() { if (this.closed) return; this.closed = true; this.link.close(this.h); }
+}
+
+/**
+ * The reads of a game whose data worker stopped answering (DataLink.leave): each fetched on the emulator's thread, the
+ * file itself by range (/game/<version>/<path>: the server resolves the version's file), as the reader on this thread
+ * fetched it — no store, no read-ahead: the game goes on, slower, instead of failing its reads.
+ */
+export class FallbackReader {
+  constructor(retryWaits = [500, 2000, 5000]) { this.retryWaits = retryWaits; }
+  read(name, path, start, end) {
+    const url = `/game/${encodeURIComponent(name)}/${path.split('/').map(encodeURIComponent).join('/')}`;
+    for (let attempt = 0; ; attempt++) {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, false); xhr.responseType = 'arraybuffer';
+      xhr.setRequestHeader('Range', `bytes=${start}-${end - 1}`);
+      let problem = null;
+      try { xhr.send(); } catch (e) { problem = e.message; }
+      if (!problem && xhr.status !== 206 && xhr.status !== 200) problem = `status ${xhr.status}`;
+      if (!problem) {
+        const all = new Uint8Array(xhr.response), data = xhr.status === 200 ? all.subarray(start, end) : all;
+        if (data.length === end - start) return data;
+        problem = `${data.length} bytes of ${end - start}`;
+      }
+      if (attempt >= this.retryWaits.length) throw new Error(`game file read failed (${problem}) ${url} ${start}-${end}`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, this.retryWaits[attempt]); // (a pause: this thread waits anyway)
+    }
+  }
 }

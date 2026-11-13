@@ -15,12 +15,14 @@ import { CloudSave } from './cloud-sync.js';
 import { accountState } from './account.js';
 import { pickLang } from './lang.js';
 import { linkRate } from '../vfs/data-client.js';
+import { dataWorkerWanted } from '../vfs/net-link.js';
 import { gpuInfo } from './gpu-class.js';
 import { vkOfCode } from '../win32/vk-scan.js';
 import { PerfSession } from './perf-page.js';
 import { TimerHelper, browserVariants, createWaitProbe } from './timer-helper.js';
 import { pageStorage, withStorage } from './storage-persist.js';
 import { snapshotKey } from './snapshot-key.js';
+import { fetchSharedSnapshot, dropPieces } from './snapshot-fetch.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -53,7 +55,7 @@ const TEXT = {
       'Signed in, your saves follow you: they are kept on your Orthros account and come back on any computer.',
     ],
     connecting: 'Connecting…', account: 'Checking your account\'s saves…', capture: 'Click the game to capture the mouse · Esc goes to the game (in full screen, twice releases the mouse) · ⛶ for full screen',
-    downloading: (mb) => `Downloading the game files — ${mb}`, preparing: 'Preparing the game\'s code…', starting: 'Starting the game…', read: 'read', received: 'received',
+    downloading: (mb) => `Downloading the game files — ${mb}`, snapshotDl: (got, tot, rate, min) => `Downloading the game, ready to play — ${got} of ${tot} MB${rate ? ` · ${rate} KB/s` : ''}${min ? ` · about ${min} min` : ''}`, preparing: 'Preparing the game\'s code…', starting: 'Starting the game…', read: 'read', received: 'received',
     paused: (t) => `${t} is paused while its window is inactive <small>click the game to resume</small>`,
     loading: (t, s, mips, mb) => `${t} is loading…<br><small>${s} s · emulated CPU ${mips} MIPS · game files ${mb}</small>`,
     preload: 'preloading', preloadTitle: 'game files downloaded ahead in the background: later screens and maps load faster',
@@ -82,7 +84,7 @@ const TEXT = {
       'Connecté, tes sauvegardes te suivent : elles sont gardées sur ton compte Orthros et reviennent sur n’importe quel ordinateur.',
     ],
     connecting: 'Connexion…', account: 'Vérification des sauvegardes de ton compte…', capture: 'Clique dans le jeu pour capturer la souris · Échap va au jeu (en plein écran, deux fois libère la souris) · ⛶ pour le plein écran',
-    downloading: (mb) => `Téléchargement des fichiers du jeu — ${mb}`, preparing: 'Préparation du code du jeu…', starting: 'Démarrage du jeu…', read: 'lus', received: 'reçus',
+    downloading: (mb) => `Téléchargement des fichiers du jeu — ${mb}`, snapshotDl: (got, tot, rate, min) => `Téléchargement du jeu prêt à jouer — ${got} sur ${tot} Mo${rate ? ` · ${rate} Ko/s` : ''}${min ? ` · environ ${min} min` : ''}`, preparing: 'Préparation du code du jeu…', starting: 'Démarrage du jeu…', read: 'lus', received: 'reçus',
     paused: (t) => `${t} est en pause tant que sa fenêtre est inactive <small>clique dans le jeu pour reprendre</small>`,
     loading: (t, s, mips, mb) => `${t} charge…<br><small>${s} s · processeur émulé ${mips} MIPS · fichiers du jeu ${mb}</small>`,
     preload: 'préchargement', preloadTitle: 'fichiers du jeu téléchargés d’avance en arrière-plan : les écrans et cartes suivants chargent plus vite',
@@ -212,7 +214,7 @@ async function showMenu() {
 
 async function start(name, language = null) {
   if (state.status !== 'menu') return;
-  state.status = 'loading';
+  state.status = 'loading'; state.startedAt = performance.now();
   // (the home's last game: not changed by a bench suite's games — bench-suite.js)
   if (!params.has('benchrun')) { try { localStorage.setItem('orthros.last', name); } catch { /* no storage */ } }
   // (before the game's worker writes its store: persistent storage asked — its state in the telemetry, storage-persist.js)
@@ -284,9 +286,18 @@ async function start(name, language = null) {
     snapshot = await loadSnapshot(name, state.snapshotKey);
     if (snapshot) state.snapshotFrom = 'own';
     else { snapshot = await sharedSnapshot(name, state.snapshotKey, language); if (snapshot) { state.sharedSnapshotCopy = snapshot.slice(0); state.snapshotFrom = 'shared'; } } // (kept as this player's once it applied)
+    // (a first visit: the link's rate the shared snapshot's download measured — the game's reader starts from it: the data
+    // worker on a thin link, net-link.js dataWorkerWanted)
+    if (!opts.netBw && state.sharedSnapshotHow?.bw > 0) opts.netBw = state.sharedSnapshotHow.bw;
     opts.snapshotAuto = true; // (the worker takes them as the game's loading goes on)
     opts.snapshotPublish = params.get('snapshot') === 'publish';
   }
+  // (the game's data through the data worker on a thin link or one not measured yet — net-link.js dataWorkerWanted; told
+  // to the worker as its ?dbg flag, out of the snapshot's key: snapshot-key.js TRANSPORT_DBG)
+  const dwFlag = /(?:^|,)ORTHROS_DATA_WORKER=([^,]*)/.exec(opts.dbg)?.[1];
+  const dw = dataWorkerWanted(dwFlag, opts.netBw, !headless);
+  if (dwFlag === 'auto' || (dwFlag === undefined && dw)) opts.dbg = [opts.dbg.replace(/(?:^|,)ORTHROS_DATA_WORKER=[^,]*/, ''), `ORTHROS_DATA_WORKER=${dw ? 1 : 0}`].filter(Boolean).join(',');
+  if (dwFlag === 'auto' || (dwFlag === undefined && !headless)) log('loader', `game data ${dw ? 'through the data worker' : 'read on the emulator\'s thread'} (link ${opts.netBw ? `${Math.round(opts.netBw / 1024)} KB/s` : 'not measured yet'})`);
   if (snapshot) log('loader', `snapshot of ${(snapshot.byteLength / 1048576).toFixed(1)} MiB found: the game goes on from it`);
   worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts, screen: [Math.round(screen.width * (devicePixelRatio || 1)), Math.round(screen.height * (devicePixelRatio || 1))], snapshot, snapshotShared: !!state.sharedSnapshotCopy }, snapshot ? [snapshot] : []);
   setupInput();
@@ -372,6 +383,17 @@ async function sharedSnapshot(name, key, lang) {
   if (params.get('snapshot') === 'publish' || await hasProfile(state.profileKey ?? name)) return null;
   // (a shared snapshot that failed to restore in this tab — a reload follows the failure — is not tried again: a normal boot)
   try { if (sessionStorage.getItem(SHARED_FAILED + key)) return null; } catch { /* storage off */ }
+  // (piece by piece into the store, weighed against a cold start once the link is measured: snapshot-fetch.js; ?snapfetch=0:
+  // the previous path below)
+  if (params.get('snapfetch') !== '0') {
+    const bytes = await fetchSharedSnapshot({ name, key, lang, dir: params.get('snapstore') === '0' ? async () => { throw new Error('no store'); } : () => snapshotDir(name, true), log: (m) => log('loader', m),
+      chosen: (how) => { state.sharedSnapshotHow = how; telemetryEvent({ event: 'snapshot-choice', game: name, ...how }); },
+      progress: ({ bytes: got, total, bw }) => {
+        const min = bw > 0 ? Math.ceil((total - got) / bw / 60) : 0;
+        shell?.progress(got / total, TEXT.snapshotDl((got / 1048576).toFixed(0), (total / 1048576).toFixed(0), bw > 0 ? Math.round(bw / 1024) : 0, min > 1 ? min : 0));
+      } });
+    return bytes;
+  }
   const ctl = new AbortController();
   try {
     const r = await fetch(`/api/snapshot/${encodeURIComponent(name)}?key=${key}&lang=${encodeURIComponent(lang ?? '')}`, { signal: ctl.signal });
@@ -379,7 +401,8 @@ async function sharedSnapshot(name, key, lang) {
     const size = Number(r.headers.get('Content-Length')) || 0, bw = savedNetBw();
     if (bw && size / bw > 60) { ctl.abort(); log('loader', `shared snapshot not used: ${(size / 1048576).toFixed(0)} MB at ${(bw / 1048576).toFixed(1)} MB/s`); return null; }
     log('loader', `shared snapshot of this game: ${(size / 1048576).toFixed(1)} MB to download`);
-    const bytes = await r.arrayBuffer();
+    const t0 = performance.now(), bytes = await r.arrayBuffer();
+    log('loader', `shared snapshot: here in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
     return new DataView(bytes).getUint32(0) === 0x4f534e50 ? bytes : null;
   } catch { return null; }
 }
@@ -412,7 +435,7 @@ function onWorkerMessage(m) {
     case 'snapshot':
       if (m.id !== 'auto') { snapshotWaits.get(m.id)?.(m); snapshotWaits.delete(m.id); break; }
       if (!m.bytes) { log('loader', `automatic snapshot refused: ${m.error}`); break; }
-      state.snapshotPending = m.bytes; // (kept once the session went on: snapshot-keep)
+      state.snapshotPending = m.bytes; state.snapshotTakenMs = performance.now() - (state.startedAt ?? 0); // (kept once the session went on: snapshot-keep; its time from the start: the publishing session's start-up, snapshot-fetch.js)
       log('loader', `snapshot of the game taken: ${(m.bytes.byteLength / 1048576).toFixed(1)} MiB in ${m.ms.toFixed(0)} ms (${Object.entries(m.timing).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', ')})`);
       break;
     case 'snapshot-keep': {
@@ -426,7 +449,7 @@ function onWorkerMessage(m) {
         state.snapshotStored = true; state.snapshotsKept = (state.snapshotsKept ?? 0) + 1; state.snapshotKeptAt = Date.now(); log('loader', 'snapshot kept: the next start of this game goes on from it');
         if (!publish) return;
         try {
-          const r = await fetch(`/api/snapshot/${encodeURIComponent(state.manifest)}?key=${key}&lang=${encodeURIComponent(state.gameLanguage ?? '')}&token=${encodeURIComponent(params.get('publishToken') ?? '')}`, { method: 'POST', body: await file.getFile() });
+          const r = await fetch(`/api/snapshot/${encodeURIComponent(state.manifest)}?key=${key}&lang=${encodeURIComponent(state.gameLanguage ?? '')}&token=${encodeURIComponent(params.get('publishToken') ?? '')}&bootMs=${Math.round(state.snapshotTakenMs ?? 0)}`, { method: 'POST', body: await file.getFile() });
           state.snapshotsPublished = (state.snapshotsPublished ?? 0) + (r.ok ? 1 : 0); log('loader', `snapshot published: HTTP ${r.status}`);
         } catch (e) { log('warn', `snapshot not published: ${e.message}`); }
       }, (e) => log('warn', `snapshot not kept: ${e.message}`)).finally(() => { if (publish) state.snapshotPublishing--; });
@@ -436,13 +459,20 @@ function onWorkerMessage(m) {
     case 'snapshot-drop': state.snapshotPending = null; break; // (the profile changed after it: taken again later)
     case 'snapshot-failed': // (a restore that failed midway: started again without the snapshot)
       log('crash', `the snapshot could not be restored: ${m.error}`); state.snapshotFailed = m.error;
-      if (state.snapshotFrom === 'shared') try { sessionStorage.setItem(SHARED_FAILED + state.snapshotKey, '1'); } catch { /* storage off */ } // (else the reload fetches it again: a loop)
+      if (state.snapshotFrom === 'shared') { try { sessionStorage.setItem(SHARED_FAILED + state.snapshotKey, '1'); } catch { /* storage off */ } dropPieces(() => snapshotDir(state.manifest)); } // (else the reload fetches it again: a loop)
       dropSnapshot(state.manifest).then(() => { if (!headless) location.reload(); });
       break;
     case 'log': log(m.kind, m.msg); break;
     case 'stdout': log('stdout', m.text); break;
-    case 'started': if (state.sharedSnapshotCopy) { storeSnapshot(state.manifest, state.snapshotKey, state.sharedSnapshotCopy).catch(() => {}); state.sharedSnapshotCopy = null; } state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
+    case 'started': if (state.sharedSnapshotCopy) { storeSnapshot(state.manifest, state.snapshotKey, state.sharedSnapshotCopy).then(() => dropPieces(() => snapshotDir(state.manifest)), () => {}); state.sharedSnapshotCopy = null; } state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
     case 'dbg': if (/^ORTHROS_HOST_TIMER_HELPER_[A-Z]+$/.test(m.k)) { window[m.k] = m.v === undefined || m.v === '' ? undefined : m.v; state.timerHelper?.apply(); } break; // (harness dbg: steps for the page's own switches, forwarded by the worker)
+    case 'netbeat': { // (the worker waits for a synchronous read on the network, its statistics stopped: the link's progress — data-link.js onWait)
+      const s = state.stats; if (!s?.net) break;
+      const net = { ...s.net, waiting: true, ...(m.net.bw > 0 ? { bw: m.net.bw } : {}), demandBytes: Math.max(s.net.demandBytes ?? 0, m.net.rx - (s.net.bgBytes ?? 0)) };
+      state.stats = { ...s, net }; state.statsAt = Date.now(); state.netWaitAt = Date.now();
+      if (!headless && state.status !== 'crashed' && state.status !== 'exited' && !((s.d3d?.frames ?? 0) > 0 || s.frames >= 30)) updateLoader(state.stats);
+      break;
+    }
     case 'stats': noteTimerHelper(m); state.stats = m; state.statsAt = Date.now(); m.seq = state.statsSeq = (state.statsSeq ?? 0) + 1; state.bench?.onStats(m); noteNet(m.net);
       if (m.frames !== state.lastFrames || m.videoFrames !== state.lastVideoFrames) { state.lastFrames = m.frames; state.lastVideoFrames = m.videoFrames; state.lastNewFrameAt = Date.now(); } // (a movie playing: new pictures, not a loading wait)
       if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30 || m.videoFrames > 0) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, a few GDI frames, or a movie's first picture) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } noteAudio(m); recordSample(m); renderHud(); break;
