@@ -70,5 +70,7 @@ test('the render loop reads a frame\'s fence when it wakes, not at the next fram
   await replayLoop(ctl, replayer, backend, { ms: 0, waitMs: 0 }, () => p.stats.gpu.fenceN > 0 || performance.now() - t0 > 500);
   const g = p.stats.gpu;
   assert.equal(g.fenceN, 1, 'the fence was read while the loop slept');
-  assert.ok(g.fenceMs < 10, `fence ${g.fenceMs.toFixed(1)} ms for a GPU done in 3 ms`);
+  // (~8 ms alone; 18.7 ms seen inside a parallel make test — real timers on a loaded machine: the bound tells a wake-up
+  // read, a few ms late at worst, from the old next-frame read, never within 500 ms)
+  assert.ok(g.fenceMs < 100, `fence ${g.fenceMs.toFixed(1)} ms for a GPU done in 3 ms`);
 });
