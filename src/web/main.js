@@ -593,9 +593,8 @@ function showLoader() {
 }
 function hideLoader(now = false) {
   if (!shell || shell.loader.classList.contains('hidden')) return;
-  if (!now) { try { localStorage.setItem('orthros.boot.' + state.manifest, String(Math.round((performance.now() - state.loadT0) / 1000))); } catch { /* no storage */ } }
-  shell.hideLoader(now);
-  if (now) return;
+  if (!shell.hideLoader(now) || now) return; // (false: already fading out — the ready signal and its event go once)
+  try { localStorage.setItem('orthros.boot.' + state.manifest, String(Math.round((performance.now() - state.loadT0) / 1000))); } catch { /* no storage */ }
   // (the time to the first images, and whether the tab was hidden then: the ready signal of shell.js)
   telemetryEvent({ event: 'ready', seconds: Math.round((performance.now() - state.loadT0) / 100) / 10, hidden: !!shell.ready?.hidden, notified: !!shell.ready?.notified });
   shell.running = true; shell.setMouse(state.pointerLocked);

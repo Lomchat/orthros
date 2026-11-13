@@ -195,15 +195,20 @@ export function createShell(o) {
     }
     shell.ready = { hidden, notified };
   };
+  // (`hiding`: the fade-out of 850 ms is under way — stats every 500 ms call hideLoader again meanwhile: one ready signal)
+  let hiding = false;
+  /** Hides the loading screen; false when it is already hidden or hiding (nothing done). */
   shell.hideLoader = (now = false) => {
-    if (loader.classList.contains('hidden')) return;
+    if (loader.classList.contains('hidden') || (hiding && !now)) return false;
+    hiding = true;
     clearInterval(tipTimer);
     if (!now) signalReady();
     fill.style.width = '100%'; pctEl.textContent = '100%'; phaseEl.textContent = S.ready;
-    if (now) { loader.classList.add('hidden'); return; }
+    if (now) { loader.classList.add('hidden'); return true; }
     setTimeout(() => { loader.classList.add('gone'); setTimeout(() => { loader.classList.add('hidden'); o.onLoaderHidden?.(); }, 600); }, 250);
+    return true;
   };
-  shell.showLoader = () => { loader.classList.remove('hidden', 'gone'); };
+  shell.showLoader = () => { hiding = false; loader.classList.remove('hidden', 'gone'); };
   shell.log = (line) => { logEl.textContent = (logEl.textContent + line + '\n').slice(-20000); };
 
   // ---------------------------------------------------------------- who plays
