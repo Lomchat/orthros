@@ -2562,7 +2562,9 @@ RotWK at 85 KB/s 24-28 minutes. Now (`src/web/snapshot-fetch.js`, the page; `src
   counted every unit at the 0.75 estimate (BFME1: 127 MB instead of 57) and was kept ten minutes — now made again once the
   index is read. After 3 s of the snapshot's own bytes (at least 192 KiB, at most
   9 s) the link's rate is known: the snapshot is kept when `left / bw` (+ 0.01 s per decoded MiB to restore) is no more
-  than `launch / (bw × 0.75) + start-up`, and its download goes on; else it stops there and the game starts cold. 0.75:
+  than `max(launch / (bw × 0.75), start-up)` (the larger, not the sum — integration fix of 2026-11-13: a cold start
+  reads while it starts; with the sum BFME 1.08 at 1.25 MB/s took its 93 MB snapshot and reached the menu at 105 s where
+  a cold start does at 82 s), and its download goes on; else it stops there and the game starts cold. 0.75:
   the share of the link a cold start's reads use on average to the menu (measured below: BFME1 0.87 either way; AotR
   ~0.15 with the reader on the emulator's thread, ~0.6 with the data worker, D121). Never reconsidered within the visit; the rate measured is given to the game's reader as
   its starting estimate (`netBw`). `?snapfetch=0` (harness `--snapfetch 0`): the previous path. Telemetry: a

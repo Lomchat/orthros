@@ -108,6 +108,10 @@ test('a shared snapshot downloaded piece by piece into the store: resumed after 
   assert.equal(chooseSnapshot({ left: 92e6, bytes: 313e6, bw: 85e3, launchWire: 57e6, bootMs: 120e3 }).snapshot, false);
   assert.equal(chooseSnapshot({ left: 92e6, bytes: 313e6, bw: 1.25e6, launchWire: 57e6, bootMs: 120e3 }).snapshot, true);
   assert.equal(chooseSnapshot({ left: 55e6, bytes: 300e6, bw: 85e3, launchWire: 42e6, bootMs: 250e3 }).snapshot, true);
+  // (BFME 1.08 fr as published: 93.6 MB, launch set 57.4 MB, start-up 59 s — at 1.25 MB/s cold reached the menu at 82 s,
+  // the snapshot at 105 s; Age of the Ring's 53 MB against 170 MB and 252 s: its snapshot at 85 KB/s too)
+  assert.equal(chooseSnapshot({ left: 93.6e6, bytes: 314e6, bw: 1.25e6, launchWire: 57.4e6, bootMs: 59e3 }).snapshot, false);
+  assert.equal(chooseSnapshot({ left: 53.4e6, bytes: 450e6, bw: 85e3, launchWire: 170e6, bootMs: 252e3 }).snapshot, true);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-snapfetch-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.mkdirSync(path.join(dir, 'learn'));
   fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));

@@ -8,8 +8,8 @@
 //   language (X-Launch-Wire: its wire bytes, light copies as on a link that is not fast: launch-set.js) and the machine's
 //   start-up time the publishing session saw (X-Boot-Ms, else BOOT_MS). The link's rate is measured on the snapshot's
 //   own first bytes (DECIDE_MS: a rate saved from an earlier visit may be another network's): the snapshot is kept when
-//   it comes no later than a cold start would — the cold start's reads crossing the link at COLD_EFF of its rate, plus
-//   its start-up — and the download goes on to the end; else it stops there and the game starts cold. Never changed
+//   it comes no later than a cold start would — the cold start's reads crossing the link at COLD_EFF of its rate, or
+//   its start-up if longer (the two overlap: the machine starts while its files come) — and the download goes on to the end; else it stops there and the game starts cold. Never changed
 //   afterwards (a link that slows down later does not throw away what came).
 // - **Pieces in the store**: two in flight, each written whole to its own file (orthros-snapshot-<manifest>/shared/<i>,
 //   a piece is there or not), the download's record beside them (shared/info.json: key, language, the snapshot's id,
@@ -46,7 +46,10 @@ const RESTORE_S_PER_MIB = 0.01;
 export function chooseSnapshot({ left, bytes = 0, bw, launchWire = null, bootMs = null }) {
   const snapS = left / bw + (bytes / 1048576) * RESTORE_S_PER_MIB;
   if (launchWire === null || !(launchWire >= 0) || !(bw > 0)) return { snapshot: true, snapS, coldS: null };
-  const coldS = launchWire / (bw * COLD_EFF) + (bootMs > 0 ? bootMs : BOOT_MS) / 1000;
+  // (the larger of the reads' time and the start-up, not their sum: a cold start reads while it starts — BFME 1.08 at
+  // 1.25 MB/s reached its menu cold in 82 s, 57 MB of launch set (61 s) and 59 s of start-up, where the sum chose its
+  // 93 MB snapshot: 105 s, integration of 2026-11-13; Age of the Ring's 170 MB and 252 s keep its snapshot on any link)
+  const coldS = Math.max(launchWire / (bw * COLD_EFF), (bootMs > 0 ? bootMs : BOOT_MS) / 1000);
   return { snapshot: snapS <= coldS, snapS, coldS };
 }
 
