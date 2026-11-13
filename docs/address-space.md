@@ -16,7 +16,8 @@ costs 4-8 % of guest time).
 
 `--log vmem` (harness) logs the address space every 30 s: reserved and free MiB, the largest free run, the
 reservations by tag, and the resource heap (below). `VMem.summary()` is the same line; failed allocations that cannot
-be returned to the program include it.
+be returned to the program include it. In Node, `tools/bench/startbench.mjs --mem <s>` prints the same as `[vmem]` lines, with the
+count of allocations that found no room — Age of the Ring's long-play measurements are in docs/aotr-play.md.
 
 ## Resource memory (`src/win32/res-mem.js`)
 
