@@ -60,6 +60,8 @@ html:fullscreen #topbar { display: none; }
 #loader li.skip { display: none; }
 #loader li .v { font: 11.5px ui-monospace, monospace; color: #8a8f9c; }
 @keyframes spin { to { transform: rotate(360deg); } }
+#loader .notify { display: block; margin: 14px 0 0; padding: 0; background: none; border: 0; color: #c9a55a; font: 12px system-ui; text-decoration: underline; cursor: pointer; }
+#loader .notify[hidden] { display: none; } #loader .notify:disabled { color: #8a8f9c; text-decoration: none; cursor: default; }
 #loader .tip { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.07); font-size: 12px; color: #8a8f9c; line-height: 1.5; }
 /* ---- the frame shared by every game page (shell.js): the header's indicators, who plays, questions */
 #topbar .brand .tag { font: 11px ui-monospace, monospace; color: #8a8f9c; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); padding: 2px 7px; border-radius: 6px; white-space: nowrap; }

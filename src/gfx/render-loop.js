@@ -50,7 +50,7 @@ export async function replayLoop(ctl, replayer, backend, stats, stop = () => fal
       stats.ms += t1 - t0;
       if (backend) backend.busyMs = (backend.busyMs ?? 0) + (t1 - t0); // (the render scale controller's busy time: render-scale.js)
       Atomics.add(ctl, CTL.HEARTBEAT, 1);
-      if (t1 - lastYield > 8) { await yieldTask(); lastYield = performance.now(); late(lastYield - t1, 'a return to the event loop'); }
+      if (t1 - lastYield > 8) { await yieldTask(); lastYield = performance.now(); late(lastYield - t1, 'a return to the event loop'); backend?.wake?.(); }
       continue;
     }
     // (caught up with a frame held — static-frames.js — while the emulator waits for its commands: they are replayed now)
@@ -71,5 +71,8 @@ export async function replayLoop(ctl, replayer, backend, stats, stop = () => fal
     stats.waitMs += t1 - t0;
     late(t1 - t0, 'a sleep of at most 2 ms');
     lastYield = t1;
+    // (back from the event loop: the GPU's fences signaled meanwhile are read now, not at the next frame's draws —
+    // a sync object's status only changes between tasks; gpu-probe.js wake)
+    backend?.wake?.();
   }
 }

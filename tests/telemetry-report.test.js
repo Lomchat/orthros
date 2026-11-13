@@ -109,3 +109,25 @@ test('command line: a directory, a date range, --bench, --json', () => {
     assert.equal(run().status, 2);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('compatibility gaps: bounded summary from the worker, the latest per session, merged per game (--compat)', async () => {
+  const { compatSummary, MAX } = await import('../src/core/compat-stats.js');
+  const { compatByGame, compatLines } = await import('../tools/dev/telemetry-report.mjs');
+  const imports = new Map([['dsound.dll!Unused', { calls: 0 }]]);
+  for (let i = 0; i < MAX + 5; i++) imports.set(`kernel32.dll!F${i}`, { calls: i + 1 });
+  const c = compatSummary({ unknownImports: imports, notImpl: new Map([['IDirectDraw7::GetDeviceIdentifier', 3]]), shaderOps: { 'ps9 texm3x2depth': 2 } });
+  assert.equal(c.imports.length, MAX); assert.equal(c.more.imports, 5); // (bounded; never-called imports left out)
+  assert.deepEqual(c.imports[0], [`kernel32.dll!F${MAX + 4}`, MAX + 5]);
+  assert.equal(compatSummary({ unknownImports: new Map([['a!b', { calls: 0 }]]) }), null);
+  const lines = [
+    { session: 's1', game: 'g', samples: [{ t: 1, event: 'compat', ...compatSummary({ notImpl: new Map([['IA::M', 1]]) }) }, { t: 2, event: 'compat', ...c }] },
+    { session: 's2', game: 'g', samples: [{ t: 1, event: 'compat', ...compatSummary({ notImpl: new Map([['IDirectDraw7::GetDeviceIdentifier', 1]]) }) }] },
+    { session: 's3', game: 'g', samples: [{ t: 1, dt: 0.5, fps: 30 }] },
+  ];
+  const sessions = buildSessions(lines);
+  assert.equal(sessions.get('s1').compat.shaderOps.length, 1); // (the latest summary of a session wins)
+  const [g] = compatByGame(sessions);
+  assert.equal(g.sessions, 3); assert.equal(g.withGaps, 2);
+  assert.deepEqual(g.kinds.notImpl[0], { name: 'IDirectDraw7::GetDeviceIdentifier', sessions: 2, count: 4 });
+  assert.ok(compatLines(sessions.get('s1').compat).some((l) => l.includes('+5 more')));
+});

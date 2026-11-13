@@ -81,6 +81,8 @@ export class Com {
     this.classes = new Map();
     this.nextId = 1;
     this.tracedMissing = new Set();
+    /** E_NOTIMPL answers by interface::method (compatibility telemetry, core/compat-stats.js; transient, not in snapshots) */
+    this.notImpl = new Map();
     this.interface('IUnknown', IID_IUnknown, null, [['QueryInterface', 2], ['AddRef', 0], ['Release', 0]]);
     // (a method's handler is defined when its interface first gets a vtable: a restored Vm defines it by name)
     this.api.lazyDefs?.set('com.dll', (fname) => {
@@ -222,11 +224,15 @@ export class Com {
       if (!this.tracedMissing.has(key)) { this.tracedMissing.add(key); this.vm.warn(`COM: ${key} not implemented (called from ${ctx.proc.symbolize(ctx.retAddr)})`); }
       const args = []; for (let i = 0; i < Math.min(m.argc, 8); i++) args.push('0x' + ctx.arg(1 + i).toString(16));
       this.vm.log('com', `${key}(${args.join(', ')}) -> E_NOTIMPL`);
+      this.notImpl.set(key, (this.notImpl.get(key) ?? 0) + 1); // (missing: counted whatever code the object answers)
       return obj.impl.notImpl ?? E_NOTIMPL;
     }
     if (this.vm.traceCom && !(this.vm.traceComQuiet && (COM_QUIET.test(m.name) || this.comSiteSeen(m.name, ctx.retAddr)))) { const args = []; for (let i = 0; i < Math.min(m.argc, 8); i++) args.push('0x' + ctx.arg(1 + i).toString(16)); this.vm.logFn('com', `${iface.name}::${m.name}(${args.join(', ')}) from ${ctx.proc.symbolize(ctx.retAddr)}`); }
     const r = fn.call(obj.impl, ctx, obj);
-    if (typeof r === 'number' && (r >>> 0) >= 0x80000000) this.failed(ctx, iface, m, r);
+    if (typeof r === 'number' && (r >>> 0) >= 0x80000000) {
+      this.failed(ctx, iface, m, r);
+      if ((r >>> 0) === E_NOTIMPL) { const key = `${iface.name}::${m.name}`; this.notImpl.set(key, (this.notImpl.get(key) ?? 0) + 1); } // (an implementation's own E_NOTIMPL)
+    }
     return r === undefined ? S_OK : r;
   }
   /** a failed HRESULT: traced once per method/value (fidelity diagnostics) */

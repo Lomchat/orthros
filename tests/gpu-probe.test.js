@@ -47,3 +47,28 @@ test('a run-timed frame that draws nothing never nests a query into the next fra
   for (let f = 0; f < 4; f++) { p.endRun(); t += 10; p.frame(); }
   p.draw();
 });
+
+test('the render loop reads a frame\'s fence when it wakes, not at the next frame (a real GPU done in a few ms)', async () => {
+  // (regression: the owner's RTX 4050 read fence 44.75 ms for a 3.75 ms draw run — fences were only polled at the next
+  // frame's draws and present; the emulator paces 30 fps, so nothing else woke the probe in between)
+  const { replayLoop } = await import('../src/gfx/render-loop.js');
+  const { CTL_WORDS } = await import('../src/gfx/cmd-ring.js');
+  let signalAt = Infinity;
+  const gl = {
+    QUERY_RESULT_AVAILABLE: 1, QUERY_RESULT: 2, getExtension: () => ({}), createQuery: () => ({}), deleteQuery() {}, deleteSync() {},
+    beginQuery() {}, endQuery() {}, getQueryParameter: () => false, getParameter: () => false,
+    fenceSync: () => ({}), getSyncParameter: () => (performance.now() >= signalAt ? 0x9119 : 0x9118),
+  };
+  const p = new GpuProbe(gl, { wrapGl: false });
+  p.nextWindow = 0; p.frame(); // (a window opens: the next present sets a fence)
+  p.frame(); assert.equal(p.fences.length, 1);
+  signalAt = performance.now() + 3; // (the GPU finishes 3 ms after the present)
+  const ctl = new Int32Array(new SharedArrayBuffer(CTL_WORDS * 4));
+  const replayer = { reader: { consumed: 0 }, tail: () => 0, staticFrames: null };
+  const backend = { device: {}, prewarm() {}, afterSlice() {}, beforeSlice() {}, wake: () => p.wake() };
+  const t0 = performance.now();
+  await replayLoop(ctl, replayer, backend, { ms: 0, waitMs: 0 }, () => p.stats.gpu.fenceN > 0 || performance.now() - t0 > 500);
+  const g = p.stats.gpu;
+  assert.equal(g.fenceN, 1, 'the fence was read while the loop slept');
+  assert.ok(g.fenceMs < 10, `fence ${g.fenceMs.toFixed(1)} ms for a GPU done in 3 ms`);
+});
