@@ -5,6 +5,7 @@ import { HandleTable } from './handles.js';
 import { Heap } from './heap.js';
 import { PeImage, mapImage } from '../loader/pe.js';
 import { ApiRegistry } from './api.js';
+import { apiSetHost, isApiSet, APISET_FAMILY, VC_RUNTIME, SXS_ASSEMBLY } from './apiset.js';
 import { normalizeWin } from '../vfs/vfs.js';
 import { THUNK_BASE, THUNK_SIZE } from '../cpu/memory.js';
 
@@ -315,7 +316,11 @@ export class Process {
   /** Resolve a guest path relative to cwd. */
   path(p) { return normalizeWin(p, this.cwd); }
 
-  /** Find a DLL file in the search path (exe dir, cwd). Returns guest path or null. */
+  /**
+   * Find a DLL file in the search path (exe dir, cwd). Returns guest path or null. A Visual C++ runtime DLL (msvcr80,
+   * msvcp90, mfc80...) is also looked for in the program folder's private side-by-side assemblies, as Windows finds a
+   * manifest-bound CRT shipped with a game: `<exe dir>\Microsoft.VC80.CRT\msvcr80.dll`.
+   */
   findDllFile(name) {
     const n = ApiRegistry.norm(name);
     if (/[\\/]/.test(name)) { const p = this.path(name); return this.vfs.stat(p) ? p : null; }
@@ -323,6 +328,13 @@ export class Process {
       const p = dir + '\\' + n;
       const st = this.vfs.stat(p);
       if (st && !st.isDir) return p;
+    }
+    if (VC_RUNTIME.test(n)) {
+      for (const e of this.vfs.readdir(this.exeDir) ?? []) {
+        if (!e.isDir || !SXS_ASSEMBLY.test(e.name)) continue;
+        const p = `${this.exeDir}\\${e.name}\\${n}`, st = this.vfs.stat(p);
+        if (st && !st.isDir) return p;
+      }
     }
     return null;
   }
@@ -335,6 +347,9 @@ export class Process {
     const n = ApiRegistry.norm(name);
     let mod = this.modules.get(n);
     if (mod) { if (mod.refCount !== undefined) mod.refCount++; return mod; }
+    // an API set name (api-ms-win-core-synch-l1-2-0.dll): its host DLL, never a file (win32/apiset.js)
+    const host = !forExe && !path && !bytes ? apiSetHost(n) : null;
+    if (host) return this.loadModule(host);
     const override = this.dllOverrides.get(n);
     const builtin = this.api.has(n);
     let file = path ?? (bytes ? null : this.findDllFile(name));
@@ -391,10 +406,19 @@ export class Process {
         if (!dep) { this.vm.log('loader', `${mod.name}: missing DLL ${imp.dll} (stubbing)`); dep = { name: imp.dll, builtin: true, missing: true }; this.modules.set(ApiRegistry.norm(imp.dll), dep); }
         dlls.set(imp.dll, dep);
       }
-      let addr = this.resolveExport(dep, imp.name, imp.ordinal, mod);
+      let addr = isApiSet(ApiRegistry.norm(imp.dll)) && dep.builtin && imp.name !== null && !this.api.lookup(dep.name, imp.name) ? this.apiSetExport(dep, imp.name, mod) : this.resolveExport(dep, imp.name, imp.ordinal, mod);
       if (imp.name !== null && this.vm.milesImport) addr = this.vm.milesImport(mod, dep, imp.name, addr) ?? addr; // (a library's import through the host: miles-mp3.js)
       this.mem.write32(imp.iat, addr);
     }
+  }
+
+  /**
+   * An API set's function its host DLL lacks: Windows has every contract's functions in kernelbase.dll, Orthros where
+   * Windows XP had them (advapi32's registry, user32's...) — the first builtin DLL of the family that implements it.
+   */
+  apiSetExport(dep, name, from) {
+    const other = APISET_FAMILY.find((d) => d !== dep.name && this.api.lookup(d, name));
+    return this.resolveExport(other ? this.loadModule(other) : dep, name, null, from);
   }
 
   /** Address of dll!name (or ordinal) for a module: thunk for builtins, export for native. */

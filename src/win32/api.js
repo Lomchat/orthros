@@ -149,6 +149,15 @@ export class ApiRegistry {
   has(dll) { return this.dlls.has(ApiRegistry.norm(dll)); }
 
   /**
+   * An unimplemented export `name` of `dll` is known to return safely with 0 arguments popped: the DLL is a cdecl one
+   * (msvcrt and its aliases — the caller pops; signatures.js, stdcall only, never lists their names) or `name` is a
+   * C++ free function mangled as __cdecl (`?...@@YA`). Used by the unknown-import stop and the compatibility scan.
+   */
+  callerPops(dll, name) {
+    return this.dlls.get(ApiRegistry.norm(dll))?.cc === CC_CDECL || /^\?.*@@YA/.test(name ?? '');
+  }
+
+  /**
    * Define functions. specs: { Name: [argc, fn] | [argc, fn, opts] | fn (argc from signatures) }
    * @param {string} dll
    * @param {Record<string, any>} specs
@@ -157,6 +166,7 @@ export class ApiRegistry {
   define(dll, specs, opts = {}) {
     const d = this.dll(dll);
     const cc = opts.cc ?? CC_STDCALL;
+    if (opts.cc !== undefined) d.cc = opts.cc; // (the DLL's convention: its unimplemented exports are called the same way)
     for (const [name, spec] of Object.entries(specs)) {
       let argc, fn, o = {};
       if (Array.isArray(spec)) { [argc, fn, o = {}] = spec; }

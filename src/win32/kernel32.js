@@ -8,6 +8,8 @@ import { INFINITE, WAIT_OBJECT_0, WAIT_ABANDONED, WAIT_TIMEOUT, WAIT_FAILED, PAR
 import { MEM_COMMIT, MEM_RESERVE, MEM_DECOMMIT, MEM_RELEASE, PAGE_READWRITE, PAGE_NOACCESS, MEM_TOP_DOWN } from './vmem.js';
 import { findResource } from '../loader/pe.js';
 import { registerKernel32File } from './kernel32-file.js';
+import { registerKernel32Sync } from './kernel32-sync.js';
+import { apiSetHost } from './apiset.js';
 import { ApiRegistry } from './api.js';
 import { hostWaiter, paceEnded, pacePredict } from '../core/host-wait.js';
 import { MUTEX_STATES, MUTEX_STATE_SIZE, MUTEX_STATE_COUNT, MUTEX_HANDLES, MUTEX_HANDLE_END } from '../cpu/memory.js';
@@ -445,8 +447,10 @@ export function registerKernel32(api, vm) {
   K.InitializeCriticalSectionAndSpinCount = [2, (c) => { K.InitializeCriticalSection[1](c); mem.write32(c.arg(0) + 20, c.arg(1)); return 1; }];
   K.SetCriticalSectionSpinCount = [2, (c) => { const p = c.arg(0); const o = mem.read32(p + 20); mem.write32(p + 20, c.arg(1)); return o; }];
   K.DeleteCriticalSection = [1, (c) => { const p = c.arg(0); mem.write32(p + 4, 0xffffffff); mem.write32(p + 8, 0); mem.write32(p + 12, 0); }];
-  K.EnterCriticalSection = [1, (c) => {
-    const p = c.arg(0), tid = c.thread.id, proc = c.proc, ret = c.retAddr; // (the claim runs at wake-up, outside this call context)
+  K.EnterCriticalSection = [1, (c) => enterCS(c, c.arg(0))];
+  /** EnterCriticalSection of `p` (also the reacquisition of SleepConditionVariableCS, kernel32-sync.js) */
+  function enterCS(c, p) {
+    const tid = c.thread.id, proc = c.proc, ret = c.retAddr; // (the claim runs at wake-up, outside this call context)
     // a re-executed call was given the section at wake-up (claim below): the owner check would look recursive
     if (!c.thread.resuming && mem.read32(p + 12) === tid) { mem.write32(p + 8, mem.read32(p + 8) + 1); mem.write32(p + 4, mem.read32(p + 4) + 1); return; }
     if (c.thread.resuming) c.proc.syncTrace(`critsec 0x${p.toString(16)} re-executed by t${tid} (wakeResult=${c.thread.wakeResult}) lock=${mem.readS32(p + 4)} owner=t${mem.read32(p + 12)}`, 'cs');
@@ -455,7 +459,7 @@ export function registerKernel32(api, vm) {
       if (atWake) proc.syncTrace(`critsec 0x${p.toString(16)} handed to t${tid} (parked from ${proc.symbolize(ret)})`, 'cs');
       mem.write32(p + 4, 0); mem.write32(p + 8, 1); mem.write32(p + 12, tid);
     });
-  }];
+  }
   K.TryEnterCriticalSection = [1, (c) => {
     const p = c.arg(0), tid = c.thread.id;
     if (mem.read32(p + 12) === tid) { mem.write32(p + 8, mem.read32(p + 8) + 1); mem.write32(p + 4, mem.read32(p + 4) + 1); return 1; }
@@ -463,13 +467,13 @@ export function registerKernel32(api, vm) {
     mem.write32(p + 4, 0); mem.write32(p + 8, 1); mem.write32(p + 12, tid);
     return 1;
   }];
-  K.LeaveCriticalSection = [1, (c) => {
-    const p = c.arg(0);
+  K.LeaveCriticalSection = [1, (c) => leaveCS(c, c.arg(0))];
+  function leaveCS(c, p) {
     const rec = mem.read32(p + 8) - 1;
     mem.write32(p + 8, rec);
     mem.write32(p + 4, mem.read32(p + 4) - 1);
     if (rec <= 0) { if (mem.read32(p + 12) !== c.thread.id) c.proc.syncTrace(`critsec 0x${p.toString(16)} left by t${c.thread.id} but owned by t${mem.read32(p + 12)}`, 'cs'); mem.write32(p + 12, 0); mem.write32(p + 4, 0xffffffff); mem.write32(p + 8, 0); vm.sched.signal(); }
-  }];
+  }
 
   // Interlocked (single JS thread: plain memory ops)
   K.InterlockedIncrement = [1, (c) => { const p = c.arg(0); const v = (mem.read32(p) + 1) >>> 0; mem.write32(p, v); return v; }];
@@ -668,21 +672,23 @@ export function registerKernel32(api, vm) {
 
   // ---------------------------------------------------------------- modules
   const modHandle = (m) => (m.builtin ? m.base || api.moduleBase(m.name) : m.base);
+  /** a loaded module by name (an API set name: its host's, win32/apiset.js) */
+  const moduleNamed = (c, n) => { const k = ApiRegistry.norm(n); return c.proc.modules.get(k) ?? c.proc.modules.get(apiSetHost(k)); };
   // (the module containing an address: a mapped image, or a builtin DLL's image in the thunk area)
   const moduleAt = (c, a) => { const m = c.proc.moduleByAddr(a); if (m) return m; const w = api.windowAt(a); return w ? c.proc.modules.get(w.dll) ?? { name: w.dll, builtin: true, base: w.base } : null; };
-  K.GetModuleHandleA = [1, (c) => { const n = c.str(0); if (!n) return c.proc.exe.base; const m = c.proc.modules.get(ApiRegistry.norm(n)); return m ? modHandle(m) : c.fail(E.MOD_NOT_FOUND); }];
-  K.GetModuleHandleW = [1, (c) => { const n = c.wstr(0); if (!n) return c.proc.exe.base; const m = c.proc.modules.get(ApiRegistry.norm(n)); return m ? modHandle(m) : c.fail(E.MOD_NOT_FOUND); }];
+  K.GetModuleHandleA = [1, (c) => { const n = c.str(0); if (!n) return c.proc.exe.base; const m = moduleNamed(c, n); return m ? modHandle(m) : c.fail(E.MOD_NOT_FOUND); }];
+  K.GetModuleHandleW = [1, (c) => { const n = c.wstr(0); if (!n) return c.proc.exe.base; const m = moduleNamed(c, n); return m ? modHandle(m) : c.fail(E.MOD_NOT_FOUND); }];
   K.GetModuleHandleExA = [3, (c) => {
     let m;
     if (c.arg(0) & 4) m = moduleAt(c, c.arg(1));
-    else { const n = c.str(1); m = n ? c.proc.modules.get(ApiRegistry.norm(n)) : c.proc.exe; }
+    else { const n = c.str(1); m = n ? moduleNamed(c, n) : c.proc.exe; }
     if (!m) return c.fail(E.MOD_NOT_FOUND);
     c.out32(2, modHandle(m)); return 1;
   }];
   K.GetModuleHandleExW = [3, (c) => {
     let m;
     if (c.arg(0) & 4) m = moduleAt(c, c.arg(1));
-    else { const n = c.wstr(1); m = n ? c.proc.modules.get(ApiRegistry.norm(n)) : c.proc.exe; }
+    else { const n = c.wstr(1); m = n ? moduleNamed(c, n) : c.proc.exe; }
     if (!m) return c.fail(E.MOD_NOT_FOUND);
     c.out32(2, modHandle(m)); return 1;
   }];
@@ -919,6 +925,54 @@ export function registerKernel32(api, vm) {
   }
   K.WinExec = [2, (c) => { vm.warn(`WinExec(${c.str(0)}) refused`); return 2; }];
   K.GetLogicalProcessorInformation = [2, (c) => c.fail(E.INSUFFICIENT_BUFFER)];
+
+  // ---------------------------------------------------------------- Vista+ (docs/compat-scan.md "kernel32 Vista+")
+  // the creation functions with flags instead of BOOLs (CREATE_EVENT_MANUAL_RESET 1, CREATE_EVENT_INITIAL_SET 2,
+  // CREATE_MUTEX_INITIAL_OWNER 1); the access mask is not checked
+  const eventEx = (c, name) => createNamed(c, name, () => ({ type: 'event', manual: (c.arg(2) & 1) !== 0, signaled: (c.arg(2) & 2) !== 0 }), c.arg(0));
+  K.CreateEventExA = [4, (c) => eventEx(c, c.str(1))];
+  K.CreateEventExW = [4, (c) => eventEx(c, c.wstr(1))];
+  K.CreateMutexExA = [4, (c) => createNamed(c, c.str(1), () => new Mutex(mutexStates, c.arg(2) & 1 ? c.thread.id : 0), c.arg(0))];
+  K.CreateMutexExW = [4, (c) => createNamed(c, c.wstr(1), () => new Mutex(mutexStates, c.arg(2) & 1 ? c.thread.id : 0), c.arg(0))];
+  K.CreateSemaphoreExA = [6, (c) => createNamed(c, c.str(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }), c.arg(0))];
+  K.CreateSemaphoreExW = [6, (c) => createNamed(c, c.wstr(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }), c.arg(0))];
+  K.CreateWaitableTimerExW = [4, (c) => createNamed(c, c.wstr(1), () => ({ type: 'timer', manual: (c.arg(2) & 1) !== 0, signaled: false, due: Infinity, period: 0 }))];
+  K.InitializeCriticalSectionEx = [3, (c) => { K.InitializeCriticalSection[1](c); mem.write32(c.arg(0) + 20, c.arg(1) & 0xffffff); return 1; }];
+  // Encode/DecodePointer: the pointer XORed with a per-process cookie and rotated right by its low 5 bits, as Windows
+  // does; the cookie is fixed per process id here (a run repeats itself; Windows draws it at random)
+  const rotr = (v, n) => ((v >>> n) | (v << (32 - n))) >>> 0;
+  const cookieOf = (pid) => (Math.imul(pid | 0x10001, 0x9e3779b1) ^ 0x2f6b5d17) >>> 0;
+  const encode = (v, k) => rotr((v ^ k) >>> 0, k & 31);
+  const decode = (v, k) => (rotr(v, (32 - (k & 31)) & 31) ^ k) >>> 0;
+  const SYSTEM_COOKIE = 0x6d1a2c35;
+  K.EncodePointer = [1, (c) => encode(c.arg(0), cookieOf(c.proc.pid))];
+  K.DecodePointer = [1, (c) => decode(c.arg(0), cookieOf(c.proc.pid))];
+  K.EncodeSystemPointer = [1, (c) => encode(c.arg(0), SYSTEM_COOKIE)];
+  K.DecodeSystemPointer = [1, (c) => decode(c.arg(0), SYSTEM_COOKIE)];
+  // vectored exception / continue handlers (win32/seh.js calls them): the handle is a block of the process heap, as
+  // Windows returns its list entry
+  const addVectored = (c, list) => {
+    const h = c.proc.processHeap.alloc(8, true);
+    if (!h) return c.fail(E.NOT_ENOUGH_MEMORY);
+    const v = c.proc[list] ??= [];
+    if (c.arg(0)) v.unshift({ h, fn: c.arg(1) }); else v.push({ h, fn: c.arg(1) });
+    return h;
+  };
+  const removeVectored = (c, list) => {
+    const v = c.proc[list] ?? [], i = v.findIndex((e) => e.h === c.arg(0));
+    if (i < 0) return 0;
+    c.proc.processHeap.free_(v[i].h); v.splice(i, 1);
+    return 1;
+  };
+  K.AddVectoredExceptionHandler = [2, (c) => addVectored(c, 'vectored')];
+  K.RemoveVectoredExceptionHandler = [1, (c) => removeVectored(c, 'vectored')];
+  K.AddVectoredContinueHandler = [2, (c) => addVectored(c, 'vectoredContinue')];
+  K.RemoveVectoredContinueHandler = [1, (c) => removeVectored(c, 'vectoredContinue')];
+  K.GetSystemTimePreciseAsFileTime = [1, (c) => { c.out64(0, msToFiletime(vm.clock.wall())); }];
+  K.GetCurrentProcessorNumber = [0, () => 0];
+  K.SetThreadStackGuarantee = [1, (c) => { c.out32(0, 0); return 1; }]; // (the previous guarantee: none)
+  K.IsWow64Process = [2, (c) => { c.out32(1, 0); return 1; }]; // (a 32-bit Windows: no WOW64 layer)
+  registerKernel32Sync(K, vm, { enterCS, leaveCS });
   K.GetSystemDefaultLangID2 = K.GetVersion;
 
   api.define('kernel32.dll', K);

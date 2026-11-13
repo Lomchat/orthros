@@ -731,12 +731,32 @@ export class Vm {
     const info = this.proc.unknownImports.get(key) ?? { from: '?', calls: 0 };
     info.calls++;
     this.proc.unknownImports.set(key, info);
-    const argc = this.api.signatures.get(t.name);
-    if (info.calls <= 3) this.warn(`unimplemented ${key} called from ${this.proc.symbolize(this.mem.read32(sp))}` + (argc === undefined ? ' (unknown signature: assuming 0 args, stdcall)' : ` (${argc} args)`));
+    // (a cdecl DLL's export — msvcrt's — pops nothing itself: 0 arguments is its exact signature, the former stub is right)
+    const argc = this.api.signatures.get(t.name) ?? (this.api.callerPops(t.dll, t.name) ? 0 : undefined);
     { const tp = this.apiTracePos++ & (API_TRACE_LEN - 1); this.apiTraceNames[tp] = t; this.apiTraceRets[tp] = this.mem.read32(sp); this.apiTraceTids[tp] = thread.id; }
+    // A function nobody implemented and whose arguments are unknown cannot return: popping a guessed number of them
+    // would leave the caller's stack wrong and the program failing far from here. The thread stops with a report naming
+    // the import (?dbg=ORTHROS_UNKNOWN_IMPORT=stub: the former stub, 0 arguments popped; =strict: every unimplemented
+    // call stops, a known signature too). Windows would not even have started the program (a missing entry point).
+    const mode = globalThis.ORTHROS_UNKNOWN_IMPORT ?? 'stop';
+    if (mode === 'strict' || (mode !== 'stub' && argc === undefined)) this.unknownImportStop(thread, key, argc);
+    if (info.calls <= 3) this.warn(`unimplemented ${key} called from ${this.proc.symbolize(this.mem.read32(sp))}` + (argc === undefined ? ' (unknown signature: assuming 0 args, stdcall)' : ` (${argc} args)`));
     cpu.eip = this.mem.read32(sp);
     cpu.esp = (sp + 4 + (argc ?? 0) * 4) >>> 0;
     cpu.eax = (this.api.stubReturns.get(t.dll) ?? 0) >>> 0;
+  }
+
+  /**
+   * An unimplemented import was called that cannot return (dispatchThunkBody): the thread stops, with a report — the
+   * import, its caller, registers and stack. The main thread's stop ends the run (a crash report: the process cannot go
+   * on without it); another thread exits (STATUS_ENTRYPOINT_NOT_FOUND) and the others run on.
+   */
+  unknownImportStop(thread, key, argc) {
+    const why = `unimplemented import ${key} called from ${this.proc.symbolize(this.mem.read32(thread.cpu.esp))}: ${argc === undefined ? 'its arguments are unknown (no signature), it cannot return' : 'strict mode (ORTHROS_UNKNOWN_IMPORT=strict)'} - thread ${thread.id} stopped. ` +
+      'The compatibility scan (orthros scan <folder>, docs/compat-scan.md) lists every import of a program Orthros lacks.';
+    if (thread === this.proc.threads[0]) throw new GuestCrash(this.crashReport(thread, why));
+    this.warn(this.crashReport(thread, why));
+    this.exitThread(thread, 0xc0000139);
   }
 
   /**

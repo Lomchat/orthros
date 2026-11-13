@@ -5,8 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** Executable names that are not the game itself (installers, updaters, launchers, tools, redistributables). */
-const NOT_THE_GAME = /^(setup|install|uninst|unins\d*|unwise|autorun|config|configure|settings|patch|update|updater|launcher|crash|bugreport|errorreport|report|dxsetup|dxwebsetup|vcredist|directx|register|registration|activation|readme|support|easetup|eauninstall|touchup|cleanup|dotnet|oalinst|physx)/i;
+/** Executable names that are not the game itself (installers, updaters, launchers, tools, redistributables; also the compatibility scan's, compat-scan.js). */
+export const NOT_THE_GAME = /^(setup|install|uninst|unins\d*|unwise|autorun|config|configure|settings|patch|update|updater|launcher|crash|bugreport|errorreport|report|dxsetup|dxwebsetup|vcredist|directx|register|registration|activation|readme|support|easetup|eauninstall|touchup|cleanup|dotnet|oalinst|physx)/i;
 
 const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
