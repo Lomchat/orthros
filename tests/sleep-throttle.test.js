@@ -62,3 +62,14 @@ test('Sleep(0) spin beside a lower-priority busy thread: throttled (that thread 
   assert.ok(now.st.zero / now.st.throttled < 8, `${(now.st.zero / now.st.throttled).toFixed(1)} Sleep(0) per throttle`);
   assert.equal(now.st.yields ?? 0, 0, 'no Sleep(0) counted as a yield to the lower thread');
 });
+
+const PE_WORK = new URL('../build/pe/sleepwork.exe', import.meta.url).pathname;
+const skipWork = !fs.existsSync(PE_WORK) && 'build/pe/sleepwork.exe missing (make pe-tests)';
+test('Sleep(0) between units of work (a loading loop) is not throttled', { skip: skipWork }, () => {
+  // (BFME 1.08's map load: ~1 500 instructions of work per Sleep(0); throttled, its first frame waited 12-16 s)
+  const now = run(undefined, PE_WORK), before = run(undefined, PE_WORK, { ORTHROS_SLEEP0_SPIN_INSNS: 0 });
+  assert.equal(now.code, 0); assert.equal(before.code, 0);
+  assert.ok(before.st.throttled > 2000, `former behaviour: ${before.st.throttled} throttled`);
+  assert.equal(now.st.throttled, 0, 'no Sleep(0) throttled');
+  assert.ok(now.ms < before.ms / 10, `${now.ms} vs ${before.ms} ms`);
+});

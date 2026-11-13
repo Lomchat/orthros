@@ -347,32 +347,41 @@ export function registerKernel32(api, vm) {
   // work or other calls come between. Measured at the end of each park instead, the 1 ms always broke the streak and
   // every throttle was followed by 32 more unthrottled turns (tools/bench/sleepspin-bench.mjs: ~480 Sleep(0) and ~1000
   // scheduling decisions per 16 ms frame). ?dbg=ORTHROS_SLEEP0_KEEP_STREAK=0: the former behaviour (measurement).
+  // A streak counts only Sleep(0)s with at most SLEEP0_SPIN_INSNS guest instructions since the previous one (a spin runs
+  // a few dozen between two calls: a clock read, a compare); a loop doing real work between its yields is not slowed
+  // down (docs/api-layer.md "Sleep(0) between units of work is not a spin"). ?dbg=ORTHROS_SLEEP0_SPIN_INSNS=<n>, 0: no such limit.
+  const SLEEP0_SPIN_INSNS = 128;
+  const sleep0SpinInsns = () => { const v = globalThis.ORTHROS_SLEEP0_SPIN_INSNS; return v === undefined || v === '' ? SLEEP0_SPIN_INSNS : Number(v); };
   const sleep = (c, ms) => {
     const keepStreak = globalThis.ORTHROS_SLEEP0_KEEP_STREAK === undefined || !!Number(globalThis.ORTHROS_SLEEP0_KEEP_STREAK); // (read each time: in-session A/B)
     const t = c.thread, st = t.sleepStats ??= { zero: 0, short: 0, long: 0, streak: 0, last: 0, throttled: 0, parked: false, paceN: 0, paceLast: 0, paceApi: 0, paceEnds: null };
     if (ms === 0) {
       if (st.parked) { // (the throttled sleep's re-executed call, after its wake-up: done)
         st.parked = false;
-        if (t.resuming && keepStreak) { vm.sched.park(t, NEVER, 1, 'sleep'); st.last = vm.clock.now(); st.lastApi = vm.apiCalls; paceWoke(t, st); return; }
+        if (t.resuming && keepStreak) { vm.sched.park(t, NEVER, 1, 'sleep'); st.last = vm.clock.now(); st.lastApi = vm.apiCalls; st.insns = vm.guestInsns; paceWoke(t, st); return; }
       }
       st.zero++;
       if (vm.sleepSites) { const k = `t${t.id} ${c.proc.symbolize(c.retAddr)}`; vm.sleepSites.set(k, (vm.sleepSites.get(k) ?? 0) + 1); } // (diagnostics, startbench --sleeps: the call sites)
       const now = vm.clock.now(); // (the guest's clock: the host's time on a real clock, kept in a snapshot)
       paceStep(t, st, now);
-      const gapOk = now - st.last < 0.05, apiOk = vm.apiCalls - st.lastApi <= 2;
-      if (gapOk && apiOk) st.streak++; else { st.streak = 0; if (!gapOk) st.brokeGap = (st.brokeGap ?? 0) + 1; else st.brokeApi = (st.brokeApi ?? 0) + 1; } // (diagnostics: why streaks end)
-      st.last = now; st.lastApi = vm.apiCalls;
+      const gapOk = now - st.last < 0.05, apiOk = vm.apiCalls - st.lastApi <= 2, insns = vm.guestInsns - (st.insns ?? 0);
+      // (work, not a spin: more than sleep0SpinInsns() guest instructions since the previous Sleep(0) — see above; the
+      // count is the machine's, so after a yield that ran another thread it holds that thread's work too: not counted)
+      const spinMax = sleep0SpinInsns(), workOk = !spinMax || insns <= spinMax || st.yielded;
+      if (globalThis.ORTHROS_SLEEP0_INSNS_HIST && apiOk && gapOk) { const h = (st.insnsHist ??= new Array(33).fill(0)); h[32 - Math.clz32(insns)]++; } // (diagnostics: startbench --sleeps)
+      if (gapOk && apiOk && workOk) st.streak++; else { st.streak = 0; if (!gapOk) st.brokeGap = (st.brokeGap ?? 0) + 1; else if (!apiOk) st.brokeApi = (st.brokeApi ?? 0) + 1; else st.brokeWork = (st.brokeWork ?? 0) + 1; } // (diagnostics: why streaks end)
+      st.last = now; st.lastApi = vm.apiCalls; st.insns = vm.guestInsns; st.yielded = false;
       // (no thread this yield would run: none ready of a priority at least this thread's — a lower one waits for the
       // processor, as on Windows, and runs during the throttle's 1 ms instead. ?dbg=ORTHROS_SLEEP0_ANY_READY=1: any
       // ready thread prevents the throttle, the behaviour before 2026-10-22, for measurement)
       if (st.streak >= 32 && !(globalThis.ORTHROS_SLEEP0_ANY_READY ? vm.sched.hasRunnable(t) : vm.sched.hasYieldTarget(t))) {
         st.throttled++;
         if (vm.sched.park(t, NEVER, 1, 'sleep') === PARK) { st.parked = true; return PARK; }
-        if (keepStreak) { st.last = vm.clock.now(); st.lastApi = vm.apiCalls; } // (a nested wait: the 1 ms has passed here)
+        if (keepStreak) { st.last = vm.clock.now(); st.lastApi = vm.apiCalls; st.insns = vm.guestInsns; } // (a nested wait: the 1 ms has passed here)
         paceWoke(t, st);
         return;
       }
-      if (vm.sched.yieldFrom(t)) st.yields = (st.yields ?? 0) + 1; // (diagnostics: a ready thread ran)
+      if (vm.sched.yieldFrom(t)) { st.yields = (st.yields ?? 0) + 1; st.yielded = true; } // (diagnostics: a ready thread ran)
       else if (vm.sched.hasRunnable(t)) st.lowerReady = (st.lowerReady ?? 0) + 1; // (diagnostics: only lower priorities ready)
       paceWoke(t, st);
       return;

@@ -282,6 +282,8 @@ loop's end against its prediction (`[timer]` lines).
 | `ORTHROS_GDI_BITMAP_FONTS` | GDI text with the built-in bitmap font only |
 | `ORTHROS_SLEEP0_KEEP_STREAK=0` | the Sleep(0) throttle's streak reset by the throttled sleep itself (the behaviour before 2026-10-21) |
 | `ORTHROS_SLEEP0_ANY_READY=1` | any ready thread (a lower priority too) keeps the Sleep(0) throttle off, and a Sleep(0) yield reports one (the behaviour before 2026-10-22) |
+| `ORTHROS_SLEEP0_SPIN_INSNS=n` | a Sleep(0) counts toward the throttle's streak only with at most n guest instructions since the previous one (default 128; 0: no limit, the behaviour before 2026-11-12 — a loading loop yielding between units of work was throttled; docs/api-layer.md "Sleep(0) between units of work") |
+| `ORTHROS_SLEEP0_INSNS_HIST=1` | with `startbench --sleeps`: the guest instructions between a thread's Sleep(0) calls, log2 buckets, per phase |
 | `ORTHROS_TIMER_HOP=0` | the worker's short-sleep timer armed from the timer callback (the nesting clamp applies; before 2026-10-21) |
 | `ORTHROS_YIELD_PICK_OLD=1` | a yield's check for a ready thread is a pick again, and the yielder may be taken back at once (before 2026-10-22) |
 | `ORTHROS_HOST_TIMER_Q=ms` | inject a coarse host timer: every host wait (Atomics.wait, the pump's setTimeout) rounded up to whole ms, then to the next multiple of `ms` (15.625: Windows' default tick; 1: a 1 ms resolution) — "Host wake-up overshoot" |
