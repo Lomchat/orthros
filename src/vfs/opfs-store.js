@@ -18,6 +18,10 @@
 // The data file is flushed only at close: its flush writes back every block written since the last one (~4 ms of the
 // game thread per MiB, 2.2 s over a first launch's prefetch, whatever the cadence). An indexed block whose bytes a
 // crash lost is caught by its checksum at read (or lies past the end of the data file) and fetched again.
+// Notes (notes.json, a small JSON object): what the reader learned about this version on this browser, kept beside its
+// blocks (HttpBackend's archive fill: the files the game waited on in play, the bytes the fill brought — its budget).
+// Rewritten whole at a sync point once changed (noteChanged); unreadable or missing: empty notes. A store whose notes
+// file cannot be opened keeps its notes in memory only.
 const INDEX_MAGIC = 0x4953424f; // 'OBSI'
 const INDEX_VERSION = 3;
 const HEADER_BYTES = 8, RECORD_FIXED = 20;
@@ -95,6 +99,27 @@ export class OpfsBlockStore {
     this.lastSync = performance.now();
     this.failed = false;
     this.stats = { hits: 0, puts: 0, bytes: 0 };
+    /** the notes (see the top of this file), their handle (null: kept in memory only), changed since written */
+    this.notes = {}; this.notesHandle = null; this.notesDirty = false;
+  }
+
+  /** The notes changed: written at the next sync point. */
+  noteChanged() { this.notesDirty = true; }
+  /** Open the notes file of directory `dir` (its handle kept); its JSON read into `notes`. */
+  async openNotes(dir) {
+    try {
+      const h = await (await dir.getFileHandle('notes.json', { create: true })).createSyncAccessHandle();
+      this.notesHandle = h;
+      const n = h.getSize();
+      if (n > 0 && n < (1 << 20)) { const buf = new Uint8Array(n); h.read(buf, { at: 0 }); const j = JSON.parse(dec.decode(buf)); if (j && typeof j === 'object' && !Array.isArray(j)) this.notes = j; }
+    } catch { /* none: in memory only */ }
+  }
+  /** The notes written (when changed and a file holds them). */
+  writeNotes() {
+    if (!this.notesDirty || this.failed) return;
+    this.notesDirty = false;
+    const h = this.notesHandle; if (!h) return;
+    try { const bytes = enc.encode(JSON.stringify(this.notes)); h.truncate(0); h.write(bytes, { at: 0 }); h.flush(); } catch { /* next time */ }
   }
 
   /** Index records waiting for the next sync point. */
@@ -147,6 +172,8 @@ export class OpfsBlockStore {
         } else if (cut > 0) { index.truncate(end); index.flush(); } // (an incomplete or damaged tail: the log is cut there)
         if (old) { try { await dir.removeEntry('index.json'); } catch { /* left behind: ignored once the log exists */ } }
         const store = new OpfsBlockStore(data, index, map, end);
+        await store.openNotes(dir);
+        if (reset) { store.notes = {}; store.noteChanged(); } // (the notes speak of blocks gone: emptied with them)
         store.resetReason = reset;
         store.migrated = migrated;
         store.indexCut = cut;
@@ -202,9 +229,11 @@ export class OpfsBlockStore {
    * (see the top of this file).
    */
   flush(force = false) {
-    if (this.failed || !this.pending.length) return;
+    if (this.failed) return;
+    if (!this.pending.length) { if (this.notesDirty && (force || performance.now() - this.lastSync >= SYNC_MS)) { this.writeNotes(); this.lastSync = performance.now(); } return; }
     const t0 = performance.now();
     if (!force && this.pending.length < SYNC_BLOCKS && t0 - this.lastSync < SYNC_MS) return;
+    this.writeNotes();
     this.stats.flushes = (this.stats.flushes ?? 0) + 1;
     try {
       const bytes = encodeIndex(this.pending);
@@ -229,7 +258,7 @@ export class OpfsBlockStore {
 
   fail() { this.failed = true; }
 
-  close() { try { this.data.flush(); this.flush(true); this.data.close(); this.indexHandle.close(); } catch { /* already closed */ } }
+  close() { try { this.data.flush(); this.flush(true); this.data.close(); this.indexHandle.close(); } catch { /* already closed */ } try { this.notesHandle?.close(); } catch { /* already closed */ } }
 }
 
 /**
@@ -237,7 +266,8 @@ export class OpfsBlockStore {
  * harness runs measuring the prefetch without a persistent profile.
  */
 export class MemBlockStore {
-  constructor(maxBytes = 1 << 30) { this.map = new Map(); this.bytes = 0; this.max = maxBytes; this.failed = false; this.stats = { hits: 0, puts: 0, bytes: 0 }; }
+  constructor(maxBytes = 1 << 30) { this.map = new Map(); this.bytes = 0; this.max = maxBytes; this.failed = false; this.stats = { hits: 0, puts: 0, bytes: 0 }; this.notes = {}; }
+  noteChanged() {}
   get(key) { const b = this.map.get(key); if (b) this.stats.hits++; return b ?? null; }
   put(key, bytes) { if (this.map.has(key) || this.bytes + bytes.length > this.max) return; this.map.set(key, bytes.slice()); this.bytes += bytes.length; this.stats.puts++; this.stats.bytes += bytes.length; }
   drop(key) { const b = this.map.get(key); if (b) { this.map.delete(key); this.bytes -= b.length; } }

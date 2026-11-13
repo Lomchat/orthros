@@ -1614,6 +1614,92 @@ most of gta3.img, `p=1`): time to in play is unchanged (63.5 s was a loaded run)
 a standing player, while the archive is still ≤ 270 MB on both sides — are as many. Not measured: a moving player
 (where the archive's missing tail is a wait), the owner's link.
 
+## Archive fill on medium links (2026-11-12)
+
+The archives a game reads at random as it plays (BFME's W3D.big, Audio.big, Music.big…) were filled whole only on a
+fast link, and only behind `?dbg=ORTHROS_WHOLE_AFTER_MISSES=1` ("Archives read at random in play"): on the 1-3 MB/s
+links players have most evenings, every model or sound the game had not read before was a round trip and its bytes the
+game waited for, in play (the owner's BFME1 stutters over 100 ms come in minutes with data reads). The archive fill
+(`HttpBackend`, `archiveFillOn`, `?dbg=ORTHROS_ARCHIVE_FILL=1` / `=0`, default `ARCHIVE_FILL_DEFAULT`) fills those
+files whole in the background on a medium link, without taking the link from the game:
+
+- **Which links**: `NetLink.archiveLink` — a rate measured by this page (not one kept from an earlier page) of `ARCHIVE_MIN_BPS` (512
+  KiB/s) or more and below `FAST_BPS`. Never on a thin link (the game's reads alone there), nor a fast one (its own
+  rules, the older switch). A 1.25 MB/s, 75 ms link measures 0.83-1.16 MB/s.
+- **Which files** (generic: what the game waited on, never a name): from the start of a session, the files earlier
+  sessions **on this browser** waited on in `ARCHIVE_MIN_MINUTES` (2) distinct minutes at least — their **wait-minutes**,
+  kept in the version's store (`notes.json` beside its blocks, `OpfsBlockStore.notes`: per file the distinct minutes with
+  a read the game was blocked on, `noteWait`; each session's added to the earlier ones' times `ARCHIVE_DECAY` (0.5), the
+  `ARCHIVE_FILES` (64) most waited kept) —, the most waited on first (`laterNext`: the latest wanted first, the file the
+  game waits on now before all); and, as before, a file this session misses in `WHOLE_AFTER_MISSES` distinct blocks
+  once the learned prefetch is over (not a media file, not a stream). A wait inside a load's burst (`NetLink.inBurst`:
+  `LOAD_WAITS` waits within `LOAD_WINDOW_MS`) is no wait-minute — a load spans clock minutes, its files are the learned
+  prefetch's — and a file read as a stream (Music.big-like archives that are not media by extension) has none either
+  (integration fix, 2026-11-13, from the review).
+- **Only while the link is idle** (`NetLink.mayStart` `idle`): no read of the game's in flight or waited for, none for
+  750 ms (`PRIO.archive`), no other background request, no load. Strict priority still: the learned order, the blocks
+  the game touched and those near them go first (the fill's turn is given up for them: `want`, `near`).
+- **Yields at once**: a request of the fill is small (the link's background size, by pieces — never a whole 1 MiB
+  block), and the moment a read of the game's waits (`NetLink.wait`: a synchronous read, a parked one, a page's held
+  ask) every request of the fill in flight is aborted (`idleAborts`; its bytes fetched again later) — the game's read
+  has the whole link. Not one a parked read itself waits for.
+- **Within a budget, into the store only**: `ARCHIVE_BUDGET` (1 GiB) of fill per store (the bytes counted in the notes,
+  across sessions, for the store's whole life: it never decays, only a new store starts at 0 — after two or three BFME
+  sessions the fill may be spent for good in that browser; notes.json is rewritten in place, a crash between its
+  truncate and write empties the notes and the budget restarts); a block of the fill is assembled from its pieces in memory and goes to the store only, not the
+  memory cache (the game's working set stays; its pieces are not kept apart in the store either: the store appends,
+  pieces then their block would keep the bytes twice).
+- Every runtime: the reader is the shared one (`http-backend.js`, `opfs-store.js`, `game-data.js`'s `UnderStore` gives
+  the notes of the owner's store); a page's engine's own `wantWhole` (a port's streamed files) keeps its rules.
+
+Test: `tests/archive-fill.test.js` (wait-minutes noted, the next session on a medium link wants the file whole — not
+on a thin or fast link, not past the budget, not when off —; the block into the store only; the idle turn and the
+abort when the game waits).
+
+Measured 2026-11-12/13: BFME 1.08, the bench `bfme1-108-skirmish` (menu, a skirmish, ten minutes of play), headless
+Chromium + SwiftShader, `--gl-discard`, `--ui --bench`, `--game-lang fr`, `--net-log`, through `tools/dev/net-proxy.mjs`
+at 1.25 MB/s and 75 ms (HTTP/2), a persistent browser profile per arm (`--opfs`: two consecutive sessions on the same
+profile), one browser at a time, arms interleaved; the shared machine (load 15-20, other agents' browsers). "Play waits":
+the game's reads that went to the network after the play mark (`--net-log`: every one ≥ 100 ms here), and their bursts
+(reads less than 0.3 s apart: one held frame each, about). off = `ORTHROS_ARCHIVE_FILL=0` (the default), on = `=1`.
+
+| | off | on |
+|---|---|---|
+| **learned order of the live server** (it holds this bench's own play: the warm learn jobs play it), session 1: play waits / s / bursts | 2 / 0.6 s / 1 | 13 / 2.3 s / 7 (12 of them Music.big, not filled: read as a stream) |
+| same: frames > 100 ms / > 40 ms per minute in play; menu mark | 11.0 / 361; 113.6 s | 7.9 / 295; 111.4 s |
+| same: archive fill | – | 0 bytes (no file missed in 3 blocks after the learned pass, ended at 537 s) |
+| **learned order cut to the launch set** (a player whose play the order does not hold — the owner's case), session 1: play waits / s / bursts | 128 / 22.6 s / 45 | **63 / 11.5 s / 30** |
+| same: frames > 100 ms / > 40 ms per minute in play | 15.0 / 287 | 8.0 / 321 |
+| same: menu mark; bytes received; store writes | 106.9 s; 410 MB; 2.8 s | 101.0 s; 701 MB (archive 367 MB raw, 956 requests); 3.3 s |
+| session 2 (same profile, same scenario, a fresh copy of the cut order): play waits / s / bursts | 6 / 0.8 s / 4 | 31 / 4.2 s / 8 |
+| same: frames > 100 ms / > 40 ms per minute in play; menu mark | 3.7 / 242; 76.9 s | 9.1 / 244; 68.4 s |
+| same: archive fill | – | 478 MB raw (1349 requests), from the notes at once |
+
+- **Session 1 (the in-session fill)**: on a profile whose play is not in the learned order, half the play waits and
+  their time (Audio.big 72 → 23, W3D.big 30 → 27), a third fewer bursts; 367 MB more fetched in the idle link, the
+  store's writes +0.5 s over the session (~1.4 ms a block, on the emulator thread: not moved off it — the data worker,
+  `ORTHROS_DATA_WORKER=1`, already does that for every write). Aborted background requests: 25 against 7 (1.2 MB
+  against 0.8 MB of the link thrown away).
+- **Session 2 does not discriminate here**: the bench replays the same clicks, so the first session's store already
+  holds the second's reads in both arms (off: 6 waits). The "on" session 2 diverged (new W3D.big models at 426-440 MB,
+  never read in any other run, then the score screen — the match ended early): its waits are reads of that other game,
+  not of the fill; its menu came sooner. Two identical-configuration runs before the fix below (no learned prefetch in
+  either: 50 / 74 play waits, frames > 100 ms 25.3 / 9.7 per minute) give the noise: the frame counts of one pair move
+  by more than the gate's ±5 %.
+- **85 KB/s** (the "on" profile after its two sessions, its notes naming Audio.big and W3D.big, 480 s): no request of
+  the fill (`bgBy` has no `archive`); the rate kept from the earlier page is not enough (`archiveLink` wants this page's
+  measure).
+
+Decision: **off by default** — the gate (the second of two skirmishes, frames > 100 ms in play −50 %, frames > 40 ms and
+the menu within ±5 %) cannot be read with a scenario that repeats itself, and the session-1 gain (−51 % play waits)
+is one pair. To validate: two different skirmishes on a real medium link (the owner's), `?dbg=ORTHROS_ARCHIVE_FILL=1`
+against the default. Not done: an order of blocks inside a file by where the game read last (the fill goes from the
+file's start), a fast link (its own switch), Age of the Ring.
+
+Found on the way: a `--net-log` run (`?netlog=1`) had **no learned prefetch at all** — `worker.js` declared the
+learned ranks' map inside the reader's branch, the prefetch's use of it threw and its `.catch` hid it. Fixed (the map
+declared before); measurements of Windows games made with `--net-log` since the data worker (fe4e235, 2026-11-11) ran without the learned order.
+
 ## Read-ahead by the link's bandwidth-delay product (2026-10-28)
 
 The learned pieces fetched ahead of the game (`HttpBackend.pumpAhead`, "What a load needs") kept `AHEAD_REQUESTS` (3)

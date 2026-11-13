@@ -259,6 +259,9 @@ async function start(m) {
   // read through the part that holds it), its reads reported under that version (ReadLog)
   const persistent = !m.opts.headless || m.opts.opfs;
   let version = null; // (the version opened on this thread: the default, without ORTHROS_DATA_WORKER=1)
+  // (?netlog: a block's rank in its part's learned list — set by the learned prefetch below, read by onFetch; declared
+  // outside the reader's branch: the prefetch's use of it threw, silently, and a --net-log run had no learned prefetch)
+  const rank = new Map();
   // (the reads of this session until its game looks playable: sent with the mark — not by a session restored from a
   // snapshot, which skips the reads of the start: readLogUnlearnedOnly)
   if (m.opts.session) { readLog = new ReadLog(); readBackends = new Map(); playableMeta = { session: m.opts.session, lang: m.opts.gameLanguage || null }; }
@@ -289,7 +292,6 @@ async function start(m) {
     if (store) store.onCorrupt = (key) => { if ((store.stats.corrupt ?? 0) <= 20) log('warn', `block store${tag}: a stored block did not read back as written, fetched again: ${key}`); };
     return store;
   };
-  const rank = new Map(); // (?netlog: a block's rank in its part's learned list)
   version = await openVersion(manifestName, { tree: m.tree, manifest, net: netLink, store: storeOf, legacy: persistent ? openLegacyStore : null,
     cacheBlocks: m.opts.cacheBlocks ?? 256, encoded: !!m.opts.encodedRanges, session: m.opts.session ?? '',
     // (a session restored from a snapshot reports only the reads the server did not learn from its requests: those

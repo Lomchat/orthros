@@ -63,6 +63,20 @@ const WAITED_FILES = 256, WAITED_RANK = 2 ** 40;
  */
 const WHOLE_AFTER_MISSES = 3;
 /**
+ * The archive fill (docs/slow-network.md "Archive fill on medium links"; ?dbg=ORTHROS_ARCHIVE_FILL=1 / =0: on / off,
+ * default ARCHIVE_FILL_DEFAULT): on a medium link (NetLink.archiveLink) with a block store, the files the game waits on
+ * at random as it plays are filled whole in the background while the link is idle — only then (NetLink.mayStart
+ * `idle`), each request given up the moment a read of the game's waits (NetLink.wait) —, into the store only (not the
+ * memory cache), within ARCHIVE_BUDGET bytes per store. Which files: those this session misses in WHOLE_AFTER_MISSES
+ * distinct blocks once the learned prefetch is over, and from the start of a session those earlier sessions on this
+ * browser waited on in ARCHIVE_MIN_MINUTES distinct minutes at least (the store's notes: per file, the distinct minutes
+ * of play with a read the game was blocked on — its wait-minutes —, each session's added to the earlier ones' times
+ * ARCHIVE_DECAY), the most waited on first.
+ */
+export const ARCHIVE_FILL_DEFAULT = false;
+export const archiveFillOn = () => { const v = globalThis.ORTHROS_ARCHIVE_FILL; return v === undefined || v === '' ? ARCHIVE_FILL_DEFAULT : Number(v) !== 0; };
+export const ARCHIVE_BUDGET = 1 << 30, ARCHIVE_MIN_MINUTES = 2, ARCHIVE_DECAY = 0.5, ARCHIVE_FILES = 64;
+/**
  * the files whose light copy the game read (see upgrade): fetched once the game has read nothing for this long (ms) — the
  * player in an area loaded already, not between two reads of a load (an engine computes for seconds between them)
  */
@@ -122,7 +136,7 @@ const RELIST = Symbol('relist');
  * (and a startup set), the place the page predicts the game loads next (wantList `prio: 'place'`), the rest of the
  * learned order (other places' reads), the blocks next to missed ones, the offline copy.
  */
-const PRIO = { announced: [0, 0], readAhead: [1, 0], ahead: [2, 0], miss: [3, 100], fill: [4, 150], prefetch: [5, 300], place: [6, 300], learned: [7, 300], near: [8, 500], offline: [9, 500] };
+const PRIO = { announced: [0, 0], readAhead: [1, 0], ahead: [2, 0], miss: [3, 100], fill: [4, 150], prefetch: [5, 300], place: [6, 300], learned: [7, 300], near: [8, 500], offline: [9, 500], archive: [9, 750] };
 /**
  * Announced reads (wantList: the ranges an engine says its next reads take, then waits for): unit requests in flight at
  * once at most — a load's few hundred small files fetched in parallel, not one round trip each (OpenMW, Ald'ruhn on a
@@ -271,6 +285,9 @@ export class HttpBackend {
      * game's latest wait on it (a read it is blocked on that went to the network: fetchRange, HttpFile.prepare held, a page's
      * data worker's held ask — not a read the game went on past, a skipped sample: noteWait — at most WAITED_FILES) */
     this.wholeAt = new Map(); this.waitedAt = new Map(); this.fileTurn = 0;
+    /** the archive fill (see ARCHIVE_FILL_DEFAULT): its state once used (archiveState), the files it wants this session,
+     * whether the store's files were queued, an install of its own under way (installBlockNow: the store only) */
+    this.archive = null; this.archiveFiles = new Set(); this.archiveQueued = false; this.archiveInstall = false;
     /** blocks of files whose light copy the game read (see upgrade), last of all: same entries, the latest last */
     this.upgrades = new Map();
     /** the latest upgrade was soon (an engine that reloads in place): the upgrades start after UPGRADE_SOON_QUIET_MS */
@@ -596,6 +613,7 @@ export class HttpBackend {
     }
     store.flush?.(true); // (a sync point: the prefetch is over)
     progress.done = true; this.learnedDone = true;
+    this.archiveStart();
   }
 
   /**
@@ -764,14 +782,17 @@ export class HttpBackend {
    * false when aborted (a synchronous read of the same bytes: try again later), null when the network failed or
    * `stop()` held. `tag`: { reason (NetLink.bgBy), forLoad (NetLink.mayStart) }.
    */
+  // (`tag.archive`: the archive fill's — on an idle link only, given up when the game waits, its pieces kept in memory
+  // only until their block is whole, the block into the store only)
   fetchPartBg(path, size, mtime, c0, c1, prio, stop = () => false, learn = false, tag = {}) {
     const w = {};
-    const done = this.fetchBackground(path, c0 * CHUNK, Math.min(size, (c1 + 1) * CHUNK), null, false, learn, { prio, stop, w, reason: tag.reason, forLoad: tag.forLoad }).then((d) => {
+    const done = this.fetchBackground(path, c0 * CHUNK, Math.min(size, (c1 + 1) * CHUNK), null, false, learn, { prio, stop, w, reason: tag.reason, forLoad: tag.forLoad, idle: !!tag.archive }).then((d) => {
       if (d === ABORTED) return false;
       if (d === null) return null;
       if (!(d instanceof Uint8Array)) return undefined;
       this.stats.partBytes = (this.stats.partBytes ?? 0) + d.length;
-      this.addPieces(path, c0, c1, d, { size, mtime });
+      if (tag.archive) { this.archiveInstall = true; try { this.addPieces(path, c0, c1, d, { size, mtime, noKeep: true }); } finally { this.archiveInstall = false; } }
+      else this.addPieces(path, c0, c1, d, { size, mtime });
       return true;
     }).finally(() => { for (let c = c0; c <= c1; c++) if (this.flights.get(`${path}#${c}`) === done) this.flights.delete(`${path}#${c}`); });
     done.w = w;
@@ -1181,13 +1202,14 @@ export class HttpBackend {
    * The next run of pieces of block `index` to fetch in the background: missing, not on their way, among `mask` (bit i:
    * piece i of the block; 0: all), at most requestBytes() — [c0, c1], or null when none.
    */
-  missingRun(path, size, mtime, index, mask = 0, whole = false) {
+  // (`pieces`: never the whole block as one request — the archive fill's, small enough to give up when the game waits)
+  missingRun(path, size, mtime, index, mask = 0, whole = false, pieces = false) {
     const P = BLOCK / CHUNK, c0 = index * P, n = Math.ceil((Math.min(size, (index + 1) * BLOCK) - index * BLOCK) / CHUNK);
     const most = Math.max(1, this.net.requestBytes() / CHUNK);
     const need = (i) => (!mask || ((mask >>> i) & 1) === 1) && !this.flights.has(`${path}#${c0 + i}`) && !this.pieceHere(path, size, mtime, c0 + i);
     // (the whole block wanted, none of it here: the block itself, its unit, when the link carries it soon enough — or
     // `whole`: nothing of the game's own waits on the link, see prefetch's learnedOnly)
-    if (n > most && (whole || this.wholeBlockFits())) { let all = true; for (let i = 0; i < n && all; i++) all = need(i); if (all) return [c0, c0 + n - 1]; }
+    if (n > most && !pieces && (whole || this.wholeBlockFits())) { let all = true; for (let i = 0; i < n && all; i++) all = need(i); if (all) return [c0, c0 + n - 1]; }
     for (let i = 0; i < n; i++) {
       if (!need(i)) continue;
       let j = i; while (j + 1 < n && need(j + 1) && j + 1 - i < most) j++;
@@ -1380,6 +1402,11 @@ export class HttpBackend {
       this.near.set(nk, { path, size, mtime, index: j });
       if (this.near.size > NEAR_MAX) this.near.delete(this.near.keys().next().value); // (the oldest go)
     }
+    // (the archive fill: a file missed at random once the learned prefetch is over — and the store's files, at once)
+    if (this.archiveOk()) {
+      this.archiveStart();
+      if (this.learnedDone && !this.isMedia(path) && !this.streams.has(path)) this.noteMissAfter(path, index, true);
+    }
     // (on a link that is not fast the block waits for the background fill: it would hold the game's next reads up)
     if (!this.net.fast()) return;
     if (this.learnedDone && this.store && !this.isMedia(path) && !this.streams.has(path) && globalThis.ORTHROS_WHOLE_AFTER_MISSES === 1) this.noteMissAfter(path, index); // (off by default — measured: ~400 MB more per session for 0.6 → 0.3 frames over 100 ms a minute; ?dbg=ORTHROS_WHOLE_AFTER_MISSES=1: on)
@@ -1391,7 +1418,8 @@ export class HttpBackend {
     this.fetchBlocksAhead(path, size, mtime, index, index, false).finally(() => { this.missFlights--; });
   }
   /** a block of `path` missed after the learned prefetch: the file wanted whole at its WHOLE_AFTER_MISSES-th distinct block */
-  noteMissAfter(path, index) {
+  // (`arch`: the archive fill's — see ARCHIVE_FILL_DEFAULT)
+  noteMissAfter(path, index, arch = false) {
     let m = this.missedAfter.get(path);
     if (m === true) return;
     if (m === undefined) this.missedAfter.set(path, m = new Set());
@@ -1399,7 +1427,64 @@ export class HttpBackend {
     if (m.size < WHOLE_AFTER_MISSES) return;
     this.missedAfter.set(path, true);
     this.stats.wholeAfterMisses = (this.stats.wholeAfterMisses ?? 0) + 1;
-    this.wantWhole(path);
+    if (arch) this.archiveFiles.add(path);
+    this.wantWhole(path, arch);
+  }
+  /** The archive fill may run now: on, a block store with notes, a medium link, the store's budget not spent. */
+  archiveOk() { return archiveFillOn() && !!this.store?.notes && !this.store.failed && this.net.archiveLink() && this.archiveBytes() < ARCHIVE_BUDGET; }
+  /** the bytes the archive fill brought into this store (all sessions) */
+  archiveBytes() { return this.store?.notes?.archive?.bytes ?? 0; }
+  /**
+   * The archive fill's notes (the store's `archive`: { files: { path: wait-minutes }, bytes }) and this session's waits:
+   * { prev: Map(path -> wait-minutes of the earlier sessions), cur: Map(path -> Set of the minutes it waited on it) },
+   * made at the first use; null without notes.
+   */
+  archiveState() {
+    if (this.archive) return this.archive;
+    const notes = this.store?.notes; if (!notes) return null;
+    const a = notes.archive && typeof notes.archive === 'object' ? notes.archive : (notes.archive = { files: {}, bytes: 0 });
+    if (!a.files || typeof a.files !== 'object') a.files = {};
+    if (!Number.isFinite(a.bytes)) a.bytes = 0;
+    const prev = new Map();
+    for (const [p, m] of Object.entries(a.files)) if (Number.isFinite(m) && m > 0) prev.set(p, m);
+    return (this.archive = { prev, cur: new Map() });
+  }
+  /**
+   * The game is blocked on a read of `path` from the network: a wait-minute of that file when it is the first wait on it
+   * in this minute of the session — the notes updated (written at the store's next sync point). Not a media file's, nor
+   * a streamed file's (read as a stream: its waits are its pace, filling it whole would spend the budget on music), nor a
+   * wait inside a load's burst (a load spans clock minutes: its files are the learned prefetch's, not random play waits).
+   */
+  noteArchiveWait(path) {
+    if (!archiveFillOn() || this.isMedia(path) || this.streams.has(path) || this.net.inBurst?.()) return;
+    const A = this.archiveState(); if (!A) return;
+    const min = Math.floor(this.net.now() / 60000);
+    let c = A.cur.get(path); if (!c) A.cur.set(path, c = new Set());
+    if (c.has(min)) return;
+    c.add(min);
+    // (the notes: the earlier sessions' wait-minutes times ARCHIVE_DECAY plus this one's, ARCHIVE_FILES files at most)
+    const all = new Map();
+    for (const [p, m] of A.prev) all.set(p, m * ARCHIVE_DECAY);
+    for (const [p, set] of A.cur) all.set(p, (all.get(p) ?? 0) + set.size);
+    const files = {};
+    for (const [p, m] of [...all].sort((x, y) => y[1] - x[1]).slice(0, ARCHIVE_FILES)) files[p] = Math.round(m * 100) / 100;
+    this.store.notes.archive.files = files;
+    this.store.noteChanged?.(); this.store.flush?.();
+  }
+  /**
+   * The archive fill's files wanted whole (once each time the link allows it): the store's, waited on in
+   * ARCHIVE_MIN_MINUTES of earlier sessions at least (the most first: wanted last, laterNext's latest), and those this
+   * session wanted after misses (back after the link left the medium class).
+   */
+  archiveStart() {
+    if (this.archiveQueued || !this.archiveOk()) return;
+    const A = this.archiveState(); if (!A) return;
+    this.archiveQueued = true;
+    const list = [...A.prev].filter(([p, m]) => m >= ARCHIVE_MIN_MINUTES && this.lookup(p)?.file && !this.isMedia(p)).sort((x, y) => x[1] - y[1]);
+    const files = [...list.map(([p]) => this.lookup(p).path), ...this.archiveFiles];
+    for (const p of files) { this.archiveFiles.delete(p); this.archiveFiles.add(p); } // (in that order: the latest wanted last)
+    for (const p of this.archiveFiles) if (!this.isWhole(p)) this.wantWhole(p, true);
+    this.stats.archiveFiles = this.archiveFiles.size;
   }
   /**
    * Blocks b0..b1 of a file fetched ahead of its sequential reader (see readAhead), resolved when done. `learn`: asked as
@@ -1457,13 +1542,17 @@ export class HttpBackend {
       if (joined) return joined.then((d) => d ?? this.fetchBackground(path, start, end, onStart, abortable, learn, turn, reason));
     }
     if (turn) {
-      const quiet = this.net.fast() ? 0 : turn.prio[1], w = turn.w ?? {};
+      // (`idle`: the archive fill's quiet whatever the link — NetLink.mayStart)
+      const quiet = this.net.fast() && !turn.idle ? 0 : turn.prio[1], w = turn.w ?? {};
       if (turn.forLoad) w.forLoad = true;
-      if (!this.net.tryTurn(quiet, w, end - start)) return this.net.turn(turn.prio[0], quiet, turn.stop, w, end - start).then((go) => (go ? this.fetchBackgroundNow(path, start, end, onStart, abortable, learn, reason) : null));
+      if (turn.idle) w.idle = true;
+      if (!this.net.tryTurn(quiet, w, end - start)) return this.net.turn(turn.prio[0], quiet, turn.stop, w, end - start).then((go) => (go ? this.fetchBackgroundNow(path, start, end, onStart, abortable, learn, reason, w) : null));
+      return this.fetchBackgroundNow(path, start, end, onStart, abortable, learn, reason, w);
     }
     return this.fetchBackgroundNow(path, start, end, onStart, abortable, learn, reason);
   }
-  async fetchBackgroundNow(path, start, end, onStart, abortable, learn, reason = 'other') {
+  // (`w`: its turn — an idle one's request is given up when the game waits, NetLink.wait)
+  async fetchBackgroundNow(path, start, end, onStart, abortable, learn, reason = 'other', w = null) {
     // (the converse of fetchAhead's join: a background ask — an announced read, a preload's, the learned order — of bytes
     // a read's fetchAhead is fetching waits for that request instead of asking them again on the link; validation3's
     // glide at 85 KB/s, 2026-10-31: the demand read's 1 MiB blocks first, the preload's announced ask of the same
@@ -1477,6 +1566,7 @@ export class HttpBackend {
     // abortable ones by a demand read elsewhere)
     const tok = this.net.begin('bg', end - start, ctl ? () => ctl.abort() : null, { key: this.base + path, start, end }, reason);
     if (!abortable) tok.keep = true;
+    if (w?.idle) { tok.idle = true; tok.w = w; }
     const announced = reason === 'announced' || reason === 'predict'; // (wantList's, predict's: the server's `w=1`)
     let wire = 0, ok = false;
     try {
@@ -1606,7 +1696,13 @@ export class HttpBackend {
   installBlockNow(path, index, bytes, skey, assembled) {
     const k = `${path}#${index}`;
     if (!assembled && this.arrivals.size) for (const fn of this.arrivals) fn(path, index * BLOCK, bytes);
-    this.cache.set(k, bytes);
+    // (the archive fill's block: into the store only — the memory cache keeps what the game reads — and counted against
+    // the store's budget)
+    if (this.archiveInstall && this.store && !this.store.failed && !this.store.map.has(skey)) {
+      this.store.put(skey, bytes);
+      if (this.store.map.has(skey) && this.store.notes?.archive) { this.store.notes.archive.bytes = this.archiveBytes() + bytes.length; this.store.noteChanged?.(); }
+      this.stats.archiveBlocks = (this.stats.archiveBlocks ?? 0) + 1;
+    } else this.cache.set(k, bytes);
     this.store?.put(skey, bytes);
     this.want.delete(k); this.near.delete(k); this.later.delete(k); this.upgrades.delete(k);
     const pk = skey.slice(0, skey.lastIndexOf('#')) + '#c';
@@ -1661,7 +1757,7 @@ export class HttpBackend {
   addPieces(path, m0, m1, data, file = null) { const tp = acct.taskStart(); try { this.addPiecesNow(path, m0, m1, data, file); } finally { acct.taskEnd(tp); } }
   addPiecesNow(path, m0, m1, data, file) {
     if (this.arrivals.size) for (const fn of this.arrivals) fn(path, m0 * CHUNK, data);
-    const keep = file && this.keepPieces(), added = [];
+    const keep = file && !file.noKeep && this.keepPieces(), added = [];
     for (let c = m0; c <= m1; c++) {
       const ck = `${path}#${c}`, piece = data.subarray((c - m0) * CHUNK, Math.min(data.length, (c - m0 + 1) * CHUNK));
       if (this.chunks.has(ck)) continue;
@@ -1857,13 +1953,14 @@ export class HttpBackend {
    * by the background fill last — after the blocks the game touched and those near them, the link quiet for NEAR_QUIET_MS
    * (not on a thin link: the game's reads alone there).
    */
-  wantWhole(path) {
+  // (`arch`: the archive fill's, see ARCHIVE_FILL_DEFAULT — a block a page's engine wanted whole stays the engine's)
+  wantWhole(path, arch = false) {
     const r = this.lookup(path); if (!r?.file) return;
     const size = r.file.size, mtime = r.file.mtime ?? 0;
     this.wholeAt.set(r.path, ++this.fileTurn);
     for (let i = 0; i * BLOCK < size; i++) {
       const k = `${r.path}#${i}`;
-      if (!this.cache.has(k) && !this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) this.later.set(k, { path: r.path, size, mtime, index: i });
+      if (!this.cache.has(k) && !this.store?.map.has(`${r.path}#${size}#${mtime}#${i}`)) this.later.set(k, { path: r.path, size, mtime, index: i, arch: arch && (this.later.get(k)?.arch ?? true) });
     }
     this.fillBackground();
   }
@@ -1877,6 +1974,7 @@ export class HttpBackend {
   noteWait(path) {
     this.waitedAt.delete(path); this.waitedAt.set(path, ++this.fileTurn);
     if (this.waitedAt.size > WAITED_FILES) this.waitedAt.delete(this.waitedAt.keys().next().value); // (the oldest go)
+    this.noteArchiveWait(path); // (a wait-minute of the file's: the archive fill's notes)
   }
 
   /**
@@ -1988,6 +2086,19 @@ export class HttpBackend {
         // (here already: fetched whole by a read, or stored by the learned prefetch)
         // (or on its way, fetched ahead of a sequential reader)
         if (this.cache.has(k) || this.blockFlights.has(k) || this.store?.map.has(`${w.path}#${w.size}#${w.mtime}#${w.index}`)) { q.delete(k); continue; }
+        if (q === this.later && w.arch) {
+          // (the archive fill's block: only while it may run — off, a thin or fast link, the store's budget spent: its
+          // blocks dropped, queued again by archiveStart once it may —, by pieces, each request on an idle link only; its
+          // turn given up for the blocks the game touched — want, near: first —, fetched again after them)
+          if (!this.archiveOk()) { for (const [kk, ww] of this.later) if (ww.arch) this.later.delete(kk); this.archiveQueued = false; continue; }
+          const run = this.missingRun(w.path, w.size, w.mtime, w.index, 0, false, true);
+          if (!run) { if (this.flights.size) await new Promise((res) => setTimeout(res, 50)); else q.delete(k); continue; }
+          const yieldTo = () => !this.later.has(k) || this.want.size > 0 || this.near.size > 0 || !this.archiveOk();
+          const r = await this.fetchPartBg(w.path, w.size, w.mtime, run[0], run[1], PRIO.archive, yieldTo, false, { reason: 'archive', archive: true });
+          if (r === null) { if (yieldTo()) continue; break; } // (else the network is down: the next random read queues it again)
+          if (r === undefined) q.delete(k);
+          continue;
+        }
         // (queued before the link was measured thin — the files whose light copy the game read stay: by pieces, below)
         if (this.net.thin() && q !== this.upgrades) { this.want.clear(); this.near.clear(); this.later.clear(); continue; }
         if (!this.net.fast()) {

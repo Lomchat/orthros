@@ -245,6 +245,9 @@ export class UnderStore {
     this.map = { has, get size() { return (top?.map.size ?? 0) + below.reduce((a, b) => a + b.map.size, 0); } };
     this.stats = top?.stats ?? below[0]?.stats ?? { hits: 0, puts: 0, bytes: 0 };
   }
+  /** the notes (opfs-store.js) are the writer's: the owner's store, else the first of `below` that works */
+  get notes() { return this.writer?.notes ?? null; }
+  noteChanged() { this.writer?.noteChanged?.(); }
   /**
    * A block of `below` kept under another case of `key`'s path ([store, its key]), or null: a version whose folder
    * names a directory otherwise than the owner kept the owner's files under its own paths (the owner's part reads them

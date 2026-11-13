@@ -28,6 +28,11 @@ export const DEMAND_SECONDS = 0.25;
 export const FAST_BPS = 3 << 20;
 /** below this rate (bytes/s) the link is "thin": no speculative whole blocks in the background (see thin()) */
 export const THIN_BPS = 384 << 10;
+/**
+ * At or above this rate (bytes/s) and below FAST_BPS, the archive fill may run (HttpBackend "archive fill",
+ * docs/slow-network.md "Archive fill on medium links"): a medium link has idle seconds to spare in play, a thin one none.
+ */
+export const ARCHIVE_MIN_BPS = 512 << 10;
 const MIN_BG = 64 << 10, MAX_BG = 4 << 20;
 /** request size bound while the link is not measured yet */
 const UNKNOWN_BG = 256 << 10;
@@ -134,6 +139,9 @@ export class NetLink {
    */
   wait() {
     const t = { t0: this.now() };
+    // (the archive fill's requests in flight — idle-only: see mayStart's `idle` — go away at once: the game's read gets
+    // the whole link; their bytes are fetched again later. Not one a parked read waits for: promoted, it is that read's)
+    for (const f of this.bgFlights) if (f.idle && f.abort && !f.w?.urgent) { this.bgFlights.delete(f); this.totals.idleAborts = (this.totals.idleAborts ?? 0) + 1; f.abort(); }
     // (the first wait after a pause: a new run)
     if (!this.waitsNow.size && t.t0 - this.lastWaitEnd >= this.loadGap()) this.runT0 = t.t0;
     this.waitsNow.add(t); this.waitStarts.push(t.t0); this.totals.waits++;
@@ -165,6 +173,12 @@ export class NetLink {
     let n = 0; for (let i = this.waitStarts.length - 1; i >= 0 && now - this.waitStarts[i] < LOAD_WINDOW_MS; i--) n++;
     return n >= LOAD_WAITS;
   }
+  /** Recent waits come in a load's burst (LOAD_WAITS within LOAD_WINDOW_MS), the current wait aside: not a lone wait in play. */
+  inBurst() {
+    const now = this.now();
+    let n = 0; for (let i = this.waitStarts.length - 1; i >= 0 && now - this.waitStarts[i] < LOAD_WINDOW_MS; i--) n++;
+    return n >= LOAD_WAITS;
+  }
   /** The background keeps to the load's own needs now: a load on a link that is not fast (a fast one keeps its policies). */
   silenced() { return !this.fast() && this.loading(); }
   /**
@@ -191,6 +205,11 @@ export class NetLink {
   // (not measured yet: careful until the first answers measure it — a thin link's first seconds are when a 2 MiB
   // background block hurts most; a fixed link without a measure keeps the local-network policies, as tests expect)
   fast() { return this.bw === null ? this.fixed : this.bw >= FAST_BPS; }
+  /**
+   * a medium link (ARCHIVE_MIN_BPS ≤ rate < FAST_BPS), measured by this page: the archive fill's (not on the rate kept
+   * from an earlier page alone — a player back on a thin link would get a fill until the first answers measure it)
+   */
+  archiveLink() { return this.measured && this.bw !== null && this.bw >= ARCHIVE_MIN_BPS && this.bw < FAST_BPS; }
   /** a thin link (measured below THIN_BPS): the background downloads keep to what the game is known to need */
   thin() { return this.bw !== null && this.bw < THIN_BPS; }
   /** file bytes a background request may carry (a multiple of 64 KiB) */
@@ -334,13 +353,16 @@ export class NetLink {
 
   /**
    * True when a background download of priority `quietMs` may start now: `urgent` (a parked read waits for it) at once;
-   * while silenced() (a load) only one `forLoad` (what the load needs), by the same rules as outside a load.
+   * while silenced() (a load) only one `forLoad` (what the load needs), by the same rules as outside a load. `idle` (the
+   * archive fill): only on an idle link — no read of the game's in flight or waited for, none for `quietMs`, no other
+   * background request, no load —, on any class of link.
    */
-  mayStart(quietMs, urgent = false, bytes = 0, forLoad = false) {
+  mayStart(quietMs, urgent = false, bytes = 0, forLoad = false, idle = false) {
     if (urgent) return true;
     const quiet = this.silenced();
     if (quiet && !forLoad) return false;
     const n = this.bgCount();
+    if (idle) return n === 0 && this.inflight.demand === 0 && !this.waitsNow.size && !this.loading() && this.now() - this.lastDemandEnd >= quietMs;
     if (n >= this.maxBackground()) return false;
     // (together the background requests carry about BG_SECONDS of the link: one at least)
     if (n > 0 && !this.fast() && this.bgBytes() + bytes > this.backgroundBytes()) return false;
@@ -372,7 +394,7 @@ export class NetLink {
   }
   /** The turn of a background download that may start now (none waits before it): taken, true; else false. */
   tryTurn(quietMs, w = {}, bytes = w.bytes ?? 0) {
-    if (this.waiters.length || !this.mayStart(quietMs, w.urgent, bytes, w.forLoad)) return false;
+    if (this.waiters.length || !this.mayStart(quietMs, w.urgent, bytes, w.forLoad, w.idle)) return false;
     this.reserved.push({ t: this.now(), bytes });
     return true;
   }
@@ -387,7 +409,7 @@ export class NetLink {
       // (a load: the ones it does not need stay queued, out of the priority order meanwhile — the timer looks again)
       if (quiet && !w.urgent && !w.forLoad) continue;
       // (the request starts after this resolves: counted as in flight now so the next ones see it)
-      if (this.mayStart(w.quietMs, w.urgent, w.bytes ?? 0, w.forLoad)) { this.waiters.splice(i--, 1); this.reserved.push({ t: this.now(), bytes: w.bytes ?? 0 }); w.resolve(true); continue; }
+      if (this.mayStart(w.quietMs, w.urgent, w.bytes ?? 0, w.forLoad, w.idle)) { this.waiters.splice(i--, 1); this.reserved.push({ t: this.now(), bytes: w.bytes ?? 0 }); w.resolve(true); continue; }
       if (!w.urgent) break; // (strict priority: a later one does not pass one that waits)
     }
     if (this.waiters.length) {
