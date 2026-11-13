@@ -22,10 +22,14 @@
 8:click:404,513
 9:waitframe:190,600
 0:mark:setup
-3:move:873,734
-4:click:873,734
-5:mark:load
-6:waitframe:60,110
+# a fixed start position: the map preview's right-hand marker (Harlindon's three; the left one renders fewer than 400
+# draws per frame for minutes after the load — the play anchor below then waited 5-8 min: docs/aotr-play.md)
+2:move:542,289
+3:click:542,289
+5:move:873,734
+6:click:873,734
+7:mark:load
+8:waitframe:60,110
 0:mark:loadscreen
 1:waitframe:400,100000
 0:mark:play

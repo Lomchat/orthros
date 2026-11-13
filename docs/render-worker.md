@@ -1208,7 +1208,9 @@ Tried and removed: replaying a frame whose only difference is a texture's bytes 
   31.4 s/10 s; Vice City on/off/on 75.2 / 76.4 / 80.4 s per 20 s, fps 46-47 throughout; BFME 1.08 74.7 / 75.5 / 75.9 s).
 - Playing skirmish: not reached. Two runs of `learn-aotr-skirmish` (quota alone, then pinned to 4 cores) spent their
   900 s in the skirmish load (5-7 fps loading screen, render worker busy 9.2-10.1 s per 10 s); those frames are not
-  plain from their first partial clear, so the switch changes nothing there.
+  plain from their first partial clear, so the switch changes nothing there. (2026-11-12: probably not the load — the play anchor's
+  400 draws are not reached for minutes from the skirmish's left start position, which the scenario left to chance
+  until then: docs/aotr-play.md.)
 - Images: a reused frame issues no GL call and hands nothing over, so the page keeps the exact image of the previous
   frame, which the unit test shows is the image the reused frame's commands would make; when reuse applies the page's
   image is the previous one by construction.

@@ -1259,7 +1259,7 @@ fresh profile, copies of the live learned data; one browser at a time, main and 
 
 (The browser translates in its background worker, so AotR's retranslations cost the emulator thread only their
 installation, 1.4-1.5 ms per frame, not the 6-10 ms of Node. AotR pair 1 is not comparable: the combined run waited 380 s
-in play for the scenario's 400-draw mark — the flake the SMC work met in both variants — and its "play" phase came
+in play for the scenario's 400-draw mark — the flake the SMC work met in both variants (explained 2026-11-12: the start position, random until then — the left marker of Harlindon renders fewer than 400 draws per frame for minutes; the scenarios now pick the right one, docs/aotr-play.md) — and its "play" phase came
 six minutes later in the game, at 10 fps with 40 ms per frame of rendering waits; main's: 21.7 / 24.2 fps, 24.5 / 22.5 ms
 worker CPU per frame.)
 
@@ -1406,7 +1406,7 @@ lends; one browser at a time, order alternated):
 | AotR play, main runs 1 / 3, combined 1 / 2 / 3 | 20.8 / 19.7 → 20.8 / 21.5 / 20.9 | 24.81 / 24.86 → 26.25 / 23.81 / 24.70 | 2.66 / 2.71 → 2.75 / 2.63 / 2.79 |
 | AotR play2 (10 s) | 24.0 / 22.6 → 24.7 / 24.4 / 25.6 | 20.82 / 22.71 → 24.37 / 21.12 / 20.77 | 2.34 / 2.69 → 2.84 / 2.55 / 2.70 |
 
-(AotR main run 2 met the scenario's 400-draw anchor flake — 406 s of loading screen, then another game state at
+(AotR main run 2 met the scenario's 400-draw anchor flake (explained 2026-11-12: the start position, random until then — the left marker of Harlindon renders fewer than 400 draws per frame for minutes; the scenarios now pick the right one, docs/aotr-play.md) — 406 s of loading screen, then another game state at
 12.6 fps and 22 M instructions per frame —: left out. RotWK's combined runs did 3-11 % more guest work per frame: the
 same cost per instruction.)
 
@@ -1950,7 +1950,7 @@ the live learn directory without snapshots, each tree's own harness server; one 
 
 (RotWK, one run each: fewer frames at less CPU per frame — the fps difference is the frames' pacing, not the emulator
 thread. AotR play is not comparable: both combined runs met the scenario's 400-draw anchor flake already seen on main
-and combined in the earlier rounds — after the load the game rendered ~375 draws per frame for 6-7 minutes at 26 fps
+and combined in the earlier rounds (explained 2026-11-12: the start position, random until then — the left marker of Harlindon renders fewer than 400 draws per frame for minutes; the scenarios now pick the right one, docs/aotr-play.md) — after the load the game rendered ~375 draws per frame for 6-7 minutes at 26 fps
 before the anchor, then play started in another game state at 10-15 fps; main's run reached the anchor 16 s after the
 loading screen: 24.9 fps, 21.0 ms worker CPU per frame, 2.54 ns per instruction. In Node, the same scenario ran
 exactly main's guest instruction counts in every phase of all three combined batches: the guest takes the same path.)

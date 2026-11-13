@@ -1,0 +1,119 @@
+# Age of the Ring endurance (docs/aotr-play.md "Long play"): the warm job's skirmish start (bench/learn-aotr-skirmish.txt)
+# with its fixed start position, three players: the player and a Death March AI (the hardest) in team 1 against a Death
+# March AI in team 2 — battles from the 5th minute — then the skirmish restarted from the pause menu every 640 s (a
+# player who does nothing loses his fortress after 13-15 min). NOT RELIABLE YET: the restart worked in one Node run of
+# four (the pause menu runs at 1-3 fps there; a click while it slides in is lost); the --mem lines' draws per frame
+# tell play (1 000-2 300) from the pause menu or the score screen (98). For tools/bench/startbench.mjs aotr-10
+# --games-dir data/games --until-api none --child --coords 1024,768 --mem 60 --limit 4600 [--gfx backend --programs
+# <learned programs2-aotr-10.json>]; a profile past the intro (--save <a copy of build/saves/aotr-10>).
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++15:key:27
++18:key:27
++20:waitframe:14,100000
+0:mark:menu
+4:move:199,148
+5:click:199,148
+8:move:400,149
+9:click:400,149
+10:waitframe:100,180
+0:mark:profile
+2:click:505,364
+4:text:Orthros
+7:move:404,513
+8:click:404,513
+9:waitframe:190,600
+0:mark:setup
+2:move:542,289
+3:click:542,289
+# player lists (Closed 25 px under the row, then Peasant, Soldier, Captain, Death March every 17 px): row 2 and row 3
+5:move:355,462
+6:click:355,462
+8:move:190,554
+9:click:190,554
+11:move:355,489
+12:click:355,489
+14:move:190,582
+15:click:190,582
+# team lists (- 25 px under the row, then 1, 2, 3, 4 every 17 px): row 1 and row 3 in team 1, row 2 in team 2
+17:move:740,435
+18:click:740,435
+20:move:715,476
+21:click:715,476
+23:move:740,489
+24:click:740,489
+26:move:715,530
+27:click:715,530
+29:move:740,462
+30:click:740,462
+32:move:715,520
+33:click:715,520
+36:move:873,734
+37:click:873,734
+38:mark:load
+39:waitframe:60,110
+0:mark:loadscreen
+1:waitframe:400,100000
+0:mark:play
+# every 640 s of the session (~10 min of play: before the player's fortress falls, 13-15 min here, then the score
+# screen), the pause menu (Escape; 98 draws per frame, 1-3 fps in Node), RESTART (twice: a menu still opening ignores
+# a click; the second lands on the dialog's text), YES in its confirmation (twice, at its left end: x 370 is left of
+# the EXIT button under the dialog — a YES that found no dialog must not choose EXIT, which ends on the score screen),
+# the same skirmish loaded again (6-10 s in Node) — six in a row, ~64 min of play in one session. Timed from the first
+# play anchor only: a wait for the load screen would miss a load that is over before it
+300:mark:g1b
+600:key:27
+611:move:512,388
+612:click:512,388
+617:click:512,388
+623:move:370,425
+624:click:370,425
+635:click:370,425
+640:mark:g2a
+940:mark:g2b
+1240:key:27
+1251:move:512,388
+1252:click:512,388
+1257:click:512,388
+1263:move:370,425
+1264:click:370,425
+1275:click:370,425
+1280:mark:g3a
+1580:mark:g3b
+1880:key:27
+1891:move:512,388
+1892:click:512,388
+1897:click:512,388
+1903:move:370,425
+1904:click:370,425
+1915:click:370,425
+1920:mark:g4a
+2220:mark:g4b
+2520:key:27
+2531:move:512,388
+2532:click:512,388
+2537:click:512,388
+2543:move:370,425
+2544:click:370,425
+2555:click:370,425
+2560:mark:g5a
+2860:mark:g5b
+3160:key:27
+3171:move:512,388
+3172:click:512,388
+3177:click:512,388
+3183:move:370,425
+3184:click:370,425
+3195:click:370,425
+3200:mark:g6a
+3500:mark:g6b
+3800:key:27
+3811:move:512,388
+3812:click:512,388
+3817:click:512,388
+3823:move:370,425
+3824:click:370,425
+3835:click:370,425
+3840:mark:end
