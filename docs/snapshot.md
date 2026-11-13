@@ -178,6 +178,32 @@ time).
 |---|---|---|---|
 | Vice City, menu | 28.5 MiB | 0.6 s (20, 580, 36 ms) — 3.2 s with the earlier JavaScript page scan | 67-90 ms |
 
+### A key from the state's shape: measured, not done (2026-11-12, NO-GO)
+
+The idea: key snapshots on the *shape* of the machine state (registered classes, their fields, `skip`/`init`, plus a
+schema version bumped by hand when a change alters what state means) instead of the state-owning sources, so that a
+deploy changing only behaviour keeps every player's snapshot. Gate: at least half of the deploys that change today's
+key would have kept the shape key. `node tools/dev/snapshot-key-replay.mjs --reflog <since> | --range a..b` replays
+history with today's closure definition and three candidate keys: comment-free sources, and a static shape (per file or
+merged over the closure: the property names the code writes — `.x =`, `{ x: }` — and the registration calls' text).
+
+| 2026-10-28 16:21 → 2026-11-12 20:46 | transitions | change today's key | of those, kept by: comment-free | shape per file | shape merged |
+|---|---|---|---|---|---|
+| updates of main served live (main's reflog; the live server hashes the files on disk, so each one is a deploy) | 71 | 15 | 0 | 1 | 2 (13 %) |
+| commits (first parent) | 158 | 31 | 1 | 12 | 14 (45 %) |
+
+The unit a player meets is the update of main (a merge brings several commits; one changed shape is enough): 2 of 15.
+The 56 updates that already keep today's key (79 %) touched no closure module. Read by hand, the 15 updates: those
+that truly changed the state or its meaning — new fields in user32's input state (key remap), `Process.patches`,
+`vm.xformPending`, the Direct3D resource heap in guest memory (`res-mem.js`), `TextEngine`'s cmaps, the locale and
+screen-size start conditions, process-group snapshots, `vm.images`/`libScope`, the MP3 kernels' process state — are 9
+to 10; even a perfect judge would have kept 5 or 6 (37 %: the OpenMW and shared-base `game-tree.js` work, the src/host
+reorganisation, the render-scale controller in the worker, `CpuState`'s NEST slots in unused bytes). Below the gate
+whatever the key, and the part a static shape misses (a guest-memory layout like `res-mem.js`, a field whose meaning
+changes) would rest on a hand-bumped version — the silent incoherence the "Nothing left out silently" rules exist to
+prevent. The source key stays. What would help returning players more is a shorter gap after a key change (the warm
+jobs republish the shared snapshot, but a player with a profile does not take it: stage 3).
+
 ## Shared by the server (stage 3)
 
 A player with no profile of a game yet (a first launch in this browser) and no snapshot of its key asks the server
