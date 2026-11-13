@@ -67,7 +67,7 @@ function funcOf(a) {
   while (lo <= hi) { const k = (lo + hi) >> 1; if (m.starts[k] <= a) { f = k; lo = k + 1; } else hi = k - 1; }
   if (f < 0) return `${m.name}!?${a.toString(16)}`;
   const s = m.starts[f];
-  return `${m.name}!${m.names.get(s) ?? 'sub_' + s.toString(16)}`;
+  return `${m.name}!${m.names.get(s) || 'sub_' + s.toString(16)}`;
 }
 /** the [start, end) of the function named by funcOf, and its module */
 function funcRange(key) {
@@ -152,7 +152,7 @@ if (profs.length === 2) {
 }
 if (opt('idiom')) {
   const p = profs[profs.length - 1], i = profs.length - 1;
-  const g = [...p.byFunc].filter(([k]) => !k.startsWith('[js]') && !k.startsWith('lib_')).sort((a, b) => b[1] - a[1]).slice(0, Number(opt('idiom')));
+  const g = [...p.byFunc].filter(([k]) => !k.startsWith('[js]') && !k.startsWith('lib_') && !k.startsWith('$lib_')).sort((a, b) => b[1] - a[1]).slice(0, Number(opt('idiom')));
   let wt = 0, wi = 0;
   console.log(`== x87 compare idiom (FCOM-family, FNSTSW AX, TEST/AND AH, Jcc) in the hottest guest functions of ${files[i]} (static)`);
   for (const [k, v] of g) {

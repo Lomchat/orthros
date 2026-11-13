@@ -89,7 +89,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       .filter((s) => s.at >= since).reverse();
     shas = st.map((s) => s.sha); st.forEach((s) => at.set(s.sha, s.at)); label = (s) => at.get(s);
   } else { console.error('usage: --range a..b | --reflog <since>'); process.exit(2); }
-  const tmp = fs.mkdtempSync(path.join(process.env.ORTHROS_SCRATCH ?? os.tmpdir(), 'snapshot-key-replay-'));
+  const tmp = fs.mkdtempSync(path.join(process.env.ORTHROS_SCRATCH ?? (fs.mkdirSync('/tmp/orthros-scratch', { recursive: true }), '/tmp/orthros-scratch'), 'snapshot-key-replay-'));
   const KEYS = ['src', 'stripped', 'shapeFile', 'shapeGlobal'], rows = [];
   try {
     let prev = null;
