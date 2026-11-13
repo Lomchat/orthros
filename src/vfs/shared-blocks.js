@@ -20,7 +20,7 @@
 // snapshot: no state — host-side transport between two workers, not the machine's
 export const BLOCK = 1 << 20, CHUNK = 1 << 16, PIECES = BLOCK / CHUNK;
 const MAGIC = 0x4f425331; // 'OBS1'
-const H = { magic: 0, slots: 1, table: 2, ring: 3, head: 4, tail: 5, drops: 6, sig: 7, ans: 8, ansN: 9, beat: 10, hits: 11 };
+const H = { magic: 0, slots: 1, table: 2, ring: 3, head: 4, tail: 5, drops: 6, sig: 7, ans: 8, ansN: 9, beat: 10, hits: 11, rxKiB: 12, bw: 13 };
 const HEADER = 16, META = 8; // (Int32 words: the header; per slot: gen, file, block, mask, ref)
 const M = { gen: 0, file: 1, block: 2, mask: 3, ref: 4 };
 export const DONE = 4096;
@@ -275,7 +275,13 @@ export class SharedBlocks {
     Atomics.wait(this.h, H.ans, v, ms);
     return Atomics.load(this.h, H.ans) === gen ? Atomics.load(this.h, H.ansN) : null;
   }
-  /** (writer) alive */
-  beat() { Atomics.add(this.h, H.beat, 1); }
+  /** (reader) the signal word (read before looking at done / ack: waitSignal on it misses no signal) */
+  get signal() { return Atomics.load(this.h, H.sig); }
+  /** (reader) Atomics.waitAsync until the signal word is no longer `v` (`{ async, value }`: a promise when it waits) */
+  waitSignal(v, ms) { return Atomics.waitAsync(this.h, H.sig, v, ms); }
+  /** (writer) alive; `rx` bytes received from the link so far and its rate `bw` (bytes/s), for a reader that waits long */
+  beat(rx = 0, bw = 0) { Atomics.store(this.h, H.rxKiB, Math.min(0x7fffffff, Math.round(rx / 1024))); Atomics.store(this.h, H.bw, Math.min(0x7fffffff, Math.round(bw) || 0)); Atomics.add(this.h, H.beat, 1); }
   get beats() { return Atomics.load(this.h, H.beat); }
+  get rx() { return Atomics.load(this.h, H.rxKiB) * 1024; }
+  get bw() { return Atomics.load(this.h, H.bw); }
 }

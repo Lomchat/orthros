@@ -712,7 +712,7 @@ async function w32Init(o) {
     mounts.push({ name, tree: b.tree, parts: b.parts.map((p) => p.name) });
   });
   for (const p of v.parts) p.files.arrivals.add((path, start, bytes) => w32Arrived(p.files, path, start, bytes));
-  W.timers.push(setInterval(w32Drain, W32_DRAIN_MS), setInterval(w32Stats, W32_STATS_MS), setInterval(() => w32Flush(false), W32_FLUSH_MS), setInterval(() => X.blocks.beat(), 100));
+  W.timers.push(setInterval(w32Drain, W32_DRAIN_MS), setInterval(w32Stats, W32_STATS_MS), setInterval(() => w32Flush(false), W32_FLUSH_MS), setInterval(() => { const t = v.net.totals; X.blocks.beat(t.demandBytes + t.bgBytes, v.net.bw ?? 0); }, 100)); // (alive, and the link's progress for a read the emulator waits for: data-link.js onWait)
   if (o.prefetch) prefetchAll();
   if (o.offline) wholeDownload();
   postMessage({ w32ready: { sab: X.blocks.sab, mounts, manifest: v.manifest, parts: v.parts.map((p) => p.name) } });

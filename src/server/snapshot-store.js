@@ -3,7 +3,10 @@
 // slots), which published it here. Per game version, language and snapshot key (the page's: Orthros' state-owning
 // sources, the version's files, the options that change the machine), with the shared first-launch profile it started
 // from (a new player's profile: profile-seed.js) — another one since makes it stale. Stored compressed (gzip, and brotli
-// for the browsers that take it), the two most recent keys per game version and language.
+// for the browsers that take it), the two most recent keys per game version and language; and in pieces (`.brp`:
+// PIECE bytes of the snapshot each compressed alone, brotli, their offsets in `.brp.json`) for the page that downloads
+// it piece by piece into its store, resumable (src/web/snapshot-fetch.js): each piece goes with Content-Encoding (the
+// browser decodes it), made at the publish, or once from the `.br` for a snapshot kept before them.
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -15,10 +18,30 @@ import { pipeline } from 'node:stream/promises';
 
 const safe = (s) => s.replace(/[^A-Za-z0-9._-]/g, '_');
 export const SNAPSHOT_KEY = /^[0-9a-f]{32}$/;
+/** Bytes of the snapshot in one piece (measured on BFME1 1.08's 314 MB: 4 MiB pieces alone 92.4 MB, the whole 92.4 MB). */
+export const SNAPSHOT_PIECE = 4 << 20;
+/** gzipped pieces kept in memory (SnapshotStore.gzipPiece): 32 × ~4.6 MB at most */
+const GZ_PIECES = 32;
+const PIECE_BR = { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_LGWIN]: 22 } };
+const brotli = (buf) => new Promise((res, rej) => zlib.brotliCompress(buf, PIECE_BR, (e, out) => (e ? rej(e) : res(out))));
 
 export class SnapshotStore {
   /** @param {string} dir where they are kept (created) */
-  constructor(dir, { keep = 2 } = {}) { this.dir = dir; this.keep = keep; this.puts = new Map(); }
+  constructor(dir, { keep = 2 } = {}) { this.dir = dir; this.keep = keep; this.puts = new Map(); this.tmpSeq = 0; this.gzPieces = new Map(); }
+  /**
+   * Piece `i` of `pc` (pieces()) gzipped, for a browser that does not take brotli: decoded and gzipped off the event loop
+   * (libuv's threads), the last GZ_PIECES kept (~55 ms of CPU each; any client may ask, again and again).
+   */
+  async gzipPiece(pc, i, body) {
+    const k = `${pc.file}|${pc.meta.at}|${i}`;
+    let p = this.gzPieces.get(k);
+    if (!p) {
+      p = new Promise((res, rej) => zlib.brotliDecompress(body, (e, raw) => (e ? rej(e) : zlib.gzip(raw, { level: 6 }, (e2, gz) => (e2 ? rej(e2) : res(gz))))));
+      this.gzPieces.set(k, p); p.catch(() => this.gzPieces.delete(k));
+      while (this.gzPieces.size > GZ_PIECES) this.gzPieces.delete(this.gzPieces.keys().next().value);
+    } else { this.gzPieces.delete(k); this.gzPieces.set(k, p); }
+    return p;
+  }
   base(name, lang, key) { return path.join(this.dir, safe(name), `${safe(lang || 'none')}-${key}`); }
   /** What is kept of one ({ bytes, seed, at, gz, br }), or null. */
   meta(name, lang, key) {
@@ -50,14 +73,57 @@ export class SnapshotStore {
     const rec = { bytes, gz: fs.statSync(base + '.gz').size, br: fs.statSync(base + '.br').size, at: new Date().toISOString(), ...extra };
     fs.writeFileSync(base + '.json.tmp', JSON.stringify(rec)); fs.renameSync(base + '.json.tmp', base + '.json');
     this.prune(name, lang);
+    await this.pieces(name, lang, key).catch(() => null); // (the pieces made now: the first new player does not wait for them)
     return rec;
+  }
+  /**
+   * The snapshot in pieces: { file (.brp), offsets (piece i: [offsets[i], offsets[i + 1]) of it), piece (SNAPSHOT_PIECE),
+   * bytes, meta } — made from the `.br` the first time (each piece compressed alone, on libuv's threads), or null.
+   */
+  pieces(name, lang, key) {
+    const base = this.base(name, lang, key), m = this.meta(name, lang, key);
+    if (!m) return Promise.resolve(null);
+    const id = `${base}|${m.at}`;
+    this.making ??= new Map();
+    if (this.making.has(id)) return this.making.get(id);
+    const done = (async () => {
+      try {
+        const idx = JSON.parse(fs.readFileSync(base + '.brp.json', 'utf8'));
+        if (idx.at === m.at && Array.isArray(idx.sums) && fs.statSync(base + '.brp').size === idx.offsets.at(-1)) return { file: base + '.brp', offsets: idx.offsets, sums: idx.sums, piece: idx.piece, bytes: m.bytes, meta: m };
+      } catch { /* not made yet */ }
+      // (a temporary file of its own: the start's piecesAll and a publish's put may build two `at`s of a key at once)
+      const tmp = `${base}.brp.${process.pid}-${++this.tmpSeq}.tmp`;
+      const out = fs.createWriteStream(tmp), offsets = [0], sums = [];
+      let pending = Buffer.alloc(0);
+      // (`sums`: each piece's CRC-32 of its decoded bytes — the page checks every piece against its index's before keeping it)
+      const put = async (buf) => { sums.push(zlib.crc32(buf)); const c = await brotli(buf); offsets.push(offsets.at(-1) + c.length); if (!out.write(c)) await new Promise((r) => out.once('drain', r)); };
+      for await (const chunk of fs.createReadStream(base + '.br').pipe(zlib.createBrotliDecompress())) {
+        pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+        while (pending.length >= SNAPSHOT_PIECE) { await put(pending.subarray(0, SNAPSHOT_PIECE)); pending = pending.subarray(SNAPSHOT_PIECE); }
+      }
+      if (pending.length) await put(pending);
+      await new Promise((r, j) => out.end((e) => (e ? j(e) : r())));
+      fs.renameSync(tmp, base + '.brp');
+      fs.writeFileSync(base + '.brp.json.tmp', JSON.stringify({ at: m.at, piece: SNAPSHOT_PIECE, offsets, sums })); fs.renameSync(base + '.brp.json.tmp', base + '.brp.json');
+      return { file: base + '.brp', offsets, sums, piece: SNAPSHOT_PIECE, bytes: m.bytes, meta: m };
+    })().catch(() => { fs.rmSync(tmp, { force: true }); return null; }).finally(() => this.making.delete(id));
+    this.making.set(id, done);
+    return done;
+  }
+  /** The pieces of every snapshot kept made, one at a time (a server's start: those kept before pieces existed). */
+  async piecesAll() {
+    let names; try { names = fs.readdirSync(this.dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return; }
+    for (const name of names) {
+      let files; try { files = fs.readdirSync(path.join(this.dir, name)); } catch { continue; }
+      for (const f of files) { const m = /^(.+)-([0-9a-f]{32})\.json$/.exec(f); if (m && !f.endsWith('.brp.json')) await this.pieces(name, m[1], m[2]).catch(() => null); }
+    }
   }
   /** Only the `keep` most recent keys of a game version and language. */
   prune(name, lang) {
     const dir = path.join(this.dir, safe(name)), prefix = `${safe(lang || 'none')}-`;
-    let recs; try { recs = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith('.json')); } catch { return; }
+    let recs; try { recs = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith('.json') && !f.endsWith('.brp.json')); } catch { return; }
     const byAge = recs.map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs })).sort((a, b) => b.t - a.t);
-    for (const { f } of byAge.slice(this.keep)) for (const ext of ['.json', '.gz', '.br']) fs.rmSync(path.join(dir, f.slice(0, -5) + ext), { force: true });
+    for (const { f } of byAge.slice(this.keep)) for (const ext of ['.json', '.gz', '.br', '.brp', '.brp.json']) fs.rmSync(path.join(dir, f.slice(0, -5) + ext), { force: true });
   }
   /** The file to send for an Accept-Encoding header: { file, encoding, size } (brotli when taken), or null. */
   open(name, lang, key, accept = '') {

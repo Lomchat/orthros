@@ -218,8 +218,11 @@ and settings it wrote while starting): a new player's profile — nothing of the
 files the session started from too — is made so before the worker's checks, which then pass as for a player's own
 snapshot; nothing of a player is ever replaced. Another first-launch profile learned since makes it stale (the server
 then makes a new one). Kept with the learned data (`<learn>/snapshots/`), gzip- and
-brotli-compressed, the two most recent keys per game version and language. Not downloaded when it would take longer
-than 60 s at the connection's last measured rate; kept as the player's own once it applied.
+brotli-compressed, the two most recent keys per game version and language. Kept as the player's own once it applied.
+Since 2026-11-12 the page downloads it piece by piece into its store (resumable, with its progress) and weighs it against a
+cold start once the link is measured on its first bytes — the launch set's bytes and the start-up time the publishing
+session saw (`bootMs`, posted with it) come with the first answer: docs/slow-network.md "The first launch on a slow
+link" (`src/web/snapshot-fetch.js`; before, it was taken whenever no earlier rate said it would take more than 60 s).
 
 The page keeps a snapshot by writing it to OPFS in 16 MiB pieces, and the publishing session posts it once kept, from
 the stored file (a disk-backed body). Until 2026-10-21 the whole buffer went to one OPFS write and, at the same time,

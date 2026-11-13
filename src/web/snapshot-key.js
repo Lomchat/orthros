@@ -7,7 +7,13 @@
 import { HOST_ONLY_DBG } from '../gfx/gpu-probe.js';
 
 /** `dbg` (the page's ?dbg=, "K=V,K=V") without the host-only flags, its order kept: the part a snapshot's key covers. */
-export const machineDbg = (dbg) => String(dbg ?? '').split(',').filter((kv) => kv && !HOST_ONLY_DBG.includes(kv.split('=')[0])).join(',');
+export const machineDbg = (dbg) => String(dbg ?? '').split(',').filter((kv) => kv && !HOST_ONLY_DBG.includes(kv.split('=')[0]) && !TRANSPORT_DBG.includes(kv.split('=')[0])).join(',');
+/**
+ * The flags of the game data's transport (data-link.js: the data worker, chosen by the link — main.js), out of the key
+ * as the transport's sources are out of the snapshot's (src/server/snapshot-sources.js DATA_TRANSPORT): when bytes come
+ * is the link's, whichever reader fetches them.
+ */
+export const TRANSPORT_DBG = Object.freeze(['ORTHROS_DATA_WORKER', 'ORTHROS_DATA_QUICK_MS', 'ORTHROS_DATA_OWN_BLOCKS']);
 
 /**
  * Which browser store keeps a file and where it is fetched from — the manifest's `owners`, `ownerLegacy`, `baseOwner`, a

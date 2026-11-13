@@ -1203,6 +1203,10 @@ export function createServer(opts = {}) {
         yield* brSeedUnits(man, first, lights); yield* placeSeedUnits(name, man); yield* brSeedUnits(man, rest, lights);
       }, whole: function* () { yield* brWholeUnits(man, launchFirst(prefetchList(name))[0]); } })),
   }) : null;
+  // (the launch summaries made before its index was read counted every unit at WIRE_RATIO — BFME1 1.08: 127 MB instead
+  // of 57 —, and were kept ten minutes: made again at their next request once it is read)
+  let brCacheReady = false;
+  brCache?.ready.then(() => { brCacheReady = true; launches.clear(); }, () => { brCacheReady = true; });
   /** The home's light covers (light-covers.js): opts.coverDir, none without it. */
   const covers = opts.coverDir ? lightCovers({ dir: opts.coverDir, log: opts.brCacheLog ?? ((m) => console.log(m)) }) : null;
   // (made from the start, one at a time in the background: the first home after a deploy already has most of them)
@@ -1466,6 +1470,8 @@ export function createServer(opts = {}) {
   // shared snapshots (snapshot-store.js, docs/snapshot.md stage 3): kept with the learned data; their publishing
   // sessions started by this server only when asked (--snapshot-jobs: headless browsers on this machine)
   const snapshots = opts.learnDir ? new SnapshotStore(path.join(opts.learnDir, 'snapshots')) : null;
+  // (the pieces of the snapshots kept before them, made a minute after the start, one at a time: ~20 s of libuv threads each)
+  if (snapshots) setTimeout(() => snapshots.piecesAll(), 60000).unref?.();
   // (opts.snapshotJobs: 'queue' — requests left in a file for tools/snapshot-jobs.mjs —, true — sessions started here —,
   // or, in tests, an object of the same interface: want, job)
   const snapshotJobs = !snapshots || !opts.snapshotJobs ? null
@@ -2031,15 +2037,50 @@ export function createServer(opts = {}) {
           pipeline(req, fs.createWriteStream(tmp)).then(async () => {
             const fd = fs.openSync(tmp, 'r'), head = Buffer.alloc(4); fs.readSync(fd, head, 0, 4, 0); fs.closeSync(fd);
             if (head.readUInt32BE(0) !== 0x4f534e50) { fs.rmSync(tmp, { force: true }); return send(res, 400, 'not a snapshot'); }
-            await snapshots.put(m[1], lang, key, tmp, { seed });
+            const bootMs = Number(url.searchParams.get('bootMs')); // (the publishing session's start-up to the snapshot: the cost a slow link weighs, snapshot-fetch.js)
+            await snapshots.put(m[1], lang, key, tmp, { seed, ...(bootMs > 0 && bootMs < 36e5 ? { bootMs: Math.round(bootMs) } : {}) });
             send(res, 204, '');
           }).catch(() => { fs.rmSync(tmp, { force: true }); if (!res.headersSent) send(res, 500, 'not kept'); });
           return;
         }
-        const f = snapshots.open(m[1], lang, key, String(req.headers['accept-encoding'] ?? ''));
+        // (?piece=i: piece i of the snapshot, compressed alone — snapshot-store.js pieces —, the page downloading it into
+        // its store, resumable: snapshot-fetch.js; else the whole snapshot, as before)
+        const piece = url.searchParams.get('piece'), accept = String(req.headers['accept-encoding'] ?? ''), f = snapshots.open(m[1], lang, key, accept);
         if (!f || (f.meta.seed ?? null) !== seed) { snapshotJobs?.want(m[1], lang, key); return send(res, 404, 'none yet'); }
-        res.writeHead(200, headers({ 'Content-Type': 'application/octet-stream', 'Content-Encoding': f.encoding, 'Content-Length': String(f.size), 'X-Snapshot-Bytes': String(f.meta.bytes), 'Cache-Control': 'no-cache' }));
-        pipeFile(res, f.file);
+        // (what the page weighs the snapshot against on a slow link: the launch set's wire bytes in this language — light
+        // and whole, launch-set.js — and the machine's start-up time the publishing session saw, when known; the units'
+        // index read first — a server just started: up to 10 s —, else the units count at WIRE_RATIO)
+        if (brCache && !brCacheReady) { Promise.race([brCache.ready, new Promise((r) => setTimeout(r, 10000))]).then(() => { brCacheReady = true; server.emit('request', req, res); }); return; }
+        const launch = launchOf(m[1], man), ll = launch?.langs?.[lang] ?? launch;
+        const h = headers({ 'Content-Type': 'application/octet-stream', 'X-Snapshot-Bytes': String(f.meta.bytes), 'Cache-Control': 'no-cache',
+          ...(ll ? { 'X-Launch-Wire': String(ll.lightWire), 'X-Launch-Full-Wire': String(ll.wire) } : {}), ...(f.meta.bootMs > 0 ? { 'X-Boot-Ms': String(Math.round(f.meta.bootMs)) } : {}) });
+        /** `body` sent (testing, the simulated link: crossing it as the game's files do, written as it crosses) */
+        const reply = (body) => {
+          h['Content-Length'] = String(body.length);
+          if (!link) { res.writeHead(200, h); res.end(body); return; }
+          let sent = 0;
+          viaLink(res, body.length, () => { if (!res.headersSent) res.writeHead(200, h); res.end(body.subarray(sent)); }, () => { res.writeHead(200, h); res.flushHeaders(); },
+            (n) => { const upto = n - (n % 16384); if (upto > sent) { res.write(body.subarray(sent, upto)); sent = upto; } });
+        };
+        if (piece === null) {
+          h['Content-Encoding'] = f.encoding;
+          if (!link) { h['Content-Length'] = String(f.size); res.writeHead(200, h); pipeFile(res, f.file); return; }
+          return reply(fs.readFileSync(f.file));
+        }
+        snapshots.pieces(m[1], lang, key).then(async (pc) => {
+          const i = Number(piece), n = (pc?.offsets.length ?? 1) - 1;
+          if (!pc) return send(res, 404, 'none yet');
+          if (!Number.isInteger(i) || i < 0 || i >= n) return send(res, 416, 'no such piece');
+          const fd = await fs.promises.open(pc.file, 'r'), body = Buffer.alloc(pc.offsets[i + 1] - pc.offsets[i]);
+          try { await fd.read(body, 0, body.length, pc.offsets[i]); } finally { await fd.close(); }
+          // (every piece's wire bytes, the snapshot's id: the page's choice and its resume — a browser that does not
+          // take brotli, plain http in a harness, gets the piece gzipped)
+          // (X-Piece-Sum: this piece's CRC-32 of its decoded bytes, checked by the page before it keeps the piece)
+          Object.assign(h, { 'X-Snapshot-Id': f.meta.at, 'X-Piece-Bytes': String(pc.piece), 'X-Piece-Wire': pc.offsets.slice(1).map((o, k) => o - pc.offsets[k]).join(','), 'X-Piece-Sum': String(pc.sums[i] >>> 0) });
+          if (/\bbr\b/.test(accept)) { h['Content-Encoding'] = 'br'; return reply(body); }
+          h['Content-Encoding'] = 'gzip';
+          reply(await snapshots.gzipPiece(pc, i, body));
+        }).catch(() => { if (!res.headersSent) send(res, 500, 'not served'); });
         return;
       }
       // a warm job's learn session (tools/warm-learn.mjs, its job's token): the learn scenarios it played to their end, and
