@@ -229,6 +229,15 @@ earlier Age of the Ring runs stayed 316-370 s in `loadscreen`: the skirmish had 
 the scenario's 400 — the same in a run where no decision of the rule differed; a variance of the scenario's last
 anchor, not of the load.)
 
+**On a virtual clock** (`startbench --virtual`, `ab-virtual`) the rule changes the run: that clock advances only by
+sleeps, so the 1 ms throttles were what moved BFME 1.08's map load forward — its loader thread (BELOW_NORMAL) sleeps
+1-2 ms at a time and only wakes when time passes. Unthrottled, the main thread's work-and-yield loop never lets the
+virtual clock advance: in `ab-virtual bfme1-108 fixes-bfme1-play` (integration of 2026-11-13) the load ran 530 G guest
+instructions in 900 s without ending (main: 127 G, done). Age of the Ring's load screen ran other work (7 916 → 5 608 M
+instructions) and its play diverged. A real clock (the browser, Node without `--virtual`) is not concerned: time passes
+while the thread works. Virtual-clock A/B runs of a load compare with `--dbg ORTHROS_SLEEP0_SPIN_INSNS=0` in both arms
+(the former rule: the same guest work).
+
 **The deferred queue's drain has its own accounting entry.** The calls the JIT queued (Direct3D state setters, D3DX
 parameter setters) run in JavaScript before the next call handled there (`Vm.drainDeferred`); the drain ran inside that
 call's timed window, so whichever call followed a batch (`IDirect3DTexture9::Release`, `GetTransform`...) carried the
