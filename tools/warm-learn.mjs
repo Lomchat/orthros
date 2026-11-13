@@ -5,7 +5,8 @@
 // regions and heat), each on a fresh browser as a new player. A scenario whose every wait was met (it reached the screens
 // it opens) is reported played, with the job's token: the server does not queue it again until it changes; one that did
 // not reach its end is reported too (given up after a few tries: warm-jobs.js LEARN_TRIES).
-//   tools/with-browser-slot.sh node tools/warm-learn.mjs <manifest> --server <url> --token <token> --out <scratch dir>
+//   tools/with-browser-slot.sh node tools/warm-learn.mjs <manifest> --server <url> --token <token> --out <scratch dir> [--lang <l>]
+//   --lang: the game language the sessions play in (the job's: the version's first language, warm-jobs.js warmLanguages)
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -13,14 +14,14 @@ import { learnScenarios, learnArgs } from '../src/server/warm-jobs.js';
 import { WAIT_KINDS, parseScenario } from '../src/web/scenario.js';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
-const name = args[0], server = opt('server'), token = opt('token'), out = opt('out');
+const name = args[0], server = opt('server'), token = opt('token'), out = opt('out'), lang = opt('lang', '');
 if (!name || !server || !token || !out) { console.error('usage: warm-learn.mjs <manifest> --server <url> --token <token> --out <dir>'); process.exit(2); }
 const root = new URL('..', import.meta.url).pathname, port = new URL(server).port;
 const t0 = Date.now(), log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(0)}s]`, ...a);
 
 /** One headless session: resolves with the number of waits it met and its exit code. */
 const session = (sc, dir) => new Promise((resolve) => {
-  const p = spawn('node', learnArgs(root, name, port, dir, sc), { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn('node', learnArgs(root, name, port, dir, sc, { lang }), { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
   let met = 0, rest = '', status = '';
   const line = (l) => {
     if (/^\[input\] wait\w+ .*anchor at/.test(l)) { met++; log(`  ${l}`); } else if (/^\[(end|pageerror|crash)\]/.test(l)) log(`  ${l.slice(0, 300)}`);
@@ -36,7 +37,7 @@ const session = (sc, dir) => new Promise((resolve) => {
 // played again)
 const done = new Set(await fetch(`${server}/api/warm-learned/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : []), () => []));
 const all = learnScenarios(root, name), todo = all.filter((sc) => !sc.required || !done.has(sc.id)), plan = todo.length ? todo : all, played = [], failed = [];
-log(`${name}: ${plan.length ? plan.map((s) => s.id).join(', ') : 'the boot only'}${plan.length < all.length ? ` (${all.length - plan.length} played already)` : ''}`);
+log(`${name}${lang ? ` (${lang})` : ''}: ${plan.length ? plan.map((s) => s.id).join(', ') : 'the boot only'}${plan.length < all.length ? ` (${all.length - plan.length} played already)` : ''}`);
 for (const sc of plan.length ? plan : [null]) {
   const dir = fs.mkdtempSync(path.join(out, 'session-'));
   const waits = sc ? parseScenario(fs.readFileSync(sc.file, 'utf8')).steps.filter((s) => WAIT_KINDS.has(s.kind)).length : 0;

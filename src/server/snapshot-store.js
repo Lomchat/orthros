@@ -18,7 +18,7 @@ export const SNAPSHOT_KEY = /^[0-9a-f]{32}$/;
 
 export class SnapshotStore {
   /** @param {string} dir where they are kept (created) */
-  constructor(dir, { keep = 2 } = {}) { this.dir = dir; this.keep = keep; }
+  constructor(dir, { keep = 2 } = {}) { this.dir = dir; this.keep = keep; this.puts = new Map(); }
   base(name, lang, key) { return path.join(this.dir, safe(name), `${safe(lang || 'none')}-${key}`); }
   /** What is kept of one ({ bytes, seed, at, gz, br }), or null. */
   meta(name, lang, key) {
@@ -27,8 +27,19 @@ export class SnapshotStore {
   /**
    * Keep the snapshot in file `src` (moved away): compressed, its record written last (`extra`: what it applies to
    * besides its key — the first-launch profile it started from). Older keys of the same game version and language go.
+   * The puts of one key run one after the other (a session posts a later snapshot while the first is still being
+   * compressed: both wrote the same .tmp files, the second failed with HTTP 500 — 3 times on the live runner in 5 days —
+   * after removing the record, which could leave the key with none).
    */
-  async put(name, lang, key, src, extra = {}) {
+  put(name, lang, key, src, extra = {}) {
+    const base = this.base(name, lang, key), prev = this.puts.get(base) ?? Promise.resolve();
+    const p = prev.catch(() => {}).then(() => this.putNow(name, lang, key, src, extra));
+    this.puts.set(base, p);
+    const forget = () => { if (this.puts.get(base) === p) this.puts.delete(base); };
+    p.then(forget, forget);
+    return p;
+  }
+  async putNow(name, lang, key, src, extra) {
     const base = this.base(name, lang, key);
     fs.mkdirSync(path.dirname(base), { recursive: true });
     fs.rmSync(base + '.json', { force: true });
@@ -85,7 +96,7 @@ export class SnapshotJobs {
     fs.mkdirSync(this.logDir, { recursive: true });
     const log = fs.openSync(path.join(this.logDir, `publish-${safe(j.name)}-${safe(j.lang || 'none')}.log`), 'w');
     const url = this.url(), scratch = j.kind === 'learn' ? fs.mkdtempSync(path.join(fs.existsSync('/tmp/orthros-scratch') ? '/tmp/orthros-scratch' : os.tmpdir(), 'learn-')) : null;
-    const args = scratch ? learnCommand(j.name, url, token, scratch) : ['node', 'tools/snapshot-publish.mjs', j.name, '--url', url, '--lang', j.lang, '--key', j.key, '--token', token];
+    const args = scratch ? learnCommand(j.name, url, token, scratch, j.lang) : ['node', 'tools/snapshot-publish.mjs', j.name, '--url', url, '--lang', j.lang, '--key', j.key, '--token', token];
     const timeoutS = scratch ? Math.max(this.timeoutS, learnTimeout(this.root, j.name)) : this.timeoutS;
     const child = spawn('timeout', [String(timeoutS), path.join(this.root, 'tools/with-browser-slot.sh'), ...args], { cwd: this.root, stdio: ['ignore', log, log] });
     let ended = false;

@@ -217,8 +217,8 @@ path on a private server — a first new player, the server's session, a second 
 Until now a shared snapshot was queued only by a new player's 404, so that player (the first one after every deploy that
 changes the key) started cold; BFME1 1.08, BFME II and Age of the Ring had none. With `--warm-jobs` (together with
 `--snapshot-queue` or `--snapshot-jobs`) the server looks, 20 s after it starts (`--warm-delay`) and every 10 minutes
-(`--warm-every`), at every installed, visible Win32 version in its default language (what a plain page starts: `en`, else
-the first declared) and queues **one job at a time**:
+(`--warm-every`), at every installed, visible Win32 version in **each language its players use** (below: "Languages")
+and queues **one job at a time**:
 
 - a **publish** job when the version's current key has no shared snapshot (or one made from another first-launch
   profile). The key is computed by the server as a page computes it (`plainKey`: the sources' hash, the version's
@@ -241,8 +241,78 @@ the first declared) and queues **one job at a time**:
   learn job after the publish.)
 
 The next job is queued when the previous one reached its goal or after two hours (a failed key is not tried again for 6 h:
-the queue's usual dedup). Another language than the default is still made on a player's 404. `--warm-only a,b` restricts
-the versions (tests, a first deploy done step by step).
+the queue's usual dedup). While a job runs the server looks every minute (`--warm-poll`, 60 s) instead of every 10: the
+next job starts as soon as the previous one is done (until 2026-11-12 every job took at least one 10-minute look: a
+6-minute publish left the browser idle 4 minutes). `--warm-only a,b` restricts the versions (tests, a first deploy done
+step by step).
+
+### Languages (2026-11-12)
+
+Until 2026-11-12 the jobs made only the default language (`en`), while the players of BFME 1.08 (all 5 of its playable
+marks) and some of Age of the Ring and RotWK 2.01 play in French: each deploy changed the key, and the first French player
+after it started cold, the French snapshot made only after their 404 (aotr-10 `fr`: 20 min of job each time; RotWK's
+French snapshots dated from 2026-10-18). Now each version's languages are `warmLanguages(manifest, use, prefer)`
+(src/server/warm-jobs.js), of those the version declares:
+
+1. those of `--warm-langs <l,...>` in that order (the operator's: `--warm-langs fr` for this server's French audience);
+2. those its players used, most used first — the server counts each language's playable marks (`playable-<m>.json`
+   `by`) and first-launch profile reports (`profileseed-<m>.json` sessions);
+3. its default language (what a plain page, the harness and tests start in).
+
+A language nobody uses and nobody asked for is not made. The plan ranks the jobs: **every version's first language**
+(its snapshot, else its learn job) **before any version's second language** (its snapshot only), so after a deploy the
+players' own language comes first everywhere. The **learn job plays in the version's first language**
+(`warm-learn.mjs --lang`, `headless.mjs --game-lang`): the reads, GL programs and launch set (`launch.langs`) learned are
+the players'. Another language still gets its snapshot on a player's 404.
+
+**The wave per deploy** (every source change changes every key). Live runner, 2026-11-12, `en` only, 8 versions (one
+publish each, the 10-minute looks): 20:48 → 22:04, **76 min** (aotr-10 9.5 min, bfme-vanilla 6, bfme1-108 5.6, bfme2-106
+9.9, bfme2 8.6, rotwk-201 7.5, rotwk-202 7.6, vice-city 6.6: 61 min of sessions, the rest waiting for the next look; the
+two other waves of that day 76 and 77 min). With the one-minute poll a wave is its sessions plus ≤ 1 min each: the same 8
+in ~70 min. With the live usage (no `--warm-langs`) French is added for bfme1-108 (first), aotr-10 and rotwk-201
+(second): 11 sessions, ~95 min, BFME 1.08's French snapshot ~15 min after the deploy (third in catalog order). With
+`--warm-langs fr`: 16 sessions (French for all 8 first, ~70 min, then English), ~140 min. Learn jobs come on top only when a version's
+lists or learn scenarios are new (once, not per deploy). One browser at a time through
+the slot guard, as before; a deploy every few hours keeps at most one wave running (a wave's next job is queued only when
+the previous one is done).
+
+### BFME 1.08's learn scenario (2026-11-12)
+
+`bfme1-108-skirmish-learn` failed twice on the live runner (2026-11-11 and 12: "1/3 waits met", 4 frames/s at its
+1 500 s limit, given up). Reproduced on a private server (fresh browser, `bfme1-108-short.txt`, the job's arguments): the
+1.08 menu is drawn at 1-4 frames/s by the software GPU (render 74.5 ms per frame, present interval 118 ms) and its
+screens slide in over a fixed number of frames; the harness's steps, late while the page is busy, ran the exit box's NO
+and the Solo click in the same second, then Skirmish 11 s later while the Solo screen was still coming: the session
+stayed on the Solo screen (CAMPAIGN / SKIRMISH / LOAD / BACK) until its limit. bfme1-108-short's 10 s gaps are written
+for a machine like the owner's (30 frames/s) and stay as they are (the bench suite's). The learn entry now plays
+`learn-bfme1-108-skirmish.txt`: the same steps spaced as the original release's learn scenario (25 s between menu clicks,
+which passed on the runner), the Start click sent twice (the second lands on the loading screen).
+
+**Measured 2026-11-12** (private server on a copy of the live learn directory without its snapshots, `--games-dir
+/srv/orthros/data/games`, the browser slots' 4-core cap, load 20-50 from the other sessions; one browser at a time):
+- *Learn scenario*: `bfme1-108-short.txt` in English (the old entry, the job's arguments): Solo screen still shown at the
+  300 s limit, as on the runner. `learn-bfme1-108-skirmish.txt` in French: menu at 42 s, setup screen at 145 s (234
+  draws per frame), play at 212 s (464), ended at 253 s: **3/3 waits met** (the old one: 1/3 after 1 500 s).
+- *Publish in French*: `--warm-jobs --warm-only bfme1-108` queued `publish of bfme1-108 (fr)` first (its marks are French);
+  the session ran as a French new player, published at 117 s (298.3 MiB, 93 MB brotli), "done: 1 kept, 1 published" at
+  327 s — the English one's sessions on the runner: 122 s, 328-333 s.
+- *A new French player* (fresh browser profile, `?gameLang=fr`, `warm-menu-bfme.txt`):
+
+  | BFME 1.08, French | first Direct3D frame | main menu (anchor) |
+  |---|---|---|
+  | no French shared snapshot (2 runs) | 18 s, 19 s | 42 s, 35 s |
+  | the French shared snapshot made by the warm job (2 runs) | 4 s, 4 s | 20 s, 20 s |
+
+  `snapshot-browser-check.mjs --once --expect-restored --query gameLang=fr`: "shared snapshot of this game: 88.7 MB to
+  download", **restored from a snapshot of 298.3 MiB in 713 ms**. (Local server: the download at the owner's link — 88.7
+  MB at 0.085-3.9 MB/s — is not measured here; docs/slow-network.md.)
+- *Age of the Ring in French*, `--warm-langs fr` (its marks are mostly English: the operator's order put French first):
+  `publish of aotr-10 (fr)` queued first; published at 358 s (440.7 MiB), "done: 3 kept, 2 published" at 744 s. A fresh
+  French player: 51.8 MB to download, **restored from a snapshot of 461.1 MiB in 1 103 ms**. Its time to the menu before /
+  after was not measured (startup.md: ~100 s without a snapshot).
+- *A bug found on the way*: that session's second post answered HTTP 500 — the first was still being compressed and both
+  wrote the same temporary files (the live runner: 3 such 500s in 5 days; the record removed first, a key could be left
+  with none, not queued again for 6 h). `SnapshotStore.put` now runs the puts of one key one after the other.
 
 **Deployment** (the lead): add `--warm-jobs` to `orthros.service`'s `ExecStart` (`... --snapshot-queue --warm-jobs`) and
 restart `orthros.service` then `orthros-snapshot-jobs.service` (the runner must be the new code: it now also runs `learn`

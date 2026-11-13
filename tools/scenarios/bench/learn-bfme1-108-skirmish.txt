@@ -1,0 +1,37 @@
+# The Battle for Middle-earth 1.08, a warm job's learn scenario (src/server/warm-jobs.js): the steps of bfme1-108-short
+# (the intro skipped, the exit box's NO, Solo play, Skirmish, the profile name, OK, Start; tools/scenarios/
+# bfme1-108-phases.txt explains them), spaced as the original release's learn scenario (bfme1-skirmish.txt: 25 s between
+# menu clicks) because the server's software-GPU browser draws the 1.08 menu at 1-4 frames/s and its screens slide in
+# over a fixed number of frames: bfme1-108-short's 10 s gaps (a machine like the owner's, 30 frames/s) clicked Skirmish
+# while the Solo screen was still coming, and the session waited 25 min on that screen (2026-11-11/12: 1/3 waits met,
+# given up). The Start click is sent twice (a second click lands on the loading screen: nothing there).
+# Coordinates for 800x600 (scaled to the game's display: a first launch's 1024x768). Phases: menu, setup, load, play, end.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++20:waitframe:30,100000
+0:mark:menu
+5:click:463,367
+30:move:90,573
+32:click:90,573
+57:move:322,573
+59:click:322,573
+84:move:403,304
+86:click:403,304
+88:text:Orthros
+96:move:340,360
+98:click:340,360
+99:waitframe:170,100000
+0:mark:setup
+5:move:338,573
+6:click:338,573
+7:mark:load
+25:click:338,573
+26:waitframe:360,100000
+0:mark:play
+5:click:400,300
+8:rclick:500,350
+15:keydown:39
+18:keyup:39
+20:mark:end
