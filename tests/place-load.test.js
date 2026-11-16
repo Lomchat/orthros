@@ -89,7 +89,7 @@ test('place-load: the options, resolved and checked', () => {
     [['mw-en', '--tree', 't', '--teach', '1.5'], /integer/], [['mw-en', '--tree', 't', '--teach', '-1'], /integer/],
     [['mw-en', '--tree', 't', '--engine-br'], /--engine/], [['mw-en', '--tree', 't', '--to', 'balmora'], /x,y/],
     [['mw-en', '--tree', 't', '--rate', 'fast'], /rate/], [['mw-en', '--tree', 't', '--techa', '1'], /unknown/],
-    [['mw-en', '--tree', 't', '--teach'], /value expected/], [['mw-en', '--tree', 't', '--scratch', '/var/lib/orthros2'], /live state/],
+    [['mw-en', '--tree', 't', '--teach'], /value expected/], [['mw-en', '--tree', 't', '--scratch', '/var/lib/orthros'], /live state/],
   ]) assert.throws(() => parseArgs(argv), why, argv.join(' '));
 });
 

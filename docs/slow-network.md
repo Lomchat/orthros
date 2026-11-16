@@ -744,7 +744,7 @@ on the request path. So the server keeps **units** compressed ahead, for every g
   at start and every hour from the learned files. (The live misses used to come first: on the live server, 47 minutes
   after a restart, the misses' queue was full — 4044 of its 4096 — and the launch sets had not grown past their first
   6.3 MB; a miss is one session's read, served already, where every new player asks for the launch set.)
-- **Kept** in `--br-cache <dir>` (default `<learn>/../brcache`, i.e. `/var/lib/orthros2/brcache` on the live server;
+- **Kept** in `--br-cache <dir>` (default `<learn>/../brcache`, i.e. `/var/lib/orthros/brcache` on the live server;
   none without `--learn`, `off` for none), at most `--br-cache-bytes` — unset: 1.5 GiB at least, grown to hold the
   launch sets (their home sizes summed, a version without one at their mean, ×1.25, as the pinned half), 8 GiB at
   most; `/api/netstats` `brCache.pinWant` / `pinCap`. (The fixed 1.5 GiB pinned 0.75 GiB where the catalog's 17
@@ -1319,7 +1319,7 @@ snapshot. For this change (at the deploy of the r3 releases, once the manifests 
 ```
 tools/backup.sh snapshot -m "before unflagging sfx.RAW for the reVC r3 engines"
 systemctl stop orthros.service
-node tools/ops/learn-unflag.mjs /var/lib/orthros2/learn --only vice-city-revc --only vice-city-orthros --path Audio/sfx.RAW --write
+node tools/ops/learn-unflag.mjs /var/lib/orthros/learn --only vice-city-revc --only vice-city-orthros --path Audio/sfx.RAW --write
 systemctl start orthros.service
 ```
 
@@ -1407,7 +1407,7 @@ the deploy). At the deploy of the r4 releases, once the manifests name them:
 ```
 tools/backup.sh snapshot -m "before moving the radio scan's blocks to the order's end for the reVC r4 engines"
 systemctl stop orthros.service
-node tools/ops/learn-unflag.mjs /var/lib/orthros2/learn --only vice-city-revc --only vice-city-orthros --tail \
+node tools/ops/learn-unflag.mjs /var/lib/orthros/learn --only vice-city-revc --only vice-city-orthros --tail \
   --path 'Audio/Water.mp3#1-8' --path 'Audio/City.mp3#1-8' --path 'Audio/FLASH.adf#1-53' --path 'Audio/VROCK.adf#1-69' --write
 systemctl start orthros.service
 ```

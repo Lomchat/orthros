@@ -44,8 +44,8 @@ test('mmo check: the respawn\'s rules — $100, no weapon, alive, elsewhere', ()
 
 test('mmo check: the admins file — a test server\'s only, the name added once, lowercase', () => {
   assert.ok(adminsPathAllowed('/tmp/orthros-scratch/mmo-test/mmo/admins.json'));
-  assert.ok(!adminsPathAllowed('/var/lib/orthros2/accounts/mmo/admins.json'));
-  assert.ok(!adminsPathAllowed('/var/lib/private/orthros2/accounts/mmo/admins.json'));
+  assert.ok(!adminsPathAllowed('/var/lib/orthros/accounts/mmo/admins.json'));
+  assert.ok(!adminsPathAllowed('/var/lib/private/orthros/accounts/mmo/admins.json'));
   assert.ok(!adminsPathAllowed('/srv/orthros/data/admins.json'));
   assert.deepEqual(withAdmin(['lomchat'], 'QA-Check-1'), ['lomchat', 'qa-check-1']);
   assert.deepEqual(withAdmin(['lomchat', 'qa-check-1'], 'qa-check-1'), ['lomchat', 'qa-check-1']);

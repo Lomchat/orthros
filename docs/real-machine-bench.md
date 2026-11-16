@@ -153,7 +153,7 @@ ports' own session reports and every page's passive session records (`bench` of 
 leaves them out) carry it too. A port's frames are measured as its passive records measure them: `page-meter.js` and
 `PerfSession.watchFrames` share `perf-page.js` `watchEngineFrames` (and `timerContext`, WebGL 1's GPU timer).
 
-**Read it**: `node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --suite` (every run; `--suite <run>`
+**Read it**: `node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry --suite` (every run; `--suite <run>`
 one, `--json`): per run the machine and build, per game its outcome, renderer and phases (fps, frame p50 / p90 / p99,
 frames > 40 ms per minute, work p50 / p99, GPU p50 / p99, data waits, draws per frame) and the host's timers. A game
 whose own record never came is shown from the suite's record.
@@ -315,9 +315,9 @@ and drops the rest. Not on the Win32 page (its reads are the worker's: `netMs` /
 **The report**:
 
 ```
-node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf                     # every game × GPU
-node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf --game bfme1-108 --gpu Iris
-node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --perf --json
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry --perf                     # every game × GPU
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry --perf --game bfme1-108 --gpu Iris
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry --perf --json
 ```
 
 Per game × GPU (the renderer's short name, e.g. `Intel Iris Xe Graphics`; `--gpu` matches a part of it or of the
@@ -362,10 +362,10 @@ node tools/dev/telemetry-report.mjs /tmp/tel --bench
 ## The report
 
 ```
-node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry                 # every session of 60 s and more
-node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --from 2026-10-05 --to 2026-10-06
-node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --bench           # bench runs only, and their comparison
-node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry --bench vicecity-drive --json
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry                 # every session of 60 s and more
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry --from 2026-10-05 --to 2026-10-06
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry --bench           # bench runs only, and their comparison
+node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry --bench vicecity-drive --json
 ```
 
 Options: `--from` / `--to` (dates, inclusive: file names and the server's receipt time), `--session <id>`,

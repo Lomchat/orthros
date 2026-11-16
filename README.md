@@ -112,7 +112,7 @@ Trois dossiers de `/srv/orthros` restent hors Git, chacun avec sa règle :
 | `backups/` | `restic/` : le dépôt de sauvegarde ; `manual/` : copies ponctuelles faites à la main | voir [docs/backups.md](docs/backups.md) |
 | `build/` | sorties régénérables : oracle, programmes PE de test, profils des exécutions Node (`build/saves/`) | jetable : `make clean` l'efface |
 
-L'état des services en production est dans `/var/lib` (`orthros2` : comptes, apprentissage, télémétrie, caches ;
+L'état des services en production est dans `/var/lib` (`orthros` : comptes, apprentissage, télémétrie, caches ;
 `orthros-goldsrc` ; `orthros-openmw` : mondes et comptes OpenMW). Les tests écrivent sous
 `/tmp/orthros-scratch/<tâche>/`.
 
@@ -149,7 +149,7 @@ version sont distincts de ceux de l'ancien site. Il n'y a pas encore de récupé
 
 Pour activer les comptes sur une instance auto-hébergée, ajouter `--accounts <dossier-de-données>` au serveur. Ce
 dossier contient la base SQLite et doit être persistant. Sur l'instance publique, il se trouve sous
-`/var/lib/private/orthros2/accounts` ; ne pas le placer dans le répertoire servi au navigateur.
+`/var/lib/private/orthros/accounts` ; ne pas le placer dans le répertoire servi au navigateur.
 
 Connexion avec Google (facultative) : dans la console Google Cloud, créer un écran de consentement OAuth (externe,
 champs d'application `openid`, `email`, `profile`) puis un identifiant client OAuth de type « Application Web » dont
@@ -172,7 +172,7 @@ seulement) : le bouton « Continuer avec Google » apparaît sans redémarrage, 
   rapport `[frames]` — images > 33 / 40 / 50 ms par minute, percentiles, temps par catégorie (code invité, API, draws,
   JIT, programmes GL, textures, lectures, attentes, réveils tardifs…) des images et des images lentes, pires images ;
   `--phases <fichier>` les écrit en JSON (docs/frame-accounting.md). Télémétrie des joueurs :
-  `node tools/dev/telemetry-report.mjs /var/lib/private/orthros2/telemetry [--from AAAA-MM-JJ] [--to …] [--bench [nom]]`
+  `node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry [--from AAAA-MM-JJ] [--to …] [--bench [nom]]`
   (machine, version, mode de rendu, résumés de 20 s : percentiles, images lentes, draws et appels GL par image, temps
   GPU par image quand le navigateur le mesure, attentes du worker de rendu ; mesures `bench` et leur comparaison).
 - Réseau lent (docs/slow-network.md) : `--net <ms>:<Mbit/s>` simule le lien d'un joueur (85 Ko/s : `50:0.68`, 1 Mo/s :

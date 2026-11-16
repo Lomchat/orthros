@@ -10,7 +10,7 @@ header lists the commands); the README's « Sauvegardes » section is the short 
 | Source | What | Left out (and why) |
 |---|---|---|
 | `/srv/orthros` | `data/` (games, engines and their pinned sources, installers, Wine prefix, corpus, proofs), `backups/manual/`, `.git` (every commit and branch, the unpushed ones too), the local notes `CLAUDE.md`, `DECISIONS.md`, `STATUS.md`, `STATUS-history.md` (outside Git), the working tree and its uncommitted changes, `.charon-uploads/` | `build/`, `node_modules/`, `tests/generated/`, `.claude/worktrees/` (disposable or rebuilt); `backups/restic`, `backups/cache`, `backups/mnt`, `backups/restore-*`, the password file (the backups themselves) |
-| `/var/lib/private/orthros2` | the server's accounts (players' cloud saves, Google sign-in configuration), learned data (orders, GL programs, snapshots), telemetry | `brcache/` and `covers/`: precompressed copies of the games' files and light covers, remade on demand |
+| `/var/lib/private/orthros` | the server's accounts (players' cloud saves, Google sign-in configuration), learned data (orders, GL programs, snapshots), telemetry | `brcache/` and `covers/`: precompressed copies of the games' files and light covers, remade on demand |
 | `/var/lib/private/orthros-goldsrc` | the GoldSrc dedicated servers' state | `*/game`: the linked game trees, rebuilt at each start |
 | `/var/lib/orthros-openmw` | the OpenMW gateways' worlds, accounts, operator credentials, configuration | `*/gamedata`: the linked game trees, rebuilt at each start |
 | `/etc` | `orthros-openmw.env` and the `orthros*` systemd units | |
