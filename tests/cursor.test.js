@@ -100,7 +100,8 @@ test('GDI text: a character the font lacks is drawn as GDI does, never as itself
   // host stand-ins (Arial...): every character but the controls
   assert.deepEqual(resolveChar(null, 0x41), { draw: 0x41, glyph: 0x41 });
   assert.deepEqual(resolveChar(null, 0x92), { draw: 0x2019, glyph: 0x2019 });
-  for (const c of [0x01, 0x09, 0x7f, 0x81]) assert.deepEqual(resolveChar(null, c), { draw: NOTDEF, glyph: -1 }, `U+${c.toString(16)}`);
+  assert.deepEqual(resolveChar(null, 0x0d), { draw: 0x20, glyph: 2 }, 'CR: Arial\'s blank nonmarkingreturn, not a box');
+  for (const c of [0x01, 0x7f, 0x81]) assert.deepEqual(resolveChar(null, c), { draw: NOTDEF, glyph: -1 }, `U+${c.toString(16)}`);
 });
 
 test('strings: Windows case mapping keeps lengths and code pages; CP1252 undefined slots round-trip', async () => {

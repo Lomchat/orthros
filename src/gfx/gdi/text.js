@@ -18,7 +18,8 @@ const STANDIN_NOTDEF = { advance: 0.75, box: { xMin: 0.1, yMin: 0, xMax: 0.649, 
 
 /**
  * What GDI draws for character `code` of a font whose character map is `map` (null: a host stand-in for a Windows
- * system font, assumed to have every character but the C0/C1 controls, like Arial and its kind):
+ * system font, assumed to have every character but the C0/C1 controls, like Arial and its kind — NUL and CR blank as
+ * in those fonts, TAB and LF blank):
  * - the character itself when the font has it;
  * - a C1 code point (U+0080-U+009F) the font lacks: the ANSI code page's character for that byte (U+0092 -> ’, U+0085
  *   -> …) when the font has it — Windows-1252 text widened byte by byte reaches GDI that way and is read as intended
@@ -33,6 +34,11 @@ export function resolveChar(map, code) {
   if (code === NOTDEF) return { draw: NOTDEF, glyph: -1 };
   if (!map) {
     if (!(code < 0x20 || (code >= 0x7f && code < 0xa0))) return { draw: code, glyph: code };
+    // (the Windows system fonts map U+0000 to an empty zero-width .null and U+000D to an empty nonmarkingreturn as wide as
+    // a space; TAB and LF, which text passed whole often carries, are kept blank as before rather than boxed — a box there
+    // is not established for the real fonts)
+    if (code === 0) return { draw: 0x200b, glyph: 0 };
+    if (code === 0x09 || code === 0x0a || code === 0x0d) return { draw: 0x20, glyph: code === 0x0d ? 2 : -1 };
     const a = ansiChar(code);
     return a !== code ? { draw: a, glyph: a } : { draw: NOTDEF, glyph: -1 };
   }
