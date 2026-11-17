@@ -47,7 +47,7 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // last error and caller as [api] (2: COM / D3DX calls too; =: off again) — e.g. around a click whose effect differs
 // from Windows; --dbg ORTHROS_SEH_LOG_MAX=<n> lifts the 80-line cap of --log seh; --dbg ORTHROS_WATCH_STACK=<n>: the
 // writers reported by watch:addr,len (then unwatch) carry n stack words instead of 5 (a small setter's caller);
-// dbg:ORTHROS_CAPTURE_PROBE=x,y[;x,y...] then capture: those back-buffer pixels after every draw of the captured frame,
+// dbg:ORTHROS_CAPTURE_PROBE=x,y[/x,y...] then capture: those back-buffer pixels after every draw of the captured frame,
 // logged as [probe] when they change (which draw paints a pixel, or that none does); --log sync names the named kernel
 // objects created / opened; --log d3dx describes the first D3DXLoadSurfaceFromMemory calls.
 let afterWait = false;

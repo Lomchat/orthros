@@ -9,8 +9,10 @@
 // The STILL ones are the flicker — a picture that alternates where nothing moves: a missing pass, a stale target, a
 // texture sampled from the wrong unit, depth fighting. A-B-A alone is not: a scroll moves textured terrain under every
 // pixel, and its value comes back one frame later on 2-3 % of the pixels by chance (the owner's scroll of 2026-11-17,
-// 2560x1440: 2.46 % A-B-A, the same 2.0-2.8 % measured on his screen recording's frames — no frame alternated), all
-// over the terrain; around such a pixel the surroundings moved, so it is not STILL. That small picture is read back
+// 2560x1440: 2.46 % A-B-A, the same 2.0-2.8 % measured on his screen recording's scroll frames), all over the terrain;
+// around such a pixel the surroundings moved, so it is not STILL. (That recording does show real alternation too: small
+// rocks drawn every other frame with the camera still, shrub shadows for one frame as the camera stops — docs/aotr-play.md
+// "The owner's flicker".) That small picture is read back
 // without a stall (readPixels into a pixel buffer, read once a fence says the GPU is done). Every pixel counts: a few
 // objects that flicker (a 4 x 4 patch: 16 pixels of 480 000) show, which a filtered 64 x 48 blit of the frame (4 texels of
 // each block of ~156) would mostly miss and would blur. Also counted: the WebGL errors (getError once per period — a round
@@ -21,11 +23,14 @@
 // Cumulative counters in `stats` (`n` triples measured, `aba` / `still` / `chg` their A-B-A / flickering / changed
 // pixels in parts per million of the frame, summed, `max` the largest still, `recent` the last RECENT samples' still
 // ([sample number, ppm]: a window's own maximum), `over1` the triples whose still is over 1 %, `alt` those where
-// alternation dominates (still >= ALT_MIN ppm and at least half of what changed), `glErrors`, `glError` the last code):
-// readers take differences (web/perf-summary.js). The first LOG_MAX samples over 1 % or `alt` are also logged (a gfx
+// alternation dominates (still >= ALT_MIN ppm and at least half of what changed), `abaAlt` those that are not `alt` but
+// where A-B-A anywhere dominates what changed (something alternating while the picture moved a little — the still rule
+// cannot see it; a scroll's chance A-B-A is ~10 % of what changed), `glErrors`, `glError` the last code): readers take
+// differences (web/perf-summary.js). The first LOG_MAX samples over 1 %, `alt` or `abaAlt` are also logged (a gfx
 // line the page sends with the telemetry): where the pixels flickered (`mask` W x H bits, a block's bit set when one of
-// its pixels was a STILL A-B-A one — any A-B-A one in the probe's first version, 2026-11-17 morning, whose lines say
-// "of the pixels A-B-A over 3 frames"; rows from the bottom of the picture: GL order, hex by 4 blocks) and what the
+// its pixels was a STILL A-B-A one — any A-B-A one for an `abaAlt` sample, whose line says "alternating while the
+// picture moved", and in the probe's first version, 2026-11-17 morning, whose lines say "of the pixels A-B-A over 3
+// frames"; rows from the bottom of the picture: GL order, hex by 4 blocks) and what the
 // screen looked like (`lum`: the first frame's luminance at W/2 x H/2, one hex digit per pixel, bottom row first).
 // ORTHROS_FLICKER (debug global): 0 off, 2 every sample logged.
 export const W = 64, H = 48, PERIOD_MS = 10000, T = 24;
@@ -84,16 +89,16 @@ export const blockEdges = (size, n) => Array.from({ length: n + 1 }, (_, k) => M
 /**
  * A sample's result read back (W x H RGBA8: per block its A-B-A, changed and still A-B-A fractions, its mean luminance)
  * for a frame of w x h pixels: the A-B-A, still A-B-A (flicker) and changed shares of the frame's pixels (fractions),
- * and `mask` (W x H, 1 where a block had flickering pixels).
+ * `mask` (W x H, 1 where a block had flickering pixels) and `abaMask` (1 where it had A-B-A pixels, still or not).
  */
 export function sampleShares(px, w, h) {
-  const xs = blockEdges(w, W), ys = blockEdges(h, H), mask = new Uint8Array(W * H);
+  const xs = blockEdges(w, W), ys = blockEdges(h, H), mask = new Uint8Array(W * H), abaMask = new Uint8Array(W * H);
   let aba = 0, chg = 0, still = 0;
   for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
     const k = j * W + i, n = (xs[i + 1] - xs[i]) * (ys[j + 1] - ys[j]);
-    aba += px[4 * k] / 255 * n; chg += px[4 * k + 1] / 255 * n; still += px[4 * k + 3] / 255 * n; mask[k] = px[4 * k + 3] > 0 ? 1 : 0;
+    aba += px[4 * k] / 255 * n; chg += px[4 * k + 1] / 255 * n; still += px[4 * k + 3] / 255 * n; mask[k] = px[4 * k + 3] > 0 ? 1 : 0; abaMask[k] = px[4 * k] > 0 ? 1 : 0;
   }
-  return { aba: aba / (w * h), chg: chg / (w * h), still: still / (w * h), mask };
+  return { aba: aba / (w * h), chg: chg / (w * h), still: still / (w * h), mask, abaMask };
 }
 /** the log line's pictures: the flicker mask (blocks with still A-B-A pixels) (W x H bits, 4 per hex digit) and the first frame's luminance at W/2 x H/2 (a hex digit each) */
 export function flickerPictures(mask, px) {
@@ -107,7 +112,7 @@ export class FlickerProbe {
   /** @param {WebGL2RenderingContext} gl @param {{ now?: () => number, log?: (m: string) => void, errors?: boolean }} [opts] `errors`: read getError */
   constructor(gl, opts = {}) {
     this.gl = gl; this.now = opts.now ?? (() => performance.now()); this.log = opts.log ?? null; this.logged = 0; this.errors = opts.errors ?? true;
-    this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, glErrors: 0, glError: 0 };
+    this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, abaAlt: 0, glErrors: 0, glError: 0 };
     this.next = this.now() + PERIOD_MS; this.left = 0; this.read = null; this.presents = 0;
     this.reset();
   }
@@ -190,10 +195,15 @@ export class FlickerProbe {
     const s = sampleShares(px, w, h), st = this.stats, aba = Math.round(s.aba * 1e6), chg = Math.round(s.chg * 1e6), still = Math.round(s.still * 1e6);
     st.n++; st.aba += aba; st.still += still; st.chg += chg; if (still > st.max) st.max = still;
     st.recent.push([st.n, still]); if (st.recent.length > RECENT) st.recent.shift();
-    const over1 = still > 10000, alt = still >= ALT_MIN && 2 * still >= chg;
+    const over1 = still > 10000, alt = still >= ALT_MIN && 2 * still >= chg, abaAlt = !alt && aba >= ALT_MIN && 2 * aba >= chg;
     if (over1) st.over1++;
     if (alt) st.alt++;
+    if (abaAlt) st.abaAlt++;
     const every = globalThis.ORTHROS_FLICKER === 2; // (debugging: every sample logged)
-    if (this.log && (every || ((over1 || alt) && this.logged < LOG_MAX))) { if (!every) this.logged++; const p = flickerPictures(s.mask, px); this.log(`d3d-webgl: flicker sample: ${(still / 1e4).toFixed(4)} % of the pixels flickered (A-B-A over 3 frames where nothing moved; A-B-A anywhere ${(aba / 1e4).toFixed(4)} %, changed ${(chg / 1e4).toFixed(4)} %, ${w}x${h}); mask ${W}x${H} ${p.mask}; lum ${W / 2}x${H / 2} ${p.lum}`); }
+    if (this.log && (every || ((over1 || alt || abaAlt) && this.logged < LOG_MAX))) {
+      if (!every) this.logged++;
+      const moved = abaAlt && !over1, p = flickerPictures(moved ? s.abaMask : s.mask, px); // (an `abaAlt` sample: where the A-B-A pixels were)
+      this.log(`d3d-webgl: flicker sample: ${(still / 1e4).toFixed(4)} % of the pixels flickered (A-B-A over 3 frames where nothing moved; A-B-A anywhere ${(aba / 1e4).toFixed(4)} %, changed ${(chg / 1e4).toFixed(4)} %, ${w}x${h}${moved ? '; alternating while the picture moved: mask of A-B-A anywhere' : ''}); mask ${W}x${H} ${p.mask}; lum ${W / 2}x${H / 2} ${p.lum}`);
+    }
   }
 }

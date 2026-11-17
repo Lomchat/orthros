@@ -177,15 +177,29 @@ declares `invariant gl_Position`. Nothing to make canonical in the translator; w
 whose other code differs could only be checked on the owner's GPU (the flicker probe's `alt` samples and their blocks
 would show it).
 
-## The owner's flicker of 2026-11-17 afternoon: no frame alternates (2026-11-17)
+## The owner's flicker of 2026-11-17 afternoon: objects that alternate, still open (2026-11-17)
 
 His evidence (build a5a7614, RTX 4050, ANGLE D3D11, 2560x1440, French; session z4c413il; `data/proof/aotr-owner-2026-11-17/`):
-a 16 s screen recording, his screenshots and three flicker-probe samples. Measured on all 488 frames of the recording
-(30 frames per second: the game's ~12 fps frames each shown 2-3 times), not only on its 2-per-second contact sheets:
+a 16 s screen recording (2244x1242, 488 frames at 30 per second), his screenshots and three flicker-probe samples. The
+game ran at ~12 fps, so each of its frames shows 2-3 times in the recording: a triple of consecutive recording frames
+always holds a duplicate and cannot show an A-B-A; the measure below takes the game's distinct frames (a recording
+frame kept when it differs from the last kept one), at full resolution.
 
-- **Static camera** (recording frames 24-70 and 80-180, ~5 s): no pixel alternates. With the probe's rule (A-B-A:
-  |a-b| > 24, |b-c| > 24, |a-c| < 8 on 0-255) 0.000-0.005 % of the pixels per triple of consecutive frames, the mean
-  difference between frames 0.1-0.4 levels (the video's compression).
+- **Real alternation, on this build (after 2c7d27f), not explained yet.** Camera still, recording frames 3-12: the small
+  rocks at the foot of the big rock (x 1790-1890, y 895-980) are drawn only every other game frame (the region's
+  luminance 77.9, 74.0, 77.8, 73.9, 77.6, 74.0; present in frame 6, absent in 7, present in 9); triples of distinct
+  frames 5-6-7 0.14 % of the pixels A-B-A, 7-9-10 0.39 % for 0.50 % changed, 9-10-11 0.18 % — the alternation is most of
+  what changes. Frames 34, 36-37 and 43, as the camera comes to rest: shrub shadows (black blobs) appear for a single
+  frame (x 420-500, y 720-780: 79.3, 74.5, 79.4 on 42-43-44; 0.25 % A-B-A for 0.35 % changed, ~7 000 pixels in several
+  patches). That fits his "everything flickers as soon as I move or build, shadows and all". The first analysis of
+  this recording (consecutive recording frames, a 374x207 copy, full resolution on frames 85-180 only) missed it and
+  concluded wrongly that no frame alternates. Crops and masks: `data/proof/aotr-owner-2026-11-17/review/` (the
+  review's `crop-rock-7.png`, `crop-shrub-42.png`, `aba-7-9-10.png`, `aba-42-43-44.png`, its `out.txt` per frame and
+  triple, `aba.py`). Hypotheses still open: the dynamic vertex buffers (DISCARD / NOOVERWRITE) or the render worker's
+  copies on write when the GPU keeps up, a stale R32F shadow map target, the reuse of static frames.
+- **Calm stretches**: recording frames 45-70 and 86-178 (the camera at rest): no distinct-frame triple over 0.02 % A-B-A
+  (most 0.0001-0.0009 %, the video's compression). Frames 26-44 and 82-90 are the end of the camera's moves (0.4-9.6 %
+  of the pixels change per frame).
 - **The large dark region with a soft curved edge** is fixed to the ground, not to the frames: it enters the screen as
   the camera scrolls south (frames 13-24; the luminance of the lower right goes 73 → 33 step by step with the scroll) and
   leaves as it scrolls back north (71-79, 33 → 74); its edge moves with the rock and the trees beside it frame after
@@ -195,20 +209,21 @@ a 16 s screen recording, his screenshots and three flicker-probe samples. Measur
   view than at the game's own maximum; the contact sheets' 2 frames per second made the camera's back-and-forth look
   like a toggle. The same region appears in SwiftShader at max zoom (below).
 - **The probe's samples**: the 2560x1440 one (2.46 % A-B-A, 21.5 % changed) was a scroll — the same rule on his
-  recording's consecutive scroll frames gives 2.0-2.8 % A-B-A and 18-29 % changed, spread over the whole terrain, while
-  those frames show a clean scroll (textures, shadows and the fog in place from frame to frame). The two 800x600 ones
-  (1.25 % and 1.20 %, 13-18 % changed, 24 fps, 2 draws per frame, black bars above and below) were the intro movie.
+  recording's scroll frames gives 2.0-2.8 % A-B-A and 18-29 % changed, spread over the whole terrain, a clean scroll
+  (textures, shadows and the fog in place from frame to frame). The two 800x600 ones (1.25 % and 1.20 %, 13-18 %
+  changed, 24 fps, 2 draws per frame, black bars above and below) were the intro movie. The probe's first version
+  counted a scroll's chance A-B-A as flicker; it missed the rocks (a sample every 10 s, 3 frames).
 - **The black band at the top** where the terrain stops (objects beyond it still drawn) follows the camera: the
-  terrain's own drawn area at the D112 height, not a flicker (another track). Seen here too: right after a wheel zoom-out
-  to the maximum the top 21 % of a 1280x960 frame stays black while the camera does not move, and the first frame of a
-  scroll fills it (grabbed frames 1086 → 1087 below).
+  camera's far clip plane, which the D112 height pushes the top of the screen beyond (docs/sage-camera-patch.md "The
+  black band at the top of the screen"), not a flicker. Seen here too: right after a wheel zoom-out to the maximum the top 21 % of a 1280x960
+  frame stays black while the camera does not move, and the first frame of a scroll fills it (grabbed frames 1086 →
+  1087 below).
 
-His report of 11-13 ("everything flickers as soon as I move or build, shadows and all") predates this morning's
-2c7d27f: at High the shaders sample the shadow map's stage, which had no texture then (no R32F), and GL sampled whatever
-texture an earlier draw had left on that unit — a value that changes with what the camera shows. Plausibly that, not
-checked on his GPU; today's recording shows no alternation.
+His report of 11-13 predates this morning's 2c7d27f: at High the shaders sampled the shadow map's stage, which had no
+texture then (no R32F), and GL sampled whatever texture an earlier draw had left on that unit — a value that changes
+with what the camera shows. Plausibly part of that report; the alternation above is on the build after it.
 
-**Reproduction** (SwiftShader, his options: StaticGameLOD High, 1280x960 — a 4:3 mode the scenario's menu clicks fit —,
+**Reproduction attempts** (SwiftShader, his options: StaticGameLOD High, 1280x960 — a 4:3 mode the scenario's menu clicks fit —,
 `learn-aotr-skirmish`'s start, six wheel steps of 3 notches out to the D112 maximum, 15 s static, 6 s scroll south, 15 s
 static, 6 s scroll east; 10-14 consecutive frames grabbed in each stretch, `ORTHROS_FLICKER=2`). Render worker
 (`?glworker=1`, his path), 41 triples of consecutive frames: 24 static, 0.010-0.125 % changed, 0.001-0.009 % A-B-A,
@@ -221,7 +236,9 @@ owner's GPU: `?glworker=compare-worker` with `ORTHROS_COMPARE_EVERY=2` and `ORTH
 pixels each way: the replay no longer lags, no copy on write needed in any phase) — the in-thread backend presents, the
 recorded work is replayed in a render worker, and both back buffers are compared pixel for pixel every second frame:
 380 frames from the menu to the end of both scrolls, 0 differing. So neither the timing of the render worker against
-the emulator (lagging or caught up) nor its path against the in-thread one changes a pixel here; the in-thread frames of
+the emulator (lagging or caught up) nor its path against the in-thread one changes a pixel here — which does not rule
+out an alternation both paths share (the Direct3D 9 layer, the R32F target, dynamic buffers); no building and no such
+rocks were in view in these runs; the in-thread frames of
 that run (42 triples) give the same picture (static 0.000-0.017 % A-B-A, scrolls up to 1.7 %, still ≤ 0.0013 %; in game
 the probe itself, at the 320x240 scaled size: a scroll 1.38 % A-B-A, 0.0000 % flickering).
 
@@ -229,7 +246,10 @@ the probe itself, at the 320x240 scaled size: a scroll 1.38 % A-B-A, 0.0000 % fl
 A-B-A pixel whose surroundings are the same in the first and third frames (12 points at 4-8 pixels, scaled with the
 width), and flags, logs and reports that (`still`, `max`, `over1`, `alt`, the logged `mask`); the raw A-B-A stays in the
 summary as `aba`. On the frames above: scrolls 1.7-2.8 % → 0.0000-0.0005 %, a 4x4 patch alternating in a still picture
-still 16 pixels in its block. The owner's next samples tell a real alternation from a scroll.
+still 16 pixels in its block. What the still rule cannot see — something alternating while the camera moves a little,
+like the shrub shadows above — is counted apart (`abaAlt`: A-B-A anywhere at least half of what changed, a scroll's
+being ~10 %) and logged with the blocks where pixels went A-B-A. The owner's next samples tell a real alternation from a
+scroll; a sample every 10 s can still miss a short one.
 
 **For the owner, an A/B in two URLs** (each a whole session; the probe's summary and samples land in the telemetry):
 - `https://orthros.chalco.website/?manifest=aotr-10&glworker=0` — the Direct3D work rendered on the emulator's thread,

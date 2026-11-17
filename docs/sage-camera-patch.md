@@ -59,7 +59,7 @@ goes through this site.
 
 | Executable (manifest version) | D112 patch rva | Create-a-Hero patch rva |
 | --- | --- | --- |
-| AotR `game.dat` (aotr-10; md5 5213811d…) | 0x1013c6 | 0x5bfffb |
+| AotR `game.dat` (aotr-10, 10.0.2; md5 77f03434…) | 0x1013c6 | 0x5bfffb |
 | RotWK 2.01 `game.dat` (rotwk-201) | 0x1013c6 | 0x5bfffb |
 | RotWK 2.02 `lotrbfme2ep1.exe` (rotwk-202) | 0x1013c6 | 0x5bfffb |
 | BFME II 1.09 `game.dat` (bfme2) | 0x1013c6 | 0x5bfffb |
@@ -95,7 +95,7 @@ manifest (Age of the Ring 10.0.2, the scenarios' start on Harlindon, 1024x768, 3
 Not the heightmap's 129-cell draw window (WorldHeightMap+0x120e8; nothing moves its origin in these executables, and
 the nearest-chunks budget derived from it, 0x4e3614, is off: the terrain object is built with that flag at 0), not the
 shroud (whole-map texture, gray where fogged) and not a missing chunk. A frame capture lists the terrain chunks drawn up
-to y = 3860 (the camera at y = 1418, looking north), and a pixel probe (`dbg:ORTHROS_CAPTURE_PROBE=512,60;...`, then
+to y = 3860 (the camera at y = 1418, looking north), and a pixel probe (`dbg:ORTHROS_CAPTURE_PROBE=512,60/...`, then
 `capture`: the pixel after every draw of the frame) shows that no draw of the frame ever writes the band's pixels. The
 band starts where the view depth reaches 1800, and the camera's far plane was 1800:
 
@@ -106,8 +106,9 @@ band starts where the view depth reaches 1800, and the camera's far plane was 18
   (action 334), and takes effect at the camera's next move.
 - The camera looks down 37.5 degrees, with a horizontal field of view of 50 degrees (camera dump: transform at
   camera+0x18, view plane at +0xd8). At the D112 farthest zoom it stands at z = 910 over ground at z = 100-150: the
-  ground at the top edge of a 4:3 screen lies 2 300-2 750 units deep (16:9: 1 950-2 300), beyond 1 800, so the far
-  plane cuts the terrain across the top of the screen (computed edge: row 126-141 of 768; seen: 128). Tall objects
+  ground at the top edge of a 4:3 screen lies 2 290-2 440 units deep (16:9: 1 900-2 020; over ground at z = 0, 2 750
+  and 2 270), beyond 1 800, so the far plane cuts the terrain across the top of the screen (computed edge: row 126-164
+  of 768; seen: 128). Tall objects
   beyond the line show over it because their upper parts are nearer in view depth than the ground under them.
 - Age of the Ring's skirmish maps (591 of its 657 maps) have a one-shot "Set up camera view" script that sets the
   multiplier to 10 (far 18 000); before it has run and the camera has moved (the first 25-35 s of a SwiftShader

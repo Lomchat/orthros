@@ -126,7 +126,7 @@ export function summaryStretches(summaries) {
     if (x.gpu?.frames) { cur.gpuFrames += x.gpu.frames; cur.gpuMs += x.gpu.mean * x.gpu.frames; histAddSparse(cur.gpuHist, x.gpu.h); if ((x.gpu.max ?? 0) > cur.gpuMax) cur.gpuMax = x.gpu.max; }
     if (x.render && x.frames) { cur.rwWait += x.render.waitMs * x.frames; cur.rwReplay += x.render.replayMs * x.frames; cur.rwFrames += x.frames; }
     if (x.renderMode) cur.render = x.renderMode;
-    if (x.flicker) { const f = cur.flk ??= { n: 0, aba: 0, still: 0, stillN: 0, chg: 0, max: 0, over1: 0, alt: 0, glErrors: 0, glError: null }; const n = x.flicker.n ?? 0; f.n += n; f.aba += (x.flicker.aba ?? 0) * n; f.chg += (x.flicker.chg ?? 0) * n; if (x.flicker.still != null) { f.still += x.flicker.still * n; f.stillN += n; } if ((x.flicker.max ?? 0) > f.max) f.max = x.flicker.max; f.over1 += x.flicker.over1 ?? 0; f.alt += x.flicker.alt ?? 0; f.glErrors += x.flicker.glErrors ?? 0; if (x.flicker.glError) f.glError = x.flicker.glError; }
+    if (x.flicker) { const f = cur.flk ??= { n: 0, aba: 0, still: 0, stillN: 0, chg: 0, max: 0, over1: 0, alt: 0, abaAlt: 0, glErrors: 0, glError: null }; const n = x.flicker.n ?? 0; f.n += n; f.aba += (x.flicker.aba ?? 0) * n; f.chg += (x.flicker.chg ?? 0) * n; if (x.flicker.still != null) { f.still += x.flicker.still * n; f.stillN += n; } if ((x.flicker.max ?? 0) > f.max) f.max = x.flicker.max; f.over1 += x.flicker.over1 ?? 0; f.alt += x.flicker.alt ?? 0; f.abaAlt += x.flicker.abaAlt ?? 0; f.glErrors += x.flicker.glErrors ?? 0; if (x.flicker.glError) f.glError = x.flicker.glError; }
     cur.visible += (x.visible ?? 1) * (x.seconds ?? 0);
   }
   return out.map((c) => {
@@ -140,7 +140,7 @@ export function summaryStretches(summaries) {
       gpu: c.gpuFrames ? { frames: c.gpuFrames, mean: +(c.gpuMs / c.gpuFrames).toFixed(2), p50: hasGpuHist ? histQuantile(c.gpuHist, 0.5, c.gpuMax || Infinity) : null, p99: hasGpuHist ? histQuantile(c.gpuHist, 0.99, c.gpuMax || Infinity) : null, max: c.gpuMax || null } : c.gpuState,
       renderWaitMs: c.rwFrames ? +(c.rwWait / c.rwFrames).toFixed(2) : null, replayMs: c.rwFrames ? +(c.rwReplay / c.rwFrames).toFixed(2) : null, render: c.render,
       visible: c.seconds ? +(c.visible / c.seconds).toFixed(2) : null,
-      flicker: c.flk ? { n: c.flk.n, aba: c.flk.n ? +(c.flk.aba / c.flk.n).toFixed(4) : null, still: c.flk.stillN ? +(c.flk.still / c.flk.stillN).toFixed(4) : null, chg: c.flk.n ? +(c.flk.chg / c.flk.n).toFixed(4) : null, max: c.flk.max, over1: c.flk.over1, alt: c.flk.alt, glErrors: c.flk.glErrors, glError: c.flk.glError } : null,
+      flicker: c.flk ? { n: c.flk.n, aba: c.flk.n ? +(c.flk.aba / c.flk.n).toFixed(4) : null, still: c.flk.stillN ? +(c.flk.still / c.flk.stillN).toFixed(4) : null, chg: c.flk.n ? +(c.flk.chg / c.flk.n).toFixed(4) : null, max: c.flk.max, over1: c.flk.over1, alt: c.flk.alt, abaAlt: c.flk.abaAlt, glErrors: c.flk.glErrors, glError: c.flk.glError } : null,
     };
   });
 }
@@ -287,7 +287,7 @@ export function formatReport(reports, comparison) {
       // (gfx/flicker-probe.js: frame triples sampled every 10 s, % of their pixels going A-B-A where nothing moved — the
       // flicker; a summary without `still`, from the probe's first version (2026-11-17 morning): only A-B-A anywhere, a
       // scroll's included —, the largest, the samples where it dominates what changed; WebGL errors)
-      if (st.flicker?.n || st.flicker?.glErrors) L.push(`      flicker: ${st.flicker.n} samples, ${st.flicker.still != null ? `flickering ${st.flicker.still} % of pixels` : `A-B-A ${st.flicker.aba ?? '-'} % of pixels`} (max ${st.flicker.max ?? '-'} %, ${st.flicker.over1} over 1 %, ${st.flicker.alt ?? 0} alternating)${st.flicker.still != null ? `, A-B-A anywhere ${st.flicker.aba ?? '-'} %` : ''}, changed ${st.flicker.chg ?? '-'} %; WebGL errors ${st.flicker.glErrors}${st.flicker.glError ? ` (last 0x${st.flicker.glError.toString(16)})` : ''}`);
+      if (st.flicker?.n || st.flicker?.glErrors) L.push(`      flicker: ${st.flicker.n} samples, ${st.flicker.still != null ? `flickering ${st.flicker.still} % of pixels` : `A-B-A ${st.flicker.aba ?? '-'} % of pixels`} (max ${st.flicker.max ?? '-'} %, ${st.flicker.over1} over 1 %, ${st.flicker.alt ?? 0} alternating, ${st.flicker.abaAlt ?? 0} alternating while moving)${st.flicker.still != null ? `, A-B-A anywhere ${st.flicker.aba ?? '-'} %` : ''}, changed ${st.flicker.chg ?? '-'} %; WebGL errors ${st.flicker.glErrors}${st.flicker.glError ? ` (last 0x${st.flicker.glError.toString(16)})` : ''}`);
     }
     for (const b of r.benches) {
       L.push(`  bench ${b.bench} (${b.manifest}): ${b.outcome}${b.detail ? ` — ${b.detail}` : ''}, ${b.seconds} s, display ${b.display ?? '?'}${b.firstLaunch ? ', first launch' : ''}${b.interrupted && (b.interrupted.hiddenSeconds || b.interrupted.blurs) ? `, INTERRUPTED (hidden ${b.interrupted.hiddenSeconds} s, ${b.interrupted.blurs} focus losses)` : ''}; marks ${(b.marks ?? []).map((m) => `${m.label}@${m.at}s`).join(' ')}`);

@@ -99,11 +99,12 @@ export class PerfWindow {
     } else out.gpu = { state: l.gpuState ?? 'none' }; // ('unavailable': no timer query extension; 'none': no Direct3D device)
     // flicker: sampled frame triples whose pixels went A-B-A (gfx/flicker-probe.js, counted in ppm), as percentages: the
     // mean of all A-B-A (a scroll's included) and of the still ones (the flicker), this window's largest still share (its
-    // samples among the probe's last ones); WebGL errors seen in the window, the last code
+    // samples among the probe's last ones), the alternating samples (`alt`: still; `abaAlt`: while the picture moved);
+    // WebGL errors seen in the window, the last code
     if (l.flk) {
       const a = b.flk, z = l.flk, n = grow(a?.n, z.n), from = z.n - n, errs = grow(a?.glErrors, z.glErrors);
       const mine = (z.recent ?? []).filter(([k]) => k > from).map(([, v]) => v);
-      out.flicker = { n, aba: n > 0 ? r4(grow(a?.aba, z.aba) / n / 1e4) : null, still: n > 0 && z.still !== undefined ? r4(grow(a?.still, z.still) / n / 1e4) : null, chg: n > 0 ? r4(grow(a?.chg, z.chg) / n / 1e4) : null, max: mine.length ? r4(Math.max(...mine) / 1e4) : null, over1: grow(a?.over1, z.over1), alt: grow(a?.alt, z.alt), glErrors: errs, glError: errs > 0 ? z.glError || null : null };
+      out.flicker = { n, aba: n > 0 ? r4(grow(a?.aba, z.aba) / n / 1e4) : null, still: n > 0 && z.still !== undefined ? r4(grow(a?.still, z.still) / n / 1e4) : null, chg: n > 0 ? r4(grow(a?.chg, z.chg) / n / 1e4) : null, max: mine.length ? r4(Math.max(...mine) / 1e4) : null, over1: grow(a?.over1, z.over1), alt: grow(a?.alt, z.alt), abaAlt: grow(a?.abaAlt, z.abaAlt), glErrors: errs, glError: errs > 0 ? z.glError || null : null };
     }
     // WebGL calls per frame (sampled windows)
     if (l.glState === 'on') { const f = grow(b.glFrames, l.glFrames); out.glCalls = f > 0 ? { frames: f, perFrame: r1(grow(b.glCalls, l.glCalls) / f), drawsPerFrame: r1(grow(b.glDraws, l.glDraws) / f) } : { frames: 0 }; }

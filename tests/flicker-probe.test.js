@@ -41,4 +41,13 @@ test('a sample: three presents compared in one draw, read back without a stall; 
   assert.ok(mask, 'logged');
   assert.equal((parseInt(mask[k >> 2], 16) >> (3 - (k & 3))) & 1, 1, 'where it flickered');
   assert.equal([...mask].filter((d) => d !== '0').length, 1, 'there only');
+  assert.equal(st.abaAlt, 0);
+  // (the next sample: A-B-A that dominates what changed in a block whose surroundings moved — something alternating while
+  // the camera moved a little, which the still rule cannot see — counted apart and logged with the A-B-A blocks)
+  gl.getBufferSubData = (target, off, px) => { const m = 4 * (5 * W + 30); px[m] = 255; px[m + 1] = 255; };
+  t += PERIOD_MS;
+  for (let i = 0; i < 5; i++) { probe.present(fbo, 800, 600); t += 33; }
+  assert.deepEqual([st.n, st.alt, st.abaAlt], [2, 1, 1]);
+  const moved = /while the picture moved.*mask 64x48 ([0-9a-f]+)/.exec(logs[1] ?? '')?.[1], m = 5 * W + 30;
+  assert.ok(moved && (parseInt(moved[m >> 2], 16) >> (3 - (m & 3))) & 1, 'logged where it alternated');
 });

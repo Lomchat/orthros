@@ -234,19 +234,23 @@ alternates where nothing moves: a missing pass, a stale target, depth fighting. 
 textured terrain under every pixel and its value comes back one frame later by chance on ~2 % of the pixels, all over
 the terrain (AotR at max zoom, 1280x960, frames grabbed in SwiftShader: 1.7-2.2 % A-B-A during scrolls, 0.0000-0.0005 %
 with still surroundings; static 0.001-0.009 % and 0.0002-0.0016 %, single pixels of swaying foliage). The owner's
-sample of 2026-11-17 (2560x1440, 2.46 % A-B-A, 21.5 % changed) was such a scroll: his screen recording's consecutive
-scroll frames give 2.0-2.8 % A-B-A with the same rule and show no frame alternating (docs/aotr-play.md "The owner's
-flicker"). Every pixel counts: a 4x4 patch that alternates (16 pixels of 480 000) is counted in its block (the first
+sample of 2026-11-17 (2560x1440, 2.46 % A-B-A, 21.5 % changed) was such a scroll: his screen recording's scroll
+frames give 2.0-2.8 % A-B-A with the same rule — while the same recording shows real alternation the probe's first
+version did not sample: small rocks drawn every other frame with the camera still, shrub shadows for one frame as the
+camera stops (docs/aotr-play.md "The owner's flicker"). Something alternating while the picture moves a little has
+surroundings that moved: it is counted apart, `abaAlt` (A-B-A anywhere at least half of what changed; a scroll's is
+~10 %). Every pixel counts: a 4x4 patch that alternates (16 pixels of 480 000) is counted in its block (the first
 version blitted the frame down to 64x48 with a linear filter, which read 4 texels of each block of ~156: about 2.5 % of
 the frame, mostly missing such a patch and blurring what it saw). The same period reads `getError()` on a hardware GPU (a
 feedback loop, a draw WebGL refuses: an error; not on a software rasterizer, where that round trip waits for seconds of
 queued work). Stats `gpu.flk` (cumulative; `aba`, `still`, `chg`, `max` in ppm of the frame, `recent` the last 32 samples'
-still share for a window's own maximum), summary field `flicker` = `{ n, aba, still, chg, max, over1, alt, glErrors,
-glError }` (percentages, 4 decimals; `max`, `over1` and `alt` are about `still`, about `aba` in the first version),
+still share for a window's own maximum), summary field `flicker` = `{ n, aba, still, chg, max, over1, alt, abaAlt,
+glErrors, glError }` (percentages, 4 decimals; `max`, `over1` and `alt` are about `still`, about `aba` in the first version),
 `telemetry-report.mjs --session <id>` prints it per stretch. Flicker shows as still A-B-A that dominates what changed
-(`alt`). The first 3 samples with still A-B-A over 1 % or `alt` of a session are also logged (gfx `d3d-webgl: flicker
+(`alt`). The first 3 samples with still A-B-A over 1 %, `alt` or `abaAlt` of a session are also logged (gfx `d3d-webgl: flicker
 sample: …`, sent with the telemetry, both shares and the changed one in the text): `mask 64x48` the blocks where pixels
-flickered (still A-B-A; in the first version any A-B-A: a scroll flagged the whole terrain; one bit each, 4 per hex digit,
+flickered (still A-B-A; any A-B-A for an `abaAlt` sample, whose line says so, and in the first version: a scroll
+flagged the whole terrain; one bit each, 4 per hex digit,
 rows from the bottom of the picture) and `lum 32x24` the first frame's luminance (one hex digit per pixel, bottom row
 first) — where it flickers, on what; `node tools/dev/flicker-samples.mjs <telemetry .jsonl> [--session <id>]` draws them
 (the luminance, the flickering blocks in red). `?dbg=ORTHROS_FLICKER=0` (host-only) turns it off, `=2` logs every sample

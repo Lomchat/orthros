@@ -1714,15 +1714,16 @@ export class WebGLDevice {
     const rgba = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba); return rgba;
   }
   dumpTarget(what) {
-    // (debugging, dbg ORTHROS_CAPTURE_PROBE=x,y[;x,y...]: during a frame capture, those back-buffer pixels after every
-    // draw, logged when they change — which draw paints a pixel, or that none does, without dumping every target)
+    // (debugging, dbg ORTHROS_CAPTURE_PROBE=x,y[/x,y...] (';' separates too, outside a harness --input, whose steps it
+    // separates): during a frame capture, those back-buffer pixels after every draw, logged when they change — which
+    // draw paints a pixel, or that none does, without dumping every target)
     const probe = globalThis.ORTHROS_CAPTURE_PROBE;
     if (probe) {
       const { h, flip } = this.bindTarget();
       this.probeSeq = (this.probeSeq ?? 0) + 1;
       if (!flip) {
         const gl = this.gl, px = new Uint8Array(4);
-        for (const [i, xy] of String(probe).split(';').entries()) {
+        for (const [i, xy] of String(probe).split(/[;/]/).entries()) {
           const [x, y] = xy.split(',').map(Number);
           gl.readPixels(x, h - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
           const v = px.join(','), prev = (this.probeLast ??= [])[i];
