@@ -25,7 +25,7 @@
 //   CAPTURE_MAX_BYTES — all of it made after the present that read the last picture, in tasks of a few ms each between
 //   the page's frames (finish: no present waits for it). tools/dev/flicker-capture.mjs turns it into PNGs and a readable diff.
 // ORTHROS_FLICKER_CAPTURE (debug global): 0 never, 1 a capture at the next present (whatever the probe saw).
-import { DRAW_FIELDS, FLICKER_RECORD_VERSION, CAPTURE_MAX_BYTES, PAGE_LCS_CELLS, fitRecord, diffRecordSteps, alternationSteps, runSliced } from '../shared/flicker-record.js';
+import { DRAW_FIELDS, FLICKER_RECORD_VERSION, CAPTURE_MAX_BYTES, PAGE_LCS_CELLS, SLICE_MS, fitRecord, diffRecordSteps, alternationSteps, runSliced, counted } from '../shared/flicker-record.js';
 import { gpuInfo } from '../web/gpu-class.js';
 
 /** a probe sample whose still A-B-A share reaches this (ppm of the frame: 2 %) starts the session's capture */
@@ -41,8 +41,6 @@ const STALE = 240;
 const MAX_CALLS = 400000;
 /** a frame's uploads and attachment changes listed at most (past them only counted: nUps, nAtt) */
 const LIST_MAX = 1000;
-/** the record's making (FlickerCapture.finish): its slices' length, ms — the page's frames go on between them */
-const SLICE_MS = 4;
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const TEX_KINDS = ['t2d', 'cube', 't3d', 'arr'];
 const MODES = ['POINTS', 'LINES', 'LINE_LOOP', 'LINE_STRIP', 'TRIANGLES', 'TRIANGLE_STRIP', 'TRIANGLE_FAN'];
@@ -568,21 +566,23 @@ export class FlickerCapture {
    * The record made and sent, from the task after the present that read the last picture on: every part in tasks of
    * its own, a few ms each (the page's frames go on between them) — the pictures turned upright and compared, the
    * frames' comparison in slices (runSliced; lcsPairs' work capped at PAGE_LCS_CELLS a call), the cuts one step a task,
-   * the JPEG encodes asynchronous. `took`: its time from the first task to the send, the slices and the longest.
+   * the JPEG encodes asynchronous. `took`: its time from the first task to the send (ms), its slices, their sum
+   * (busy), the longest and those over 8 ms — wall times: a busy machine's other threads lengthen them.
    */
   async finish(raws, sw, sh) {
-    const t0 = performance.now(), work = { slices: 0, longest: 0 };
-    const step = async (f) => { await tick(); const t = performance.now(), v = await f(); const ms = performance.now() - t; work.slices++; if (ms > work.longest) work.longest = ms; return v; };
+    const t0 = performance.now(), work = { slices: 0, longest: 0, busy: 0, over8: 0 };
+    const step = async (f) => { await tick(); const t = performance.now(), v = f(); counted(work, performance.now() - t); return v; };
     const imgs = await step(() => raws.map((px) => (px ? upright(px, sw, sh) : null)));
-    const r = this.rec;
-    const rec = await step(() => ({
+    const small = await step(() => smallShares(imgs, sw, sh)), r = this.rec, objs = await step(() => r.objects(this.w, this.h));
+    const rec = {
       event: 'flicker-capture', v: FLICKER_RECORD_VERSION, trigger: this.trigger, gl: this.ctx, size: [this.w, this.h], img: [sw, sh], q: null, images: [],
-      small: smallShares(imgs, sw, sh), frames: this.frames, objs: r.objects(this.w, this.h), states: r.states, draws: r.draws, drawFields: DRAW_FIELDS, diff: null, alt: null, cut: [], notes: [...this.notes, ...r.notes], took: null,
-    }));
+      small, frames: this.frames, objs, states: r.states, draws: r.draws, drawFields: DRAW_FIELDS, diff: null, alt: null, cut: [], notes: [...this.notes, ...r.notes], took: null,
+    };
     rec.diff = await runSliced(diffRecordSteps(rec, 24, PAGE_LCS_CELLS), SLICE_MS, work);
     rec.alt = await runSliced(alternationSteps(rec, 40, PAGE_LCS_CELLS), SLICE_MS, work);
     await fitRecord(rec, (q) => this.encode(imgs, sw, sh, q), CAPTURE_MAX_BYTES - 100, work); // (room for `took`)
-    rec.took = { ms: Math.round(performance.now() - t0), slices: work.slices, longest: Math.round(work.longest * 10) / 10 };
+    const r1 = (x) => Math.round(x * 10) / 10;
+    rec.took = { ms: Math.round(performance.now() - t0), slices: work.slices, busy: Math.round(work.busy), longest: r1(work.longest), over8: work.over8 };
     this.send(rec);
   }
 }

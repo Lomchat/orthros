@@ -35,7 +35,7 @@ function report(rec) {
   const S = rec.session ?? 'x', g = rec.gl ?? {};
   console.log(`=== flicker capture of session ${S} at ${rec.at ?? '?'}: ${rec.game ?? '?'}, build ${rec.build ?? '?'}`);
   console.log(`page: ${JSON.stringify(rec.page ?? {})}; options: ${JSON.stringify(rec.options ?? {})}`);
-  console.log(`trigger: ${JSON.stringify(rec.trigger)}; frames ${rec.size?.join('x')} (pictures ${rec.img?.join('x')}, JPEG q ${rec.q})${rec.cut?.length ? `; cut to fit: ${rec.cut.join(', ')}` : ''}${rec.notes?.length ? `; notes: ${rec.notes.join(' | ')}` : ''}${rec.took ? `; made in ${rec.took.ms} ms on the page, ${rec.took.slices} slices, the longest ${rec.took.longest} ms` : ''}`);
+  console.log(`trigger: ${JSON.stringify(rec.trigger)}; frames ${rec.size?.join('x')} (pictures ${rec.img?.join('x')}, JPEG q ${rec.q})${rec.cut?.length ? `; cut to fit: ${rec.cut.join(', ')}` : ''}${rec.notes?.length ? `; notes: ${rec.notes.join(' | ')}` : ''}${rec.took ? `; made in ${rec.took.ms} ms on the page, ${rec.took.slices} slices (${rec.took.busy ?? "?"} ms busy), the longest ${rec.took.longest} ms, ${rec.took.over8 ?? "?"} over 8 ms` : ''}`);
   if (rec.small) console.log(`captured pictures: ${rec.small.aba} % of the pixels A-B-A (1 and 3 alike, 2 apart), changed 1-2 ${rec.small.chg12} %, 2-3 ${rec.small.chg23} %, 1-3 ${rec.small.chg13} %`);
   console.log(`context: ${g.renderer} (${g.vendor}); ${g.version}; ${g.glsl}; attributes ${JSON.stringify(g.attrs)}; drawing buffer ${g.drawingBuffer?.join('x')} (canvas ${g.canvas?.join('x')}, ${g.colorSpace}); ${g.ext?.length ?? 0} extensions; precision ${JSON.stringify(g.prec)}`);
   if (full) { console.log(`  extensions: ${(g.ext ?? []).join(' ')}`); console.log(`  limits: ${JSON.stringify(g.limits)}`); }

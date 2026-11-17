@@ -792,7 +792,7 @@ function telemetryEvent(ev) { if (!state.telemetry) return; (state.queue ??= [])
  */
 function sendFlickerCapture(rec) {
   const body = JSON.stringify({ ...rec, session: state.session, game: state.manifest ?? null, build: state.version ?? null, options: state.perfOptions ?? null, page: { glworker: params.get('glworker'), dbg: params.get('dbg') } });
-  const what = `d3d-webgl: flicker capture: ${rec.frames?.length ?? 0} frames, ${Math.round(body.length / 1024)} KB${rec.cut?.length ? ` (cut: ${rec.cut.join(', ')})` : ''}; the captured frames ${rec.small ? `${rec.small.aba} % A-B-A, ${rec.small.chg12} % changed` : 'without pictures'}`;
+  const what = `d3d-webgl: flicker capture: ${rec.frames?.length ?? 0} frames, ${Math.round(body.length / 1024)} KB${rec.cut?.length ? ` (cut: ${rec.cut.join(', ')})` : ''}; the captured frames ${rec.small ? `${rec.small.aba} % A-B-A, ${rec.small.chg12} % changed` : 'without pictures'}${rec.trigger?.cmd ? `, commands ${rec.trigger.cmd} at the sample` : ''}${rec.took ? `; made in ${rec.took.ms} ms after the frames, ${rec.took.slices} slices (${rec.took.busy ?? "?"} ms busy), the longest ${rec.took.longest} ms, ${rec.took.over8 ?? "?"} over 8 ms` : ''}`;
   if (headless) window.__orthrosFlickerCapture = rec; // (a harness run without telemetry reads it there)
   if (!state.telemetry) { log('gfx', `${what}; not sent (no telemetry)`); return; }
   fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).then((r) => log(r.ok ? 'gfx' : 'warn', `${what}; sent, server ${r.status}`), (e) => log('warn', `${what}; not sent: ${e?.message ?? e}`));

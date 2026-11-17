@@ -6,6 +6,9 @@
 // - the ~20 s summaries (frame-time percentiles, frames > 33 / 40 / 50 / 100 ms, draws and GL calls per frame, GPU
 //   time per frame when the browser measures it, render worker waits) merged per stretch, with the slow frames'
 //   categories;
+// - the flicker probe's counters (gfx/flicker-probe.js: `altSame` / `altCmdAba`, the alternating samples whose frames'
+//   command signatures were the same / went A-B-A), its logged samples' command patterns, and whether the session sent
+//   its flicker capture (read with tools/dev/flicker-capture.mjs);
 // - the bench runs (?bench=<name>, docs/real-machine-bench.md): per phase results;
 // and a comparison of the bench runs, per bench: one line per run, its phases side by side.
 // - the bench suite's runs (?benchsuite=, bench-suite.js: every game in a row): per run, each game's outcome and phases

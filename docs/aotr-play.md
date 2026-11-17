@@ -321,9 +321,30 @@ out, buffer or texture contents and constants, or from the GPU; not a proof of a
 went A-B-A too (`altCmdAba`: the game's frames, or Orthros' translation of them). His next pause menu answers it, with
 the session's capture (`docs/real-machine-bench.md` "Flicker capture") for the rest.
 
-**The signature checked on a static screen** (2026-11-17 night): the first version mixed each draw's start and the
-frame's upload sizes in, which change every frame in AotR whatever the picture (its vertex ring advances). See below
-("Signature check") for the runs that show `commands same` on still frames and `aba` with `ORTHROS_FAKE_FLICKER`.
+**The signature checked on still screens** (2026-11-17 night): the first version mixed each draw's start and the
+frame's upload sizes in, which change every frame in AotR whatever the picture (its vertex ring advances); the signature
+now leaves them out (above). Headless Chromium, SwiftShader, a fresh profile at 1024x768, `--dbg ORTHROS_FLICKER=2`
+(every sample logged, one every 10 s), learn-aotr-skirmish.txt's steps:
+
+| screen (path) | samples | commands | pictures |
+|---|---|---|---|
+| main menu (render worker) | 11 | **same 11/11** (one signature throughout) | changed 0.0000 % in all |
+| pause menu, opened by Escape (`key:27`) 30 s into the skirmish (render worker) | 13 | **same 12/12** once it was up; the first, a few seconds after it opened, `differ` (three signatures, the third the steady one) with an unchanged picture | changed 0.0000 % in all |
+| play, still camera (render worker; `in-thread`: `--glworker 0`) | 12; 6 | same 9; 3 — the others `differ`, never `aba`: X/Y/Y or X/X/Y, the scene's draws changing once | changed 0.01-0.06 % (animated details) |
+| the same three, `dbg:ORTHROS_FAKE_FLICKER=3` (every 3rd draw of every other frame skipped) | 6; 5; 4 | **aba 6/6; 5/5; 4/4** | 39-89 % A-B-A |
+| the profile dialog (its text caret blinks) | 7 | `differ` while the caret blinked, same otherwise | 0-0.01 % |
+
+With the fake flicker the session's capture followed each time (240-277 KB after its cuts, frames 1-3 39-90 % A-B-A on
+its pictures, `commands aba` in its trigger), made in 5.5-7.4 s after its frames, in 22-33 slices — never in a
+present —: in the pause menu (render worker) 145 ms of work in all, the longest slice 17.8 ms (6 of 28 over 8 ms), in
+the two play runs (an earlier step of the code: the size check in one task) 23.6-25.8 ms, wall times on this server's
+4-core browser slot that SwiftShader keeps busy (330 ms of rendering per frame). Finer steps came after these runs
+(the pairing's own loops, 3 ms slices): in Node, unloaded, the longest slice of a record with a 4 000-draw pass is
+9 ms, its single steps 6 ms at most. (Escape held 3 s with
+`keydown`/`keyup` opened no menu: the samples of that run's "pause" were play.) Reproduce:
+`tools/with-browser-slot.sh node tools/headless.mjs aotr-10 --games-dir <catalog> --coords 1024x768 --dbg
+ORTHROS_FLICKER=2 --input-file <learn-aotr-skirmish.txt's steps to the play anchor, then 30:key:27> --control <file>`,
+then `dbg:ORTHROS_FAKE_FLICKER=3` written to the control file.
 
 **Fixed on the way** (generic, not the cause here — the game clears depth and stencil at the start of each frame): the
 back buffers of a flipping chain (D3DSWAPEFFECT_FLIP with two back buffers: AotR's `swap 2 x2`, now in the CreateDevice

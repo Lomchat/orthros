@@ -301,13 +301,17 @@ buffer's offset that moves every frame, differs in 1-3 too and is left out) and 
 2-3, 1-3; per changed draw, the fields that differ). Passes are paired by framebuffer, the back buffers by role (a
 flipping chain rotates them: AotR's two alternate every frame); draws by equality, then by a loose key (the same draw
 whose offset, uniforms or data moved), then by program and primitive. The record is made after the present that read
-the last picture, in tasks of their own (setTimeout), never in a present: the comparison runs in slices of ~4 ms
-(`runSliced`), each longest common sequence capped at 200 000 table cells (`PAGE_LCS_CELLS`: past it a band around the
+the last picture, in tasks of their own (setTimeout), never in a present: the comparison runs in slices of ~3 ms
+(`runSliced`, generators yielding between their steps — each longest common sequence, the pairing's loops every 500
+entries), each longest common sequence capped at 200 000 table cells (`PAGE_LCS_CELLS`: past it a band around the
 diagonal as wide as the cap allows — an insertion or removal up to its width still lines the rest up —, by position when
-not even the length difference fits), the cuts one step a task, the JPEG encodes asynchronous; `took` says how long it
-took and its longest slice. Measured in Node on a synthetic AotR-sized record (passes of 200, 500, 1 500, 8, 8 and 120
-draws, every draw's uniforms changing, 30 draws missing in frame 2): before, 240-250 ms in the present's task; now 21
-slices, the longest 7.8 ms, 130 ms in all, the same comparison; the cuts 9 steps, the longest 6.8 ms. It is cut to 400 KB
+not even the length difference fits), the record's size measured a part at a time (`sizeSteps`), the cuts one step a
+task, the JPEG encodes asynchronous; `took` says how long it took (ms), its slices, their sum (`busy`), the longest and
+those over 8 ms. Measured in Node on a synthetic AotR-sized record (passes of 200, 500, 1 500, 8, 8 and 120 draws,
+every draw's uniforms changing, 30 draws missing in frame 2): before, 230-250 ms in the present's task; now ~20 slices,
+the longest 8-9 ms, ~125 ms in all, the same comparison; with a 4 000-draw pass and 1 000 uploads a frame, the whole
+making 47 slices, the longest 9 ms. In AotR in headless Chromium (docs/aotr-play.md "The signature checked on still
+screens"): 5.5-7.4 s after the frames, 145 ms of work, the longest slice 17.8 ms on a loaded 4-core slot. It is cut to 400 KB
 (lower JPEG qualities, passes the same in every frame emptied, draws no event names, each frame's uploads and
 attachments — listed up to 1 000 a frame while recording, `nUps` / `nAtt` the counts — cut to 200 then 20, events cut,
 descriptions dropped, then no pictures, last a minimal record of each frame's figures and the comparisons' counts;

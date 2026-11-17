@@ -20,9 +20,29 @@ export const DRAW_FIELDS = Object.freeze(['prog', 'tex', 'st', 'vp', 'vao', 'ebo
 const IMG_QUALITY = [0.8, 0.6, 0.4, 0.25];
 
 const size = (rec) => JSON.stringify(rec).length;
-/** passes whose events are the same in every frame (by their position): their events dropped, `n` kept */
-function collapseSame(rec) {
-  const F = rec.frames, keys = F.map((f) => f.passes.map((p) => p.fb + ':' + JSON.stringify(p.ev ?? null)));
+/**
+ * The record's JSON length — JSON.stringify(rec).length — made a part at a time: a generator that yields between its
+ * fields, between frames and between blocks of 500 entries of its other arrays (runSliced: a record of megabytes is
+ * not written in one task of the page).
+ */
+export function* sizeSteps(rec) {
+  let n = 2, first = true;
+  for (const k of Object.keys(rec)) {
+    const v = rec[k];
+    if (v === undefined || typeof v === 'function') continue;
+    n += (first ? 0 : 1) + JSON.stringify(k).length + 1; first = false;
+    if (Array.isArray(v) && v.length > 1) {
+      const step = k === 'frames' || k === 'images' ? 1 : 500;
+      n += 2 + v.length - 1; // (its brackets and commas)
+      for (let i = 0; i < v.length; i += step) { n += JSON.stringify(v.slice(i, i + step)).length - 2 - (Math.min(step, v.length - i) - 1); yield; }
+    } else { n += JSON.stringify(v).length; yield; }
+  }
+  return n;
+}
+/** passes whose events are the same in every frame (by their position): their events dropped, `n` kept (a generator: yields per frame) */
+function* collapseSame(rec) {
+  const F = rec.frames, keys = [];
+  for (const f of F) { keys.push(f.passes.map((p) => p.fb + ':' + JSON.stringify(p.ev ?? null))); yield; }
   for (let i = 0; i < F[0].passes.length; i++) if (keys.every((k) => k[i] === keys[0][i]) && F[0].passes[i].ev) for (const f of F) { const p = f.passes[i]; p.n = p.ev.length; p.same = true; delete p.ev; }
 }
 /** every pass's events cut to `n` (the count kept) */
@@ -65,31 +85,34 @@ function minimal(rec, max) {
 }
 /** a task boundary (the page: its frames go on between the steps) */
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** the record's making in the page: its slices' length, ms (runSliced) */
+export const SLICE_MS = 3;
 
 /**
  * The record cut to `max` characters, in steps (each named in `cut`): the images re-encoded at lower JPEG qualities
  * (`encode(q)` resolves to the images' base64 strings), the passes the same in every frame emptied, the draws no event
  * names dropped, each frame's upload and attachment lists cut, every pass's events cut, the objects' descriptions, the
  * diff's lists cut; then no images; then the minimal record (each frame's figures, the comparisons' counts). Each step
- * (with its size check) in a task of its own, counted in `work` ({ slices, longest } or null). Its `diff` and `alt` are
+ * and its size check (sizeSteps) in slices of their own, counted in `work` ({ slices, longest } or null). Its `diff` and `alt` are
  * computed before (on every event): what the cuts leave keeps them.
  */
 export async function fitRecord(rec, encode, max = CAPTURE_MAX_BYTES, work = null) {
   rec.cut = []; let qi = 0;
   rec.q = IMG_QUALITY[0]; rec.images = await encode(rec.q);
   const quality = async () => { if (qi + 1 < IMG_QUALITY.length) { rec.q = IMG_QUALITY[++qi]; rec.images = await encode(rec.q); rec.cut.push(`q${rec.q}`); } };
-  const steps = [quality, () => { collapseSame(rec); rec.cut.push('same passes'); }, () => { dropUnusedDraws(rec); rec.cut.push('unused draws'); }, () => { cutLists(rec, 200); rec.cut.push('uploads 200'); }, quality,
+  const steps = [quality, function* () { yield* collapseSame(rec); rec.cut.push('same passes'); }, () => { dropUnusedDraws(rec); rec.cut.push('unused draws'); }, () => { cutLists(rec, 200); rec.cut.push('uploads 200'); }, quality,
     () => { cutEvents(rec, 400); dropUnusedDraws(rec); rec.cut.push('events 400'); }, quality, () => { cutEvents(rec, 80); dropUnusedDraws(rec); rec.cut.push('events 80'); },
     () => { cutLists(rec, 20); rec.cut.push('uploads 20'); }, () => { cutEvents(rec, 0); dropUnusedDraws(rec); rec.cut.push('no events'); }, () => { rec.objs = {}; rec.cut.push('no objects'); },
     () => { for (const d of Object.values(rec.diff ?? {})) d.passes = (d.passes ?? []).slice(0, 8).map((p) => ({ ...p, changed: p.changed.slice(0, 8), onlyA: p.onlyA.slice(0, 8), onlyB: p.onlyB.slice(0, 8) })); dropUnusedDraws(rec); rec.cut.push('diff cut'); },
     () => { if (rec.alt) rec.alt.passes = rec.alt.passes.slice(0, 8).map((p) => ({ ...p, alt: p.alt.slice(0, 8), missing: p.missing.slice(0, 8), extra: p.extra.slice(0, 8) })); dropUnusedDraws(rec); rec.cut.push('alternation cut'); },
     () => { cutLists(rec, 0); rec.cut.push('no uploads'); }, () => { rec.images = []; rec.cut.push('no images'); }, () => { minimal(rec, max); rec.cut.push('minimal'); }];
   for (const step of steps) {
-    await tick();
-    const t0 = now(), over = size(rec) > max;
-    if (!over) { counted(work, now() - t0); break; }
-    if (step === quality) { counted(work, now() - t0); await step(); } // (the encode: asynchronous — OffscreenCanvas —, not counted)
-    else { step(); counted(work, now() - t0); }
+    if ((await runSliced(sizeSteps(rec), SLICE_MS, work)) <= max) break;
+    await tick(); // (runSliced resolves at the end of its last slice's task: the step in a task of its own)
+    if (step === quality) { await step(); continue; } // (the encode: asynchronous — OffscreenCanvas —, not counted)
+    const t0 = now(), r = step();
+    counted(work, now() - t0);
+    if (r && typeof r.next === 'function') await runSliced(r, SLICE_MS, work); // (a generator step: in slices too)
   }
   return rec;
 }
@@ -162,20 +185,26 @@ const same = (x, y) => x === y || (typeof x === 'object' && typeof y === 'object
  * each longest common sequence (runSliced).
  */
 function* pairPass(pa, pb, draws, key, cells) {
-  const ka = pa.ev.map(key), kb = pb.ev.map(key), common = lcsPairs(ka, kb, cells), map = new Map(common), mb = new Set(common.map((c) => c[1]));
+  const ka = pa.ev.map(key), kb = pb.ev.map(key);
+  yield;
+  const common = lcsPairs(ka, kb, cells), map = new Map(common), mb = new Set(common.map((c) => c[1]));
   yield;
   let restA = pa.ev.map((_, x) => x).filter((x) => !map.has(x)), restB = pb.ev.map((_, y) => y).filter((y) => !mb.has(y));
   const changed = [], fieldsOf = (x, y) => { const da = draws[pa.ev[x]], db = draws[pb.ev[y]]; return DRAW_FIELDS.filter((_, k) => !same(da?.[k], db?.[k])); };
   const lk = (e, n) => (typeof e === 'number' && draws[e] ? loose(draws[e]) : `~${n}`); // (other events never pair here)
-  const usedA = new Set(), usedB = new Set();
-  const looseCommon = lcsPairs(restA.map((x, n) => lk(pa.ev[x], 'a' + n)), restB.map((y, n) => lk(pb.ev[y], 'b' + n)), cells);
+  const usedA = new Set(), usedB = new Set(), la = restA.map((x, n) => lk(pa.ev[x], 'a' + n)), lb = restB.map((y, n) => lk(pb.ev[y], 'b' + n));
   yield;
-  for (const [u, v] of looseCommon) { const x = restA[u], y = restB[v]; usedA.add(x); usedB.add(y); map.set(x, y); changed.push([x, y, fieldsOf(x, y)]); }
+  const looseCommon = lcsPairs(la, lb, cells);
+  yield;
+  let k = 0; // (the long loops yield every 500 entries)
+  for (const [u, v] of looseCommon) { const x = restA[u], y = restB[v]; usedA.add(x); usedB.add(y); map.set(x, y); changed.push([x, y, fieldsOf(x, y)]); if (++k % 500 === 0) yield; }
   restA = restA.filter((x) => !usedA.has(x)); restB = restB.filter((y) => !usedB.has(y));
   const freeB = new Map(); // (shape -> positions in restB, in order)
   for (const y of restB) { const e = pb.ev[y], s = typeof e === 'number' ? shape(draws[e]) : null; if (s) { if (!freeB.has(s)) freeB.set(s, []); freeB.get(s).push(y); } }
+  yield;
   const left = [];
   for (const x of restA) {
+    if (++k % 500 === 0) yield;
     const e = pa.ev[x], s = typeof e === 'number' ? shape(draws[e]) : null, q = s ? freeB.get(s) : null;
     if (!q?.length) { left.push(x); continue; }
     const y = q.shift(); usedB.add(y); map.set(x, y); changed.push([x, y, fieldsOf(x, y)]);
@@ -189,8 +218,8 @@ function* pairPass(pa, pb, draws, key, cells) {
 /** a generator run to its end: its value */
 function drain(g) { for (;;) { const r = g.next(); if (r.done) return r.value; } }
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
-/** `work` ({ slices, longest } or null): a slice of `ms` counted */
-const counted = (work, ms) => { if (work) { work.slices++; if (ms > work.longest) work.longest = ms; } };
+/** `work` ({ slices, longest, busy, over8 } or null): a slice of `ms` counted (busy: their sum; over8: those over 8 ms) */
+export const counted = (work, ms) => { if (work) { work.slices++; work.busy = (work.busy ?? 0) + ms; if (ms > 8) work.over8 = (work.over8 ?? 0) + 1; if (ms > work.longest) work.longest = ms; } };
 /**
  * A generator run in slices of about `budgetMs` (one step at least), each slice in a task of its own, until it is done:
  * resolves to its value — none of it runs in the caller's task (the page's present: flicker-capture.js). `work`: its
