@@ -212,9 +212,17 @@ checked on his GPU; today's recording shows no alternation.
 static, 6 s scroll east; 10-14 consecutive frames grabbed in each stretch, `ORTHROS_FLICKER=2`). Render worker
 (`?glworker=1`, his path), 41 triples of consecutive frames: 24 static, 0.010-0.125 % changed, 0.001-0.009 % A-B-A,
 0.0000-0.0016 % A-B-A with still surroundings (single pixels of swaying foliage); 17 in scrolls, 18-37 % changed,
-1.7-2.2 % A-B-A all over the terrain while the camera moves, 0.0000-0.0005 % still — the frames show the scroll and, at the edges of the player's sight, the same soft dark fog,
-nothing alternating. The textures the game writes by rectangles while frames that read them are still pending went
-through the render worker's copies on write (130-134 per scroll phase) without a wrong frame.
+1.7-2.2 % A-B-A all over the terrain while the camera moves, 0.0000-0.0005 % still — the frames show the scroll and,
+at the edges of the player's sight, the same soft dark fog, nothing alternating. That run's render worker lagged (the
+software rasterizer): the textures the game writes by rectangles while frames that read them were still pending went
+through its copies on write (130-134 per scroll phase), without a wrong frame. A render worker that keeps up, as on the
+owner's GPU: `?glworker=compare-worker` with `ORTHROS_COMPARE_EVERY=2` and `ORTHROS_RENDER_SCALE=0.25` (a quarter of the
+pixels each way: the replay no longer lags, no copy on write needed in any phase) — the in-thread backend presents, the
+recorded work is replayed in a render worker, and both back buffers are compared pixel for pixel every second frame:
+380 frames from the menu to the end of both scrolls, 0 differing. So neither the timing of the render worker against
+the emulator (lagging or caught up) nor its path against the in-thread one changes a pixel here; the in-thread frames of
+that run (42 triples) give the same picture (static 0.000-0.017 % A-B-A, scrolls up to 1.7 %, still ≤ 0.0013 %; in game
+the probe itself, at the 320x240 scaled size: a scroll 1.38 % A-B-A, 0.0000 % flickering).
 
 **What changed**: the probe (src/gfx/flicker-probe.js, docs/real-machine-bench.md "Flicker") now counts as flicker an
 A-B-A pixel whose surroundings are the same in the first and third frames (12 points at 4-8 pixels, scaled with the
