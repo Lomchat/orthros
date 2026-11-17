@@ -20,24 +20,38 @@ and in Orthros through the browser host (a manifest whose folder holds the progr
 
 ## How Age of the Ring (SAGE) uses GDI for its text
 
-From `--log apisite` and the disassembly of `game.dat` (RotWK 2.01 engine, used by AotR 10):
+From `--log apisite`, `ORTHROS_TRACE_EIP` on the font library and the disassembly of `rotwk/game.dat` (RotWK 2.01
+engine, used by AotR 10; addresses are `game.dat+` offsets, image base 0x400000). Corrected 2026-11-17: the first
+version of this section had the supersampling factor (3) and the size rule (`ResolutionFontAdjustment`) wrong.
 
-- the language's `LocalFontFile`s (AlbertusMT.otf, OmniaLTStd.ttf) are extracted to temporary files and registered with
-  `AddFontResourceExA(path, FR_PRIVATE | FR_NOT_ENUM)`;
-- each font is created **supersampled**: `CreateFontA(-(int)(3 * size + 0.5), 0, 0, 0, bold ? 700 : 400, 0, 0, 0,
-  DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, face)`, `size` being the INI/APT point size times the resolution factor
-  (`ResolutionFontAdjustment`, 1.28 at 1024x768). Heights seen at 1024x768: Albertus MT -39, -46, -53, -60, -67 (400) and
-  -44, -50, -57, -63 (700); Omnia LT Std -128; Times New Roman -40/-48/-56; Arial -32 to -80; Courier New -14. Each
-  font has a companion "Arial Unicode MS" font of the same height (the language's `UnicodeFontName`);
-- `GetTextMetricsA` gives the line height `ceil((tmHeight + tmExternalLeading) / 3)`, `tmExternalLeading / 3` and
-  `ceil(tmOverhang / 3)`;
-- every glyph is built on demand, one character at a time: `GetGlyphIndicesW(ch, GGI_MARK_NONEXISTING_GLYPHS)` — 0xFFFF
-  sends the character to the Unicode font —, `GetTextExtentPoint32W(ch)` gives `cx`, `ExtTextOutW(0, 0, ETO_OPAQUE, ch)`
-  into a 64x64 24 bpp DIB (white on black, several passes for larger glyphs), and the DIB is averaged 3x3 (blue >> 4)
-  into an A4R4G4B4 glyph `ceil(cx / 3) + floor(size / 8 + 0.5)` pixels wide (the second term is padding; the text
-  advances by `ceil(cx / 3)` on screen, measured on the skirmish list: "Erebor" 39 px, "Tester" 36 px at -39).
+- the language's `LocalFontFile`s (AlbertusMT.otf — CFF outlines, no `hdmx` —, OmniaLTStd.ttf) are extracted to
+  temporary files (`Temp/{70FF…}/lrf1.tmp`, `lrf2.tmp`) and registered with `AddFontResourceExA(path, FR_PRIVATE |
+  FR_NOT_ENUM)` (`+0x1e9f0e`);
+- a font is asked for as (face, size, bold) (`FontLibrary::getFont`, `+0x2186e0`). The size goes first through the face's
+  `FontSubstitution` of `fontsubstitution.ini` (linear between its points, `+0x218185`; AotR: Albertus MT 8 → 8, 40 → 36,
+  so 14 → 13.25) and is quantized to 1/`ss`. `ss`, the **supersampling factor**, is 4 for an antialiased face and 1
+  otherwise (`fontsettings.ini` `FontDefaultSettings <face> Antialiased`, default yes: Albertus MT, Times New Roman,
+  Arial x4; Courier New, FixedSys x1);
+- the GDI font (`+0x153fd0`): `CreateFontA(-floor(ss * size + 0.5), 0, 0, 0, bold ? 700 : 400, 0, 0, 0, DEFAULT_CHARSET,
+  0, 0, ANTIALIASED_QUALITY, 0, face)` ("Generals" becomes "Arial"). Seen: Times New Roman 12 → -48, Courier New 14 bold
+  → -14, Albertus MT 14 → -53, 16 → -60, 18 → -67, 10 → -39; each face has an "Arial Unicode MS" companion of the same
+  height (the language's `UnicodeFontName`);
+- **sizes**: an APT text field (EditText: the menus) asks for its APT size times `min(sx, sy)` and its box is scaled by
+  `sx` and `sy` (`+0xaa3fc`), `sx`/`sy` = screen / APT stage width and height (`+0xa8d44`); measured, the font scale is
+  W / 1024 at 1024x768, 1280x720 and 2560x1440 (the skirmish army list: APT 14 → -53, -65, -127). The `language.ini`
+  fonts (not APT) use `floor(size * displayWidth / 1024)` (`+0x1e9bef`). `LOGPIXELSY` plays no part;
+- `GetTextMetricsA` gives the line height `ceil((tmHeight + tmExternalLeading) / ss)`, and `ceil(tmOverhang / ss)`;
+- every glyph is built on demand, one character at a time (`+0x1563f0`): `GetGlyphIndicesW(ch,
+  GGI_MARK_NONEXISTING_GLYPHS)` — 0xFFFF sends the character to the Unicode font —, `GetTextExtentPoint32W(ch)` gives
+  `cx`, `ExtTextOutW(0, 0, ETO_OPAQUE, ch)` into a 64x64 24 bpp DIB (white on black, 64 / ss cells per pass), averaged
+  ss x ss into an A4 coverage `ceil(cx / ss) + pad` pixels wide (`pad` = `floor(size / 8 + 0.5)` clamped to 0..4); the
+  pen advances by `ceil(cx / ss)` (cell - pad - overhang);
+- the menus' text is then laid out per field into 64x64 A8R8G8B8 tiles (one line cut into 64-pixel rows, alpha in steps
+  of 16), drawn as one quad per word segment with the field's matrix, clipped on the CPU to the field's box, the shadow
+  1 pixel down-right first, with a LINEAR sampler.
 
-So the on-screen width of a string is fixed by the single-character `GetTextExtentPoint32W` results.
+So the on-screen width of a string is fixed by the single-character `GetTextExtentPoint32W` results, and the size by the
+game's data (APT size, `fontsubstitution.ini`, `fontsettings.ini`) and the display mode.
 
 ## Measurements (Albertus MT, AotR's file)
 
@@ -51,6 +65,7 @@ So the on-screen width of a string is fixed by the single-character `GetTextExte
 | -16 / 700 | "Misty Mountains" cx, tmAve, tmMax | 130, 10, 23 | 115, 9, 15 | 130, 10, 23 |
 | any | `GetGlyphIndicesW` A / ó / U+4E00 | 34 / 216 / 0xFFFF | 0x41 / 0xF3 / 0x4E00 | 34 / 216 / 0xFFFF |
 | Omnia LT Std -40 | tmInternalLeading | -7 | 0 | -7 |
+| -53 / 400 (the army list at 1024x768) | "Misty Mountains" / "Royaume des Forêts" / "Monts Brumeux" cx | 381 / 454 / 358 (the rounded `hmtx` advances) | same | same |
 
 Regular-weight extents, ascent/descent and ABC widths already matched to the pixel at every height measured (-12 to -60),
 and the glyphs' shapes match (ó included: the ASCII art of "Lothlórien" is the same in both). The coverage sums differ
@@ -72,16 +87,30 @@ by about 6 % (Orthros 441 054 vs Wine 465 161 at -46): the browser's antialiasin
   `GetGlyphOutline` with `GGO_GLYPH_INDEX`) map indices back to characters. System faces (host stand-ins, no file)
   keep code = index.
 
-## Not explained by GDI (open)
+## Age of the Ring's cut faction names and uneven words: the game's own layout (2026-11-17)
 
-- **Army column ("Misty Mountains", "Royaume des Forêts", "Monts Brumeux" cut).** The strings' GDI extents equal
-  Wine's to the pixel at the heights the game uses, and the game's on-screen width follows from them
-  (`ceil(cx / 3)` per character: "Misty Mountains" 102 px for a ~72 px column at 1024x768). With the same GDI answers
-  Windows would lay them out identically; the difference, if Windows really fits them, is upstream (the font size the
-  game picks: INI/APT size x resolution factor) — not settled here: AotR's `game.dat` does not start under Wine (an
-  access violation in its unpacking loop at `game.dat+0x6cac78`), so no Windows-side screenshot was available.
-- **Uneven words on the Create-a-Hero "New features" screen.** The same cached glyphs draw every word; the affected
-  words ("Create-a-Hero", "build", "dozens", "weapon", ...) carry a faint box of their own size (screen brightness
-  +20/255 around the word) and softer edges — a compositing difference (Direct3D side), not glyph data.
-- **"Lothlórien".** Albertus MT has ó (glyph 216) and Orthros draws it like Wine; the place where the owner saw it was
-  not reached in the harness runs (the army drop-down needs scrolling), so this is not verified in game.
+Checked with frame captures of the text quads (every vertex of the text draws: position in Direct3D 9 pixels, texel
+range in the tile), the game's code above and Wine as the GDI reference. Neither comes from Orthros' text engine.
+
+- **Army column ("Monts Brumeux", "Misty Mountains", "Woodland Realm", "Royaume des Forêts" cut).** The column is EA's:
+  RotWK 2.02's skirmish setup has the same Army column (369-476 px at 1024x768), made for its own short names (Nains,
+  Gobelins, Isengard; AotR's `MpGameSetup.apt` differs from RotWK's by 15 bytes, two other placements' matrices). Its text
+  box shows 71 px at 1024x768 (pen at 374.5, clip at 447.5) while the names need, at -53 (APT 14 → 13.25 → x4), 96
+  ("Monts Brumeux"), 103, 104 and 122 px (sums of `ceil(cx / 4)`, `cx` = Wine's = Orthros'). Fonts and boxes both
+  scale with the screen width (above), so the names are cut at every mode: 1024x768 "Monts Brum", 1280x720 "Monts
+  Brumeu" (box 100 px), 2560x1440 "Misty Mountai" and "Woodland Rea" (box 208 px for 234 and 240 px). Small modes cut a
+  little more (the substitution's +1). Hinted advances cannot close a 10 % gap: Albertus MT is CFF (no `hdmx`, no
+  TrueType instructions), so GDI's advances are the rounded linear ones, and one pixel of `cx` moves `ceil(cx / 4)` for
+  at most one character in four.
+- **Uneven words (some words of a sentence bolder or softer).** The text quads all sit on pixel centres and the tiles'
+  glyphs are uniform, but the game rounds each word segment's two ends separately under its field's matrix: 31 of the
+  193 text quads of the Create-a-Hero "Nouvelles caractéristiques" screen at 1024x768 are one pixel wider or narrower
+  than their texels (14 of 239 on the skirmish setup), and they are exactly the words that stand out ("nouveaux",
+  "nouvelle", "le", "ultime", "nouveau", "pour", "premiers", "niveaux", "vous", "la", "armures"): the game's LINEAR
+  sampler spreads their strokes over two pixels. Same vertices and sampler on Windows, same look; at 2560x1440 the
+  strokes are 2.5 times wider and the paragraphs look even. (The "faint box" noted earlier is the panel's gradient.)
+- **Mode in use.** Profiles made from the old French first-launch profile (the game's own detection under emulation:
+  `IdealStaticGameLOD = VeryLow`, `Resolution = 800 600`) keep 800x600, the smallest text; new players get their
+  screen's largest mode since D127 (`newProfileIni`).
+- **"Lothlórien".** Albertus MT has ó (glyph 216) and Orthros draws it like Wine; seen in game in the army drop-down
+  (fr and en, 1280x720 and 2560x1440).
