@@ -194,6 +194,7 @@ fall back to the in-thread backend). Nothing else: no account, no address beyond
 | `hostWait` | the emulator's host waits (`src/core/host-wait.js`, docs/thread-scheduling.md "Host wake-up overshoot"): `waits` measured, `overMean` how late they woke on average (ms), `lateMsPerFrame` the part of it that lengthened frames (the frame accounting's `late`), `spinMsPerFrame` the spin that made a frame limiter's last waits precise, `est` / `timerEst` the measured overshoot of Atomics.wait / of the pump's timer |
 | `visible`, `fullscreen`, `status`, `renderMode` | share of the window the tab was visible / in full screen, the page's state, the rendering used |
 | `audio` | the sound output over the window (`src/web/sound.js` `AudioStats`): `ctx` the AudioContext's last state (`running`, `suspended` — Chrome's autoplay policy before the player's first click —, `interrupted`, `none`: not set up), `rate` its sample rate, `lat` output + base latency (ms), `run` share of the window it was running, `out` frames/s the AudioWorklet played (~`rate` when it plays, 0 stalled), `mix` (`worklet`: the worklet mixes the DirectSound buffers from guest memory; `worker`: the emulator's worker mixes into the ring), `peak` the mix's highest level (0: silence), `play` / `bufs` the most DirectSound buffers playing / existing, `dec` browser audio decoder (WebCodecs, MP3 of movies) failures, `resumes` resumes tried at gestures and `changes` state changes so far, `err` the output's set-up error. The report prints a verdict per session and per bench: `OK`, `SUSPENDED` (never ran: no click), `STALLED`, `SILENT` (buffers played, zero mix), `QUIET` (no buffer played), `ERROR` |
+| `flicker` | frame triples sampled for flicker (`src/gfx/flicker-probe.js`, see **Flicker** below): `n` samples, `aba` mean % of their pixels going A-B-A, `chg` mean % changed between the first two frames, `max` the largest `aba` of the window, `over1` samples over 1 %, `glErrors` WebGL errors seen (`getError` every 10 s), `glError` the last code |
 
 **GPU time** (`src/gfx/gpu-probe.js`): a `TIME_ELAPSED_EXT` query from one present to the next (the GPU execution time
 of the frame's commands, the final blit included), over windows of 120 consecutive frames every 10 s, read at later
@@ -219,6 +220,21 @@ SwiftShader (Vice City 1.1, `vc-quick`, harness): drive phase draw run mean 49-7
 50-95 ms (the CPU rasteriser is never idle: they agree); menu at 60 fps: draw run 3.5 ms against 17 ms present-to-present
 (the idle part), fence 16-34 ms (about one frame: the polling resolution); GPU-bound phases show a fence backlog of
 seconds.
+
+**Flicker** (`src/gfx/flicker-probe.js`, since 2026-11-17: the owner saw Age of the Ring flicker on his RTX 4050, never
+on the server's SwiftShader): every 10 s, three consecutive presented frames are copied by a filtered blit into a 64x48
+framebuffer and read back without a stall (`readPixels` into a pixel buffer, read once a fence has signaled); the share
+of those pixels whose luminance goes A-B-A over the three frames (|a-b| > 24, |b-c| > 24, |a-c| < 8 on 0-255) is
+flicker — a scroll or an animation rarely comes back to its value one frame later, an alternating picture does. The same
+period reads `getError()` on a hardware GPU (a feedback loop, a draw WebGL refuses: an error; not on a software rasterizer, where that round trip waits for seconds of queued work). Stats `gpu.flk` (cumulative), summary
+field `flicker` = `{ n, aba, chg, max, over1, glErrors, glError }` (percentages; `over1` the samples over 1 %),
+`telemetry-report.mjs --session <id>` prints it per stretch. The first 3 samples over 1 % of a session are also logged
+(gfx `d3d-webgl: flicker sample: …`, sent with the telemetry): `mask 64x48` the pixels that flickered (one bit each, 4
+per hex digit, rows from the bottom of the picture) and `lum 32x24` the first frame's luminance (one hex digit per pixel,
+bottom row first) — where it flickers, on what. Reference (the metric computed on frames grabbed in
+SwiftShader, AotR skirmish at 800x600): static camera 0 %, a camera scroll 0.11-0.13 % (max 0.23 %) — perspective
+motion; a picture that alternates gives far more (a measure to compare between sessions and builds). `?dbg=ORTHROS_FLICKER=0` (host-only) turns it off;
+`dbg:ORTHROS_FRAME_GRAB=<n>` (harness) saves the next n presented frames whole as PNG (`<out>/capture/grab-<frame>.png`).
 
 **GL calls**: during a 30-frame window every 20 s the context's methods are wrapped by counting closures (calls made
 through the context object; the wrapping is removed after the window; it stays away while a frame capture, GL timing or

@@ -126,6 +126,7 @@ export function summaryStretches(summaries) {
     if (x.gpu?.frames) { cur.gpuFrames += x.gpu.frames; cur.gpuMs += x.gpu.mean * x.gpu.frames; histAddSparse(cur.gpuHist, x.gpu.h); if ((x.gpu.max ?? 0) > cur.gpuMax) cur.gpuMax = x.gpu.max; }
     if (x.render && x.frames) { cur.rwWait += x.render.waitMs * x.frames; cur.rwReplay += x.render.replayMs * x.frames; cur.rwFrames += x.frames; }
     if (x.renderMode) cur.render = x.renderMode;
+    if (x.flicker) { const f = cur.flk ??= { n: 0, aba: 0, chg: 0, max: 0, over1: 0, glErrors: 0, glError: null }; const n = x.flicker.n ?? 0; f.n += n; f.aba += (x.flicker.aba ?? 0) * n; f.chg += (x.flicker.chg ?? 0) * n; if ((x.flicker.max ?? 0) > f.max) f.max = x.flicker.max; f.over1 += x.flicker.over1 ?? 0; f.glErrors += x.flicker.glErrors ?? 0; if (x.flicker.glError) f.glError = x.flicker.glError; }
     cur.visible += (x.visible ?? 1) * (x.seconds ?? 0);
   }
   return out.map((c) => {
@@ -139,6 +140,7 @@ export function summaryStretches(summaries) {
       gpu: c.gpuFrames ? { frames: c.gpuFrames, mean: +(c.gpuMs / c.gpuFrames).toFixed(2), p50: hasGpuHist ? histQuantile(c.gpuHist, 0.5, c.gpuMax || Infinity) : null, p99: hasGpuHist ? histQuantile(c.gpuHist, 0.99, c.gpuMax || Infinity) : null, max: c.gpuMax || null } : c.gpuState,
       renderWaitMs: c.rwFrames ? +(c.rwWait / c.rwFrames).toFixed(2) : null, replayMs: c.rwFrames ? +(c.rwReplay / c.rwFrames).toFixed(2) : null, render: c.render,
       visible: c.seconds ? +(c.visible / c.seconds).toFixed(2) : null,
+      flicker: c.flk ? { n: c.flk.n, aba: c.flk.n ? +(c.flk.aba / c.flk.n).toFixed(2) : null, chg: c.flk.n ? +(c.flk.chg / c.flk.n).toFixed(2) : null, max: c.flk.max, over1: c.flk.over1, glErrors: c.flk.glErrors, glError: c.flk.glError } : null,
     };
   });
 }
@@ -282,6 +284,8 @@ export function formatReport(reports, comparison) {
     for (const st of r.summaryStretches) {
       L.push(`  ${st.at ?? '--:--:--'} ${st.kind.padEnd(9)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps; frame ms p50 ${st.p50} p90 ${st.p90} p99 ${st.p99} max ${st.max}; >33 ${st.per33}/min >40 ${st.per40} >50 ${st.per50} >100 ${st.per100}; draws/frame ${st.drawsPerFrame ?? '-'}, GL calls/frame ${st.glCallsPerFrame ?? '-'}; GPU ${typeof st.gpu === 'object' && st.gpu ? `${st.gpu.mean} ms/frame p50 ${st.gpu.p50} p99 ${st.gpu.p99} (${st.gpu.frames} frames timed)` : st.gpu ?? '-'}${st.renderWaitMs !== null ? `; render worker waits ${st.renderWaitMs} ms/frame, replay ${st.replayMs}` : ''}${st.visible !== null && st.visible < 0.99 ? `; visible ${Math.round(st.visible * 100)}%` : ''}`);
       if (st.work !== null) L.push(`      work ${st.work} ms/frame: ${st.cats}${st.slowShares ? `; slow frames' time (%): ${st.slowShares}` : ''}`);
+      // (gfx/flicker-probe.js: frame triples sampled every 10 s, % of their pixels going A-B-A, the largest; WebGL errors)
+      if (st.flicker?.n || st.flicker?.glErrors) L.push(`      flicker: ${st.flicker.n} samples, A-B-A ${st.flicker.aba ?? '-'} % of pixels (max ${st.flicker.max ?? '-'} %, ${st.flicker.over1} over 1 %), changed ${st.flicker.chg ?? '-'} %; WebGL errors ${st.flicker.glErrors}${st.flicker.glError ? ` (last 0x${st.flicker.glError.toString(16)})` : ''}`);
     }
     for (const b of r.benches) {
       L.push(`  bench ${b.bench} (${b.manifest}): ${b.outcome}${b.detail ? ` — ${b.detail}` : ''}, ${b.seconds} s, display ${b.display ?? '?'}${b.firstLaunch ? ', first launch' : ''}${b.interrupted && (b.interrupted.hiddenSeconds || b.interrupted.blurs) ? `, INTERRUPTED (hidden ${b.interrupted.hiddenSeconds} s, ${b.interrupted.blurs} focus losses)` : ''}; marks ${(b.marks ?? []).map((m) => `${m.label}@${m.at}s`).join(' ')}`);

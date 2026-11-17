@@ -4,13 +4,14 @@
 // maps render states, texture stage / sampler states, blending, depth/stencil, fog, scissor and
 // viewport onto GL. DX8 and DX9 devices share the state model; DX9 adds vertex declarations,
 // sampler states, shader objects (SM 1.x–2.x), stream offsets, base vertices, MRT/scissor.
-import { FMT, surfacePitch, surfaceBytes } from '../win32/d3d8.js';
+import { FMT, FLOAT_FORMATS, surfacePitch, surfaceBytes } from '../win32/d3d8.js';
 import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, ffProgramFromKey, flatVaryings, translateVertexShader, translatePixelShader, leanShaders, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
 import { translateVertexShader9, translatePixelShader9, semName, disasmShader9, OPN } from './d3d9-shaders.js';
 import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION } from './program-id.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { apiOpt } from '../core/api-opt.js';
 import { GpuProbe } from './gpu-probe.js';
+import { FlickerProbe } from './flicker-probe.js';
 import { RenderScale, glRect, glEdgeX, glEdgeY, scaledSize, scaledLevel, resampleRgba } from './render-scale.js';
 import { gpuInfo, gpuClass } from '../web/gpu-class.js';
 
@@ -134,6 +135,11 @@ function convertRows(mem, fmt, addr, w, h, pitch, out) {
       case FMT.V16U16: for (let x = 0; x < w; x++, s += 4, o += 4) { out[o] = (u8[s + 1] + 128) & 0xff; out[o + 1] = (u8[s + 3] + 128) & 0xff; out[o + 2] = 255; out[o + 3] = 255; } break;
       case FMT.G16R16: for (let x = 0; x < w; x++, s += 4, o += 4) { out[o] = u8[s + 1]; out[o + 1] = u8[s + 3]; out[o + 2] = 0; out[o + 3] = 255; } break;
       case FMT.A2B10G10R10: case FMT.A2R10G10B10: for (let x = 0; x < w; x++, s += 4, o += 4) { const v = u8[s] | (u8[s + 1] << 8) | (u8[s + 2] << 16) | (u8[s + 3] << 24); const r = (v & 1023) >> 2, g = ((v >> 10) & 1023) >> 2, b = ((v >> 20) & 1023) >> 2, a = ((v >>> 30) & 3) * 85; if (fmt === FMT.A2B10G10R10) { out[o] = r; out[o + 2] = b; } else { out[o] = b; out[o + 2] = r; } out[o + 1] = g; out[o + 3] = a; } break;
+      case FMT.R16F: case FMT.G16R16F: case FMT.A16B16G16R16F: case FMT.R32F: case FMT.G32R32F: case FMT.A32B32G32R32F: { // (as RGBA8, clamped: captures, diagnostics)
+        const fs = FLOAT_FORMATS.get(fmt), dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+        for (let x = 0; x < w; x++, o += 4) for (let c = 0; c < 4; c++) { const v = c >= fs.ch ? 1 : fs.bits === 16 ? halfToFloat(dv.getUint16(s, true)) : dv.getFloat32(s, true); if (c < fs.ch) s += fs.bits >> 3; out[o + c] = v >= 1 ? 255 : v > 0 ? Math.round(v * 255) : 0; }
+        break;
+      }
       default: for (let x = 0; x < w; x++, s += 4, o += 4) { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = 255; }
     }
   }
@@ -196,6 +202,7 @@ export class WebGLDevice {
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc');
     if (opts.log) opts.log(`d3d-webgl: ${gl.getParameter(gl.RENDERER)} | s3tc ${this.s3tc ? 'yes' : 'no (DXT decoded on the CPU)'} | max texture ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`);
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    this.floatExts();
     this.uploadUnit = Math.min(gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS) || 32, 32) - 1; // (stages and shader samplers use units 0..15; see bindForUpload)
     this.firstVertexConvention();
     this.programs = new Map(); // program key -> record (several keys share a record when they build the same sources)
@@ -253,6 +260,27 @@ export class WebGLDevice {
    * target contents are lost, as with a lost Direct3D device: the game redraws them).
    */
   /** Flat shading takes the first vertex's colors in Direct3D, the last one's in GL unless WEBGL_provoking_vertex says otherwise. */
+  /**
+   * Floating-point formats (Direct3D 9's R16F ... A32B32G32R32F: FLOAT_FORMATS) are stored as RGBA16F / RGBA32F: a
+   * channel the format lacks reads 1, as in Direct3D, and neither draws nor clears write it (the target's write mask
+   * `cm`). Rendering into them needs EXT_color_buffer_float (without it such a target is stored as RGBA8, 8 bits per
+   * channel); linear filtering of the 32-bit ones OES_texture_float_linear (without it they are point-sampled).
+   */
+  floatExts() { const gl = this.gl; this.cbf = gl.getExtension('EXT_color_buffer_float'); this.f32lin = gl.getExtension('OES_texture_float_linear'); this.floatStores = new Map(); }
+  /** the GL storage of a float format ({ internal, type, tag, half, ch }); null for the other formats (RGBA8) and for a render target GL cannot draw into */
+  floatStore(fmt, rt) {
+    const fs = FLOAT_FORMATS.get(fmt); if (!fs || (rt && !this.cbf)) return null;
+    let st = this.floatStores.get(fmt);
+    if (!st) { const gl = this.gl, half = fs.bits === 16; st = { internal: half ? gl.RGBA16F : gl.RGBA32F, type: half ? gl.HALF_FLOAT : gl.FLOAT, tag: half ? 'rgba16f' : 'rgba32f', half, ch: fs.ch }; this.floatStores.set(fmt, st); }
+    return st;
+  }
+  /** a new float target of a format without some channels: cleared to (0, 1, 1, 1) — those read 1 and its write mask keeps them */
+  initFloatTarget(f) {
+    const gl = this.gl;
+    gl.disable(gl.SCISSOR_TEST); gl.colorMask(true, true, true, true);
+    gl.clearBufferfv(gl.COLOR, 0, FLOAT_INIT);
+    this.invalidateGlState(); this.gs.fbo = f.fbo; // (masks and scissor set directly: the cached GL state starts over)
+  }
   firstVertexConvention() {
     const ext = this.gl.getExtension('WEBGL_provoking_vertex');
     if (ext) ext.provokingVertexWEBGL(ext.FIRST_VERTEX_CONVENTION_WEBGL);
@@ -260,16 +288,17 @@ export class WebGLDevice {
   contextRestored() {
     const gl = this.gl;
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc'); this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    this.floatExts();
     this.firstVertexConvention();
     this.programs.clear(); this.programsBySrc.clear(); this.progBySig?.clear(); this.lastProgram = null; if (this.pc) { this.pc.ready.clear(); this.pc.pending = 0; }
-    this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null; this.fullTmp = null; this.rsc.reset();
+    this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null; this.fullTmp = null; this.nullTex = null; this.rsc.reset();
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
     this.invalidateGlState(); gl.bindVertexArray(this.vao);
     this.reset(this.dev);
     this.log('d3d-webgl: context restored, resources recreated on use');
   }
-  destroy() { this.pc?.devices?.delete(this); const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); } for (const p of this.programsBySrc.values()) gl.deleteProgram(p.prog); }
+  destroy() { this.pc?.devices?.delete(this); const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const n of this.nullTex ?? []) if (n) gl.deleteTexture(n.tex); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); } for (const p of this.programsBySrc.values()) gl.deleteProgram(p.prog); }
 
   // ---------------------------------------------------------------- resources
   createTexture() {} createBuffer() {} createSurface() {} surfaceUpdated() {} volumeUpdated() {}
@@ -361,6 +390,8 @@ export class WebGLDevice {
     if (!whole) this.stats.texPartial = (this.stats.texPartial ?? 0) + 1;
     this.stats.uploadBytes = (this.stats.uploadBytes ?? 0) + w * h * 4;
     { const k = `${s.fmt}:${s.width}x${s.height}`, m = this.stats.uploadsBy ?? (this.stats.uploadsBy = new Map()); m.set(k, (m.get(k) ?? 0) + 1); } // (report)
+    const fst = this.floatStore(s.fmt, ((s.owner ?? s).usage & 1) !== 0);
+    if (fst) { this.uploadFloatLevel(target, level, s, alloc, slot, fst); return; }
     if (g.scale && g.scale !== 1 && target === gl.TEXTURE_2D) { // a scaled render-target texture (render-scale.js): its level stored smaller, whole
       const [gw, gh] = this.levelDims(g, s, level);
       const px = s.mem ? resampleRgba(surfaceToRgba(this.mem, s.fmt, s.mem, s.width, s.height, s.pitch), s.width, s.height, gw, gh) : null;
@@ -403,6 +434,36 @@ export class WebGLDevice {
     else gl.texImage2D(target, level, gl.RGBA8, s.width, s.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     alloc[slot] = 'rgba8';
   }
+  /**
+   * A stage the program samples has no texture (SetTexture(n, NULL), or a texture a game could not create): Direct3D 9
+   * samples (0, 0, 0, 1) there. GL would sample whatever texture an earlier draw left on that unit — another object's,
+   * changing with what was drawn before: shading that flickers as the camera moves — so the unit gets a 1x1 black
+   * texture of the sampler's kind (`k`: 0 2D, 1 cube, 2 volume).
+   */
+  bindNullTexture(i, k) {
+    const gl = this.gl, gs = this.gs, nt = this.nullTex ??= [null, null, null];
+    if (!nt[k]) {
+      const target = [gl.TEXTURE_2D, gl.TEXTURE_CUBE_MAP, gl.TEXTURE_3D][k], px = new Uint8Array([0, 0, 0, 255]), tex = gl.createTexture();
+      this.bindForUpload(target, tex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      if (k === 2) gl.texImage3D(target, 0, gl.RGBA8, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      else for (let f = 0; f < (k ? 6 : 1); f++) gl.texImage2D(k ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + f : target, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      gl.texParameteri(target, gl.TEXTURE_MAX_LEVEL, 0);
+      nt[k] = { tex, target };
+    }
+    if (gs.tex[i] !== nt[k].tex) { if (gs.active !== i) { gl.activeTexture(gl.TEXTURE0 + i); gs.active = i; } gl.bindTexture(nt[k].target, nt[k].tex); gs.tex[i] = nt[k].tex; }
+  }
+  /** uploadLevel of a floating-point format (floatStore `st`): the texels as RGBA floats, a missing channel 1 */
+  uploadFloatLevel(target, level, s, alloc, slot, st) {
+    const gl = this.gl;
+    if (!s.mem) { gl.texImage2D(target, level, st.internal, s.width, s.height, 0, gl.RGBA, st.type, null); alloc[slot] = st.tag; return; }
+    const d = alloc[slot] === st.tag ? s.dirtyRect : null; // (a level already specified in that storage: the rectangle locked since)
+    const x0 = d ? d[0] : 0, y0 = d ? d[1] : 0, w = (d ? d[2] : s.width) - x0, h = (d ? d[3] : s.height) - y0;
+    const px = floatTexels(this.mem.u8, s.mem + y0 * s.pitch + x0 * surfacePitch(s.fmt, 1), w, h, s.pitch, st);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (d) gl.texSubImage2D(target, level, x0, y0, w, h, gl.RGBA, st.type, px);
+    else gl.texImage2D(target, level, st.internal, s.width, s.height, 0, gl.RGBA, st.type, px);
+    alloc[slot] = st.tag;
+  }
   /** Diagnostic: flag textures that look like an engine's "missing texture" placeholder (mostly magenta). */
   checkPlaceholder(s, rgba) {
     let magenta = 0; const n = s.width * s.height;
@@ -444,7 +505,9 @@ export class WebGLDevice {
     let f = this.fbos.get(rt.id);
     if (!f) {
       // (w, h: the GL storage's size; dw, dh: the Direct3D one — they differ on a scaled target, see render-scale.js)
-      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, dw: rt.width, dh: rt.height, kx: 1, ky: 1, k: 1, scaled: false, surf: rt, depth: null, color: null, back, flip: !back };
+      // (cm: the channels draws and clears may write — a float format's own, see floatStore; fl: its float storage)
+      const fl = back ? null : this.floatStore(rt.fmt, true);
+      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, dw: rt.width, dh: rt.height, kx: 1, ky: 1, k: 1, scaled: false, surf: rt, depth: null, color: null, back, flip: !back, fl, cm: fl ? (1 << fl.ch) - 1 : 15 };
       gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo;
       if (rt.owner && (rt.owner.levels || rt.owner.faces)) {
         const g = this.glTexture(rt.owner);
@@ -452,7 +515,7 @@ export class WebGLDevice {
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, rt.owner.faces ? gl.TEXTURE_CUBE_MAP_POSITIVE_X + rt.face : gl.TEXTURE_2D, g.tex, rt.level);
       } else {
         f.k = this.targetScale(rt); this.sizeTarget(f, scaledSize(rt.width, f.k), scaledSize(rt.height, f.k));
-        f.color = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.color); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, f.w, f.h);
+        f.color = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.color); gl.renderbufferStorage(gl.RENDERBUFFER, fl ? fl.internal : gl.RGBA8, f.w, f.h);
         gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, f.color);
       }
       f.depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, f.w, f.h);
@@ -460,8 +523,9 @@ export class WebGLDevice {
       // (checkFramebufferStatus is a round trip to the GPU process that waits for every command queued before it —
       // up to seconds behind a GPU backlog, for a status only logged: --gl-validate or ?dbg=ORTHROS_FBO_CHECK=1)
       if (this.glValidate || globalThis.ORTHROS_FBO_CHECK) { const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`); }
-      if (this.fbos.size < 4) this.log(`d3d-webgl: render target ${rt.width}x${rt.height}${f.scaled ? ` (stored ${f.w}x${f.h})` : ''} fmt ${rt.fmt} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`);
+      if (this.fbos.size < 4 || (fl && !this.floatTargetLogged)) { this.log(`d3d-webgl: render target ${rt.width}x${rt.height}${f.scaled ? ` (stored ${f.w}x${f.h})` : ''} fmt ${rt.fmt}${fl ? ` (${fl.tag})` : ''} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`); if (fl) this.floatTargetLogged = true; }
       this.fbos.set(rt.id, f);
+      if (f.cm !== 15) this.initFloatTarget(f);
     } else if (this.gs.fbo !== f.fbo) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; } // cached: every draw asks for its target
     return f; // (w, h, flip: read by every draw — the record itself, no object per call)
   }
@@ -475,12 +539,12 @@ export class WebGLDevice {
     if (s === 1) return 1;
     if (dev.backBuffers.includes(rt)) return s;
     const bb = dev.backBuffers[0];
-    return (rt.usage & 1) && !(rt.usage & 2) && bb && rt.width === bb.width && rt.height === bb.height && !isDxt(rt.fmt) ? s : 1;
+    return (rt.usage & 1) && !(rt.usage & 2) && bb && rt.width === bb.width && rt.height === bb.height && !isDxt(rt.fmt) && !FLOAT_FORMATS.has(rt.fmt) ? s : 1;
   }
   /** the scale a texture is stored at: render-target 2D textures whose top level has the back buffer's size */
   texScale(t) {
     const s = this.rscale;
-    if (s === 1 || !(t.usage & 1) || t.faces || t.depth || !t.levels?.length || isDxt(t.fmt)) return 1;
+    if (s === 1 || !(t.usage & 1) || t.faces || t.depth || !t.levels?.length || isDxt(t.fmt) || FLOAT_FORMATS.has(t.fmt)) return 1;
     const l = t.levels[0], bb = this.dev.backBuffers[0];
     return bb && l.width === bb.width && l.height === bb.height ? s : 1;
   }
@@ -495,7 +559,9 @@ export class WebGLDevice {
    * framebuffer (nearest: the game reads its own colors back, not blends of them).
    */
   readTargetPixels(f) {
-    const gl = this.gl, w = f.dw, h = f.dh, rgba = new Uint8Array(w * h * 4);
+    const gl = this.gl, w = f.dw, h = f.dh;
+    if (f.fl) { const px = new Float32Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, px); return px; } // (a float target: RGBA floats, never scaled)
+    const rgba = new Uint8Array(w * h * 4);
     if (f.scaled) {
       let T = this.fullTmp;
       if (!T || T.w !== w || T.h !== h) {
@@ -632,6 +698,7 @@ export class WebGLDevice {
     dev.renderTarget = src; const fs = this.bindTarget();
     dev.renderTarget = dst; const fd = this.bindTarget();
     dev.renderTarget = prev;
+    if (!fs.fl !== !fd.fl) return null; // (GL blits only between float targets or between fixed-point ones)
     // (a rectangle in guest memory, or its four values copied by a render worker's recorder)
     const rect = (p, w, h) => (!p ? [0, 0, w, h] : typeof p === 'number' ? [mem.readS32(p), mem.readS32(p + 4), mem.readS32(p + 8), mem.readS32(p + 12)] : p);
     const [sl, st, srr, sb] = rect(sr, src.width, src.height), [dl, dt, drr, db] = rect(dr, dst.width, dst.height);
@@ -660,9 +727,11 @@ export class WebGLDevice {
     const gl = this.gl, dev = this.dev;
     this.probe?.endRun();
     const prev = dev.renderTarget; dev.renderTarget = dev.backBuffers[0];
-    const { w, h } = this.bindTarget();
+    const bf = this.bindTarget(), { w, h } = bf;
     dev.renderTarget = prev;
     gl.disable(gl.SCISSOR_TEST); this.gs.en[gl.SCISSOR_TEST] = false;
+    if (globalThis.ORTHROS_FRAME_GRAB > 0 && this.dump) this.grabFrame(bf);
+    if (this.probe?.flicker && !this.glNull) this.probe.flicker.present(bf.fbo, bf.w, bf.h); // (telemetry: flicker-probe.js)
     if (this.gammaLut) this.presentGamma(w, h);
     else {
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
@@ -689,6 +758,18 @@ export class WebGLDevice {
     // (adaptive render resolution: the frame measured, the scale of the next ones — render-scale.js)
     const s = this.rsc.present(this.rscale);
     if (s !== this.rscale) this.applyRenderScale(s);
+  }
+  /**
+   * Debugging (dbg:ORTHROS_FRAME_GRAB=<n>): the back buffer of each of the next n presented frames saved as a PNG through
+   * the capture path (the harness writes them to <out>/capture: grab-<frame>.png) — consecutive frames, to look at
+   * flicker. A synchronous readback per frame: a diagnostic, never on by default.
+   */
+  grabFrame(f) {
+    globalThis.ORTHROS_FRAME_GRAB--;
+    const gl = this.gl, w = f.dw, h = f.dh, px = this.readTargetPixels(f), row = w * 4, out = new Uint8Array(px.length);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; // (a scaled target was read through a copy: the back buffer bound again for present's blit)
+    for (let y = 0; y < h; y++) out.set(px.subarray((h - 1 - y) * row, (h - y) * row), y * row); // (GL rows go up)
+    this.dump(`grab-${String(this.frame).padStart(6, '0')}`, w, h, out);
   }
   /** Frame capture: count the WebGL calls of the captured frame per function (instance methods shadow the prototype's). */
   startGlCount() {
@@ -804,7 +885,7 @@ export class WebGLDevice {
     gl.enable(gl.SCISSOR_TEST);
     glRect(v.x, v.y, v.x + v.w, v.y + v.h, f.dh, f.flip, f.kx, f.ky, r); gl.scissor(r[0], r[1], r[2], r[3]);
     let mask = 0;
-    if (flags & 1) { const c = colorToVec(color, this.tmp.v4); gl.colorMask(true, true, true, true); gl.clearColor(c[0], c[1], c[2], c[3]); mask |= gl.COLOR_BUFFER_BIT; }
+    if (flags & 1) { const c = colorToVec(color, this.tmp.v4), cm = f.cm; gl.colorMask((cm & 1) !== 0, (cm & 2) !== 0, (cm & 4) !== 0, (cm & 8) !== 0); gl.clearColor(c[0], c[1], c[2], c[3]); mask |= gl.COLOR_BUFFER_BIT; }
     if (flags & 2) { gl.depthMask(true); gl.clearDepth(z); mask |= gl.DEPTH_BUFFER_BIT; }
     if (flags & 4) { gl.stencilMask(0xff); gl.clearStencil(stencil); mask |= gl.STENCIL_BUFFER_BIT; }
     // (rectangles in guest memory, or their values copied by a render worker's recorder: 4 per rectangle)
@@ -1293,7 +1374,11 @@ export class WebGLDevice {
     const texU = this.noStateCache ? null : P.texU ??= { tex: TEX_U.tex.map((n) => U(n)), cube: TEX_U.cube.map((n) => U(n)), vol: TEX_U.vol.map((n) => U(n)) };
     for (let i = 0; i < info.stages.length; i++) {
       const st = info.stages[i];
-      if (!st.bound) continue;
+      if (!st.bound) { // (a stage the program samples without a texture: black, see bindNullTexture)
+        const k = (texU === null ? U(TEX_U.tex[i]) : texU.tex[i]) ? 0 : (texU === null ? U(TEX_U.cube[i]) : texU.cube[i]) ? 1 : (texU === null ? U(TEX_U.vol[i]) : texU.vol[i]) ? 2 : -1;
+        if (k >= 0) this.bindNullTexture(i, k);
+        continue;
+      }
       const l = texU === null ? U(st.cube ? TEX_U.cube[i] : st.volume ? TEX_U.vol[i] : TEX_U.tex[i]) : st.cube ? texU.cube[i] : st.volume ? texU.vol[i] : texU.tex[i];
       if (!l) continue;
       const tex = this.comImpl(dev.textures[i]); // the texture bound now (the cached program info only knows its kind)
@@ -1319,8 +1404,9 @@ export class WebGLDevice {
       // D3DSAMP_MAXMIPLEVEL / IDirect3DBaseTexture::SetLOD (managed textures): the most detailed level sampled (0: the
       // largest) — GL's minimum LOD (mipmapped sampling; the levels below it stay in use)
       const minLod = levels > 1 && mip ? Math.min(levels - 1, Math.max(this.samp(i, SAMP.MAXMIPLEVEL, 0) >>> 0, tex.lod ?? 0)) : 0;
-      // (measurement, dbg ORTHROS_GL_NEAREST=1: every sampler point-sampled from one level — the texture filtering's cost)
-      const nearest = !!globalThis.ORTHROS_GL_NEAREST;
+      // (measurement, dbg ORTHROS_GL_NEAREST=1: every sampler point-sampled from one level — the texture filtering's cost;
+      // a 32-bit float texture without OES_texture_float_linear is point-sampled too: linear filtering would leave it incomplete)
+      const nearestG = !!globalThis.ORTHROS_GL_NEAREST, nearest = nearestG || (!this.f32lin && FLOAT_FORMATS.get(tex.fmt)?.bits === 32);
       const skey = ((au & 7) | ((av & 7) << 3) | ((aw & 7) << 6) | ((mag & 3) << 9) | ((min & 3) << 11) | ((mip & 3) << 13) | ((levels > 1 ? 1 : 0) << 15) | ((an & 31) << 16)) + minLod * 0x200000 + (nearest ? 2 ** 40 : 0);
       let smp = this.samplerPool.get(skey);
       if (!smp) {
@@ -1337,7 +1423,7 @@ export class WebGLDevice {
       if (smpHit && smp !== ce.smp) this.cacheMiss(`sampler of stage ${i}`);
       if (gs.smp[i] !== smp) { gl.bindSampler(i, smp); gs.smp[i] = smp; }
       if (ce === undefined) ce = sc[i] = { tbl: null, ver: -1, tex: null, lod: 0, dev: null, smp: null, nearest: false };
-      ce.tbl = stbl; ce.ver = stbl?.ver; ce.tex = tex; ce.lod = tex.lod; ce.dev = dev; ce.smp = smp; ce.nearest = nearest;
+      ce.tbl = stbl; ce.ver = stbl?.ver; ce.tex = tex; ce.lod = tex.lod; ce.dev = dev; ce.smp = smp; ce.nearest = nearestG;
     }
     // depth / stencil / blending / color mask / culling: from the render states and the target's orientation only — not
     // looked at again while none of them changed since this device's last draw (the render state table's version) and
@@ -1347,12 +1433,13 @@ export class WebGLDevice {
     const rsT = dev.rs, rc = this.rasterCache ??= { gs: null, rs: null, ver: -1, flip: false, dev: null };
     if (rc.rs !== rsT) rsT.watchKeys(WATCH_RASTER, RASTER_KEYS);
     const wv = rsT.wv[WATCH_RASTER];
-    if (rc.gs === gs && rc.rs === rsT && rc.ver === wv && rc.flip === flip && rc.dev === dev && !this.glValidate && !this.noStateCache) {
-      if (apiOpt.glCheck) { const before = JSON.stringify(gs); this.applyRaster(dev, gs, flip); if (JSON.stringify(gs) !== before) this.cacheMiss('raster states'); }
+    const cm = tgt.cm;
+    if (rc.gs === gs && rc.rs === rsT && rc.ver === wv && rc.flip === flip && rc.cm === cm && rc.dev === dev && !this.glValidate && !this.noStateCache) {
+      if (apiOpt.glCheck) { const before = JSON.stringify(gs); this.applyRaster(dev, gs, flip, cm); if (JSON.stringify(gs) !== before) this.cacheMiss('raster states'); }
       return;
     }
-    this.applyRaster(dev, gs, flip);
-    rc.gs = gs; rc.rs = rsT; rc.ver = wv; rc.flip = flip; rc.dev = dev;
+    this.applyRaster(dev, gs, flip, cm);
+    rc.gs = gs; rc.rs = rsT; rc.ver = wv; rc.flip = flip; rc.cm = cm; rc.dev = dev;
   }
   /**
    * (dbg:ORTHROS_GL_CACHE_CHECK=1: what a per-draw cache skipped is derived anyway and compared — a difference is a stale
@@ -1372,7 +1459,7 @@ export class WebGLDevice {
     for (let i = 0; i < c.seen.length; i++) if (c.seen[i] !== c.srcU[i]) { this.cacheMiss(`${slot ? 'pixel' : 'vertex'} constant ${i >> 2}`); return; }
   }
   /** the depth, stencil, blend, color mask and culling states of the draw (applyState) */
-  applyRaster(dev, gs, flip) {
+  applyRaster(dev, gs, flip, cm = 15) {
     const gl = this.gl;
     // depth / stencil
     const zEnable = this.rs(RS.ZENABLE, 1) !== 0;
@@ -1423,7 +1510,7 @@ export class WebGLDevice {
       if (gs.bop !== bop || gs.bopA !== bopA) { gl.blendEquationSeparate(BLEND_OPS(gl)[bop] ?? gl.FUNC_ADD, BLEND_OPS(gl)[bopA] ?? gl.FUNC_ADD); gs.bop = bop; gs.bopA = bopA; }
       if (dev.api9) { const bf = this.rs(RS9.BLENDFACTOR, 0xffffffff); if (gs.bf !== bf) { const c = colorToVec(bf, this.tmp.v4); gl.blendColor(c[0], c[1], c[2], c[3]); gs.bf = bf; } }
     }
-    const cw = this.rs(RS.COLORWRITEENABLE, 0xf) & 0xf;
+    const cw = this.rs(RS.COLORWRITEENABLE, 0xf) & cm; // (cm: the target's channels, see floatStore)
     if (gs.cw !== cw) { gl.colorMask((cw & 1) !== 0, (cw & 2) !== 0, (cw & 4) !== 0, (cw & 8) !== 0); gs.cw = cw; }
     // Winding: a D3D front face is clockwise as seen on the screen. Clip space is shared, so GL window
     // space keeps that visual orientation on the screen (D3D front = GL clockwise) and mirrors it on
@@ -1498,12 +1585,13 @@ export class WebGLDevice {
     if (l.mem && !(t.usage & 1)) {
       const levels = t.levels ?? [l];
       levels.forEach((m, i) => { if (m.mem && m.width * m.height >= 4) this.dump(name + (i ? `-mip${i}` : ''), m.width, m.height, surfaceToRgba(this.mem, m.fmt ?? t.fmt, m.mem, m.width, m.height, m.pitch)); });
-      if (t.levels && !isDxt(t.fmt)) this.checkTextureCoherence(t);
+      if (t.levels && !isDxt(t.fmt) && !FLOAT_FORMATS.has(t.fmt)) this.checkTextureCoherence(t); // (read back as bytes: not a float texture)
       return;
     }
     const f = this.fbos.get(l.id); if (!f) return;
-    const gl = this.gl, rgba = new Uint8Array(f.w * f.h * 4);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; gl.readPixels(0, 0, f.w, f.h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo;
+    const rgba = this.readRgba8(f.w, f.h, f.fl);
     this.bindTarget(); // restore the current target
     this.dump(name, f.w, f.h, rgba); // texture targets are stored with D3D row order already
   }
@@ -1531,10 +1619,15 @@ export class WebGLDevice {
     this.log(`d3d-webgl: [cap] texture #${t.id} GL vs guest memory: ${report.length ? report.join('; ') : 'identical'}`);
   }
   /** Frame capture: the current render target after a draw (`--capture-draws`). */
+  /** the bound framebuffer's pixels as RGBA8 (captures): a float target's read as floats, clamped */
+  readRgba8(w, h, fl) {
+    const gl = this.gl;
+    if (fl) { const px = new Float32Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, px); return floatsToRgba8(px); }
+    const rgba = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba); return rgba;
+  }
   dumpTarget(what) {
     if (!this.dump || !this.captureDraws) return;
-    const gl = this.gl, { w, h, flip } = this.bindTarget(), rgba = new Uint8Array(w * h * 4);
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    const { w, h, flip, fl } = this.bindTarget(), rgba = this.readRgba8(w, h, fl);
     if (!flip) { const row = w * 4, tmp = new Uint8Array(row); for (let y = 0; y < h >> 1; y++) { const a = y * row, b = (h - 1 - y) * row; tmp.set(rgba.subarray(a, a + row)); rgba.copyWithin(a, b, b + row); rgba.set(tmp, b); } }
     for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
     this.captureSeq = (this.captureSeq ?? 0) + 1; // (a frame may have several scenes: frameDraws restarts at each)
@@ -1713,9 +1806,11 @@ export class WebGLDevice {
     const s = dev.streams[0], vb = this.comImpl(s.vb);
     const v0 = vb ? Array.from({ length: 7 }, (_, i) => mem.readF32(vb.mem + (s.offset ?? 0) + 4 * i).toFixed(2)).join(',') : '-';
     const attrs = P.attrNames.map((n, i) => `${n}:${gl.getVertexAttrib(i, gl.VERTEX_ATTRIB_ARRAY_ENABLED) ? gl.getVertexAttrib(i, gl.VERTEX_ATTRIB_ARRAY_SIZE) + '/' + gl.getVertexAttrib(i, gl.VERTEX_ATTRIB_ARRAY_STRIDE) : 'off'}`).join(' ');
-    const px = new Uint8Array(4); gl.readPixels(60, gl.drawingBufferHeight - 61, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    // (a float target is not read as bytes: a GL error)
+    const fl = !!this.fbos.get((dev.renderTarget ?? dev.backBuffers[0])?.id)?.fl, px = new Uint8Array(4), px2 = new Uint8Array(4);
+    if (!fl) gl.readPixels(60, gl.drawingBufferHeight - 61, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     const vp = gl.getParameter(gl.VIEWPORT);
-    const px2 = new Uint8Array(4); gl.readPixels(20, 20, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px2);
+    if (!fl) gl.readPixels(20, 20, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px2);
     this.log(`d3d-webgl: state depth=${gl.getParameter(gl.DEPTH_TEST)}/${gl.getParameter(gl.DEPTH_FUNC)} mask=${gl.getParameter(gl.DEPTH_WRITEMASK)} cull=${gl.getParameter(gl.CULL_FACE)} blend=${gl.getParameter(gl.BLEND)} scissor=${gl.getParameter(gl.SCISSOR_TEST)} cmask=${gl.getParameter(gl.COLOR_WRITEMASK)} range=${gl.getParameter(gl.DEPTH_RANGE)} fb=${gl.getParameter(gl.FRAMEBUFFER_BINDING)} prog=${gl.getParameter(gl.CURRENT_PROGRAM) === P.prog} vao=${gl.getParameter(gl.VERTEX_ARRAY_BINDING) === this.vao} pixel(20,20gl)=${Array.from(px2).join(',')} v1=[${vb ? Array.from({ length: 4 }, (_, i) => mem.readF32(vb.mem + 28 + 4 * i).toFixed(1)).join(',') : '-'}] v2=[${vb ? Array.from({ length: 4 }, (_, i) => mem.readF32(vb.mem + 56 + 4 * i).toFixed(1)).join(',') : '-'}]`);
     this.log(`d3d-webgl: draw ${this.stats.draws}: viewport ${Array.from(vp).join(',')} buffer ${gl.drawingBufferWidth}x${gl.drawingBufferHeight} attrs ${attrs} v0=[${v0}] stride=${s.stride} pixel(60,60)=${Array.from(px).join(',')} active=${gl.getProgramParameter(P.prog, gl.ACTIVE_ATTRIBUTES)} err=${gl.getError()}`);
     void info;
@@ -1804,6 +1899,7 @@ const RASTER_KEYS = (() => {
 })();
 
 export function packReadback(u8, base, s, rgba, w, h, flip) {
+  if (FLOAT_FORMATS.has(s.fmt)) { packFloatReadback(u8, base, s, rgba, w, h, flip); return; }
   const bpp = isDxt(s.fmt) ? 0 : surfacePitch(s.fmt, 1), fmt = s.fmt, cw = Math.min(w, s.width), ch = Math.min(h, s.height);
   for (let y = 0; y < ch; y++) {
     const src = (flip ? y : h - 1 - y) * w * 4;
@@ -1821,6 +1917,49 @@ export function packReadback(u8, base, s, rgba, w, h, flip) {
     }
   }
 }
+
+// ---------------------------------------------------------------- floating-point formats (FLOAT_FORMATS)
+/** a new float target's channels: the ones its format lacks read 1 (WebGLDevice.initFloatTarget) */
+const FLOAT_INIT = new Float32Array([0, 1, 1, 1]);
+const h2f = new Float32Array(1), h2u = new Uint32Array(h2f.buffer);
+/** the value of an IEEE half (its 16 bits) */
+export function halfToFloat(v) {
+  const e = (v >> 10) & 31, m = v & 1023, sign = v & 0x8000 ? -1 : 1;
+  return e === 0 ? sign * m * 2 ** -24 : e === 31 ? (m ? NaN : sign * Infinity) : sign * (1 + m / 1024) * 2 ** (e - 15);
+}
+/** the IEEE half nearest to a float (its 16 bits; round to nearest even, overflow to infinity) */
+export function floatToHalf(x) {
+  h2f[0] = x; const b = h2u[0], sign = (b >>> 16) & 0x8000, e = (b >>> 23) & 255, m = b & 0x7fffff;
+  if (e === 255) return sign | 0x7c00 | (m ? 0x200 : 0);
+  const he = e - 112; // (the half exponent: 127 - 15)
+  if (he >= 31) return sign | 0x7c00;
+  if (he <= 0) { if (he < -10) return sign; const mm = m | 0x800000, sh = 14 - he, r = mm >> sh, rest = mm & ((1 << sh) - 1), half = 1 << (sh - 1); return sign | (r + (rest > half || (rest === half && (r & 1)) ? 1 : 0)); }
+  const r = (he << 10) | (m >> 13), rest = m & 0x1fff;
+  return sign | (r + (rest > 0x1000 || (rest === 0x1000 && (r & 1)) ? 1 : 0)); // (a carry into the exponent is the right rounding)
+}
+/** RGBA texels of a float format (floatStore `st`) at `addr`, rows `pitch` bytes apart: Float32Array, or Uint16Array of halves; a missing channel 1 */
+function floatTexels(u8, addr, w, h, pitch, st) {
+  const n = w * h * 4, ch = st.ch, out = st.half ? new Uint16Array(n).fill(0x3c00) : new Float32Array(n).fill(1);
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  for (let y = 0; y < h; y++) {
+    let a = addr + y * pitch, o = y * w * 4;
+    if (st.half) for (let x = 0; x < w; x++, o += 4) for (let c = 0; c < ch; c++, a += 2) out[o + c] = dv.getUint16(a, true);
+    else for (let x = 0; x < w; x++, o += 4) for (let c = 0; c < ch; c++, a += 4) out[o + c] = dv.getFloat32(a, true);
+  }
+  return out;
+}
+/** packReadback of a float format: RGBA floats read from GL (or bytes from an RGBA8 fallback storage) into its texels */
+function packFloatReadback(u8, base, s, px, w, h, flip) {
+  const fs = FLOAT_FORMATS.get(s.fmt), bpc = fs.bits >> 3, k = px instanceof Float32Array ? 1 : 1 / 255, cw = Math.min(w, s.width), chn = Math.min(h, s.height);
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  for (let y = 0; y < chn; y++) {
+    const src = (flip ? y : h - 1 - y) * w * 4;
+    let o = base + y * s.pitch;
+    for (let x = 0; x < cw; x++) for (let c = 0; c < fs.ch; c++, o += bpc) { const v = px[src + x * 4 + c] * k; if (bpc === 2) dv.setUint16(o, floatToHalf(v), true); else dv.setFloat32(o, v, true); }
+  }
+}
+/** RGBA8 of RGBA floats (diagnostic images): clamped to [0, 1] */
+const floatsToRgba8 = (px) => { const out = new Uint8Array(px.length); for (let i = 0; i < px.length; i++) { const v = px[i]; out[i] = v >= 1 ? 255 : v > 0 ? Math.round(v * 255) : 0; } return out; };
 
 /**
  * D3D8 CopyRects between surfaces in guest memory (a render target never read back yet is read back first: `readback`),
@@ -1951,11 +2090,13 @@ export function createWebGLBackend(canvas, log, dump) {
   // a lost context (GPU reset, driver update, memory pressure) is restored by the browser when allowed
   // (preventDefault); the device then recreates its GL objects
   canvas.addEventListener?.('webglcontextlost', (e) => { e.preventDefault(); log('d3d-webgl: WebGL context lost'); });
-  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; probe?.reset(); backend.device?.contextRestored(); });
+  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; probe?.reset(); probe?.flicker?.reset(); backend.device?.contextRestored(); });
   // programs learned by earlier sessions, compiled ahead (queue: from the server; ready: started builds by key) and the
   // programs this session had to build at a draw (learned: sent to the server by the worker)
   // GPU time per frame and GL calls per frame for telemetry (gpu-probe.js; dbg ORTHROS_GL_PROBES=0: off)
   const probe = globalThis.ORTHROS_GL_PROBES === 0 ? null : new GpuProbe(gl);
+  // (and the frames' flicker and the WebGL errors: flicker-probe.js, its counters in the GPU stats)
+  if (probe) { probe.flicker = new FlickerProbe(gl, { log, errors: gpuClass(gpuInfo(gl).renderer) !== 'software' }); probe.stats.gpu.flk = probe.flicker.stats; }
   const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, pending: 0, hits: 0, devices: new Set() };
   // prewarm(): learned programs started before the game has a device when every guest thread waits (the worker calls
   // it then; nothing is queried), not while the game computes (a first launch's long single-threaded startup: the GPU
