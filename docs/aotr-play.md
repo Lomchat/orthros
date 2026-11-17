@@ -126,7 +126,8 @@ changes 0.00-0.06 % of the pixels between frames and 0.000-0.001 % flicker (A-B-
 (the shadow casters drawn again into the map, SwiftShader runs, same start position).
 
 The owner's flicker itself (2026-11-17, RTX 4050, ANGLE D3D11, build of 11-13) was not reproduced on SwiftShader with his
-settings — static camera, scroll, mouse moves over the map, deactivation / Reset / reactivation: no frame alternates
+settings — static camera, scroll, mouse moves over the map, deactivation / Reset / reactivation (`--bg pause` since
+background play, docs/game-frame.md): no frame alternates
 (the probe's metric on those frames: 0 % static, 0.11-0.14 % while scrolling, with or without the shadows) — and in
 that build no shadow map existed at all. Not reached by the scripted runs: placing a building (the dwarf selected at the
 start is no builder; its command bar has Stop and Extinguish Fire only). The frames' flicker and WebGL errors are now

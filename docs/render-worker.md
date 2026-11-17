@@ -1340,7 +1340,7 @@ scratch patch, not kept).
 - What Orthros adds per pixel is small next to the game's own pixel work, and the owner's draw run is mostly not pixels:
   his 800×600 session read 9-12 ms for ~430 draws already (~25 µs per draw on the GPU's timeline: ANGLE's D3D11
   translation of the GL calls in the GPU process, the GPU waiting for them), 20 ms for 537 draws (with the shadow pass)
-  at 2560×1440. Fewer GL calls per draw (12.3: −5 %) help there; the rest of the per-draw cost is the next track.
+  at 2560×1440. Fewer GL calls per draw (12.3: 5.96 → 5.80, −2.7 %) help there a little; the rest of the per-draw cost is the next track.
 
 ## Appendix: how the numbers were taken
 

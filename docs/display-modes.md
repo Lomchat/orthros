@@ -40,5 +40,5 @@ reads the canvas's own rectangle).
 Changing the resolution in a game's options is the game's business: it writes its own settings. The SAGE games (BFME,
 BFME II, RotWK, Age of the Ring) save it only when the player answers Yes to "keep the current display mode?", a
 dialog whose 10 s ran out in Orthros while the menus were rebuilt at the new mode (30 s headless, 24-41 s on the
-owner's laptop): the mode was reverted, or played but never saved. Their manifests give it 100 s (`patches`):
-docs/sage-display-mode-confirm.md.
+owner's laptop): the mode was reverted, or played but never saved. A manifest patch per version gives it 127 s
+(`patches`, installed in the manifests together with this page): docs/sage-display-mode-confirm.md.

@@ -3,7 +3,8 @@
 The owner, 2026-11-17: "is the resolution I choose kept? It seems not: I must choose the max resolution again at every
 launch." The chain was read end to end; the loss is in the game's own confirmation of a new display mode, whose ten
 seconds Orthros spends rebuilding the menus. The fix is a manifest patch per version (the D112 mechanism,
-`src/win32/process.js` `applyPatches`) that gives the confirmation 100 seconds.
+`src/win32/process.js` `applyPatches`) that gives the confirmation 127 seconds — data outside Git, installed in the
+manifests of `data/games` together with this page (until then the game still has its 10 s).
 
 ## What the evidence says
 
@@ -41,27 +42,29 @@ The game then switches back — or, most likely the owner's case (not reproduced
 device, failed as on Windows, and the game went on at 2560x1440 for the session without saving it. Either way the next
 launch is at the old resolution again.
 
-## The fix: 100 seconds to answer (manifest `patches`)
+## The fix: 127 seconds to answer (manifest `patches`)
 
-The 6 bytes that load the 10.0 (`fld dword [10.0f]`) become `push 100; fild dword [esp]; pop ecx` (`6a64db042459`):
-the same x87 stack, 100.0 instead of 10.0. `ecx` is free there (the next instruction pushes it only to make room for
+The 6 bytes that load the 10.0 (`fld dword [10.0f]`) become `push 127; fild dword [esp]; pop ecx` (`6a7fdb042459`):
+the same x87 stack, 127.0 instead of 10.0 — the most a `push imm8` gives in the same 6 bytes; the owner's two long
+frames around his change (23.8 + 40.7 s) would leave about a minute to answer, 100 s (the first version, verified
+below) only ~35 s. `ecx` is free there (the next instruction pushes it only to make room for
 the float argument, and it is reloaded after the call). The text still says 10 seconds; a browser shows every mode the
 game lists, so the switch back is a safety only.
 
 | Version (manifest id) | Module | rva | from | to |
 | --- | --- | --- | --- | --- |
-| Age of the Ring 10.0.2 (aotr-10) | game.dat | 0x51c0dc | d905d883bd00 | 6a64db042459 |
-| RotWK 2.01 (rotwk-201) | game.dat | 0x51c0dc | d905d883bd00 | 6a64db042459 |
-| RotWK 2.02 (rotwk-202) | lotrbfme2ep1.exe | 0x51c0dc | d905d883bd00 | 6a64db042459 |
-| BFME II 1.09 (bfme2) | game.dat | 0x51c0dc | d905d883bd00 | 6a64db042459 |
-| BFME II 1.06 (bfme2-106) | game.dat | 0x515ade | d9052824bc00 | 6a64db042459 |
-| BFME 1.03 / 2.22, 1.08 (bfme-vanilla, bfme1-108) | lotrbfme.exe | 0x51f130 | 6800002041 | 680000c842 |
+| Age of the Ring 10.0.2 (aotr-10) | game.dat | 0x51c0dc | d905d883bd00 | 6a7fdb042459 |
+| RotWK 2.01 (rotwk-201) | game.dat | 0x51c0dc | d905d883bd00 | 6a7fdb042459 |
+| RotWK 2.02 (rotwk-202) | lotrbfme2ep1.exe | 0x51c0dc | d905d883bd00 | 6a7fdb042459 |
+| BFME II 1.09 (bfme2) | game.dat | 0x51c0dc | d905d883bd00 | 6a7fdb042459 |
+| BFME II 1.06 (bfme2-106) | game.dat | 0x515ade | d9052824bc00 | 6a7fdb042459 |
+| BFME 1.03 / 2.22, 1.08 (bfme-vanilla, bfme1-108) | lotrbfme.exe | 0x51f130 | 6800002041 | 680000fe42 |
 
 The site was found by its context — `fld [c]; push ecx; fstp [esp]; call; pop ecx; mov ecx, [g]; push 1; call`
 whose constant `c` holds 10.0, right after the dialog's creation —: exactly once in each executable, at the same rva
 wherever docs/sage-camera-patch.md has the same one. BFME (lotrbfme.exe, both versions run the base's executable)
 passes the 10.0 as an immediate (`push 0x41200000`, then its timer setter, 0x921de0, the same `timeGetTime` deadline):
-100.0 is `0x42c80000`. A patch whose bytes differ (another release) is skipped with a warning.
+127.0 is `0x42fe0000` (`680000fe42`). A patch whose bytes differ (another release) is skipped with a warning.
 
 Changing a manifest changes the snapshot key of that version: players' own snapshots and the shared ones of these
 versions are made again once (a cold start each).
@@ -73,8 +76,8 @@ screen 1920x1080, OPTIONS > SETTINGS > 1280x720 > ACCEPT:
 
 - without the patch: no dialog on screen, switched back to 800x600 2-3 s after the menus came back; Options.ini
   unchanged;
-- with the patch: the dialog on screen for about a minute after the menus came back (still there 50 s later), then the
-  switch back at the 100 s deadline when nobody answers;
+- with the patch (100 s, the first version): the dialog on screen for about a minute after the menus came back (still
+  there 50 s later), then the switch back at the 100 s deadline when nobody answers;
 - with the patch and Yes clicked once the menus came back: the main menu at 1280x720, `Resolution = 1280 720` in the
   profile the harness saved;
 - the snapshots (`--opfs`, `?snapshot=auto`, the same browser store each time): a session at 800x600 kept its own
@@ -86,4 +89,7 @@ screen 1920x1080, OPTIONS > SETTINGS > 1280x720 > ACCEPT:
 Not verified in a browser: RotWK, BFME II and BFME (same code and bytes, found by them), a player's machine.
 
 The page's telemetry now carries the `CreateDevice WxH` and `Reset WxH` lines (`main.js` `TELEMETRY_GFX`): the mode a
-session starts in and each switch, so a player's kept or reverted resolution can be read after their next session.
+cold start creates its device in and each switch, so a player's kept or reverted resolution can be read after their
+next session. A session restored from a snapshot makes no `CreateDevice` (its mode is the snapshot's: one per display
+mode, docs/snapshot.md). Since background play (the page's blur no longer deactivates the game) a `Reset` is a real mode
+change, or a return from a lost device under `?bg=pause`.

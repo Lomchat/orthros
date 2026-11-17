@@ -555,7 +555,7 @@ function applyCursor() {
 /** Emulator warnings and graphics failures sent to the server as they happen (the first 60 of a session): what a
  * player's GPU / browser rejects (a shader, a GL error), an API the game needed, a slow program build. */
 const TELEMETRY_LOG = /^(warn|crash)$|^gfx$/;
-const TELEMETRY_GFX = /error|fail|lost|restor|built in|unsupported|unavailable|GL timing|flicker sample|CreateDevice \d+x\d+|Reset \d+x\d+/i; // (GL timing: the ?dbg=ORTHROS_GL_TIME=N@F probe on a player's GPU; flicker sample: gfx/flicker-probe.js; CreateDevice / Reset WxH: the display mode a session starts in and each change — a player's resolution kept or reverted, docs/sage-display-mode-confirm.md)
+const TELEMETRY_GFX = /error|fail|lost|restor|built in|unsupported|unavailable|GL timing|flicker sample|CreateDevice \d+x\d+|Reset \d+x\d+/i; // (GL timing: the ?dbg=ORTHROS_GL_TIME=N@F probe on a player's GPU; flicker sample: gfx/flicker-probe.js; CreateDevice / Reset WxH: the display mode a cold start creates its device in — a restored session has none — and each change: a player's resolution kept or reverted, docs/sage-display-mode-confirm.md)
 function log(kind, msg) {
   if (state.telemetry && TELEMETRY_LOG.test(kind) && (kind !== 'gfx' || TELEMETRY_GFX.test(msg)) && (state.logSent = (state.logSent ?? 0) + 1) <= 60) (state.queue ??= []).push({ t: Date.now(), event: 'log', kind, msg: String(msg).slice(0, String(msg).includes('\n') ? 24000 : 4000) });
   // frames of 150 ms and more with what happened during them (translation, program builds, file reads, waits): the
@@ -840,10 +840,10 @@ function typeText(text) {
 }
 window.orthrosInput = { push, EV, typeText, get pointer() { return pointer; } }; // (pointer: the harness's captured-mouse moves, pointer.js)
 
-/** The page's mouse → the input ring (pointer.js): captured relative motion, or the free pointer's position. */
 // background play: the game stays active when the page loses the focus (default; ?bg=pause or localStorage orthros.bg=pause: deactivated as before)
 state.bgActive = params.get('bg') ? params.get('bg') !== 'pause' : (() => { try { return localStorage.getItem('orthros.bg') !== 'pause'; } catch { return true; } })();
-state.heldInput = { keys: new Map(), buttons: new Set() };
+state.heldInput = { keys: new Map(), buttons: new Set() }; // (the page's keys and buttons down: released when it loses the focus)
+/** The page's mouse → the input ring (pointer.js): captured relative motion, or the free pointer's position. */
 const pointer = new PointerInput((type, a, b, c) => push(type, a, b, c), () => state.mode);
 state.pointer = pointer;
 /** A mouse event's position in the game's screen pixels (unclamped: the page's margins are outside the screen). */
@@ -911,17 +911,18 @@ function setupInput() {
   addEventListener('keydown', (e) => { if ((e.code === 'F12' && !e.shiftKey) || state.benchActive) return; const s = SCAN[e.code] ?? 0; state.heldInput.keys.set(e.code, vkOfCode(e.code)); push(EV.KEYDOWN, vkOfCode(e.code), s, e.repeat ? 1 : 0); if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) push(EV.CHAR, e.key.charCodeAt(0), 0, 0); if (!(e.ctrlKey && (e.code === 'KeyR' || e.code === 'KeyL'))) e.preventDefault(); });
   addEventListener('keyup', (e) => { if (state.benchActive) return; state.heldInput.keys.delete(e.code); push(EV.KEYUP, vkOfCode(e.code), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
   // Background play (default): the page losing the focus or being hidden does not deactivate the game (no WM_ACTIVATEAPP 0,
-  // no lost device); only the input is released cleanly. ?bg=pause or localStorage orthros.bg=pause: the old behaviour.
+  // no lost device); the input held is released cleanly (key and button ups, as a virtual machine's window does when it
+  // loses the focus). ?bg=pause or localStorage orthros.bg=pause: the old behaviour, the game deactivated — after the
+  // same release (DirectInput keeps no key down across it). The game keeps running (and rendering) in the background.
   const held = state.heldInput;
   addEventListener('blur', () => {
     pointer.left();
     if (state.benchActive) return;
-    if (state.bgActive) {
-      for (const [code, vk] of held.keys) push(EV.KEYUP, vk, SCAN[code] ?? 0, 0);
-      held.keys.clear();
-      for (const b of held.buttons) pointer.button(false, b, state.pointerLocked, pointer.vx, pointer.vy);
-      held.buttons.clear();
-    } else push(EV.FOCUS, 0, 0, 0);
+    for (const [code, vk] of held.keys) push(EV.KEYUP, vk, SCAN[code] ?? 0, 0);
+    held.keys.clear();
+    for (const b of held.buttons) pointer.button(false, b, state.pointerLocked, pointer.vx, pointer.vy);
+    held.buttons.clear();
+    if (!state.bgActive) push(EV.FOCUS, 0, 0, 0);
   });
   addEventListener('focus', () => { if (!state.benchActive && !state.bgActive) push(EV.FOCUS, 1, 0, 0); });
   document.addEventListener('pointerlockchange', () => {

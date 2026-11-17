@@ -31,7 +31,7 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10)), out = opt('out', 'build/shots');
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds; kinds move, click, rclick,
 // down/up (left button, for drags), key, text, shot (screenshot now), waitfps, waitpixel:x,y,r,g,b[,tol], waitframe:minDraws,maxDraws)
-// kinds: move x,y | click x,y | rclick x,y | wheel x,y[,notches] (default -1: one notch toward the player) | key vk[,scan] | keydown vk[,scan] / keyup vk[,scan] (a key held) | text <string> | look dx,dy[,n[,ms]] (a captured mouse moved: mouse-look) | blur | focus (window focus loss / return). Times are seconds from launch, or
+// kinds: move x,y | click x,y | rclick x,y | wheel x,y[,notches] (default -1: one notch toward the player) | key vk[,scan] | keydown vk[,scan] / keyup vk[,scan] (a key held) | text <string> | look dx,dy[,n[,ms]] (a captured mouse moved: mouse-look) | blur | focus (window focus loss / return: the page releases the keys and buttons it holds; the game stays active — with --bg pause it is deactivated / reactivated, its fullscreen device lost then Reset; these steps push straight into the input ring, so they hold nothing the page tracks). Times are seconds from launch, or
 // "+N" = N seconds after the first Direct3D frame (the loading time varies from run to run).
 // waitfps F: the following events wait until the game presents more than F frames/s for 3 consecutive seconds
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
@@ -140,7 +140,7 @@ if (opt('jit-opts')) { try { JSON.parse(opt('jit-opts')); } catch (e) { console.
 if (opt('dbg')) q.set('dbg', opt('dbg')); // (worker debug globals: NAME=value,...)
 if (args.includes('--api-times')) q.set('apitimes', '1'); // (time per API function in the slow-frame lines; adds a clock read per call)
 if (opt('programs') === '0') q.set('programs', '0');
-if (opt('bg')) q.set('bg', opt('bg')); // (background play: pause = the game is deactivated when the page loses the focus)
+if (opt('bg')) q.set('bg', opt('bg')); // (--bg pause: the game deactivated when the page loses the focus, as before background play)
 if (opt('dxt-helpers') !== undefined) q.set('dxthelpers', opt('dxt-helpers')); // (helper workers of the parallel DXT encoder; 0: none)
 if (opt('audiomix')) q.set('audiomix', opt('audiomix')); // (worker: the game's worker mixes into the ring instead of the AudioWorklet)
 if (opt('bgjit') === '0') q.set('bgjit', '0'); // (learned regions translated on this thread while the game waits, not in a background worker)
@@ -704,7 +704,7 @@ for (;;) {
       else if (kind === 'wheel') push(EV.WHEEL, (args[2] || -1) * 120, args[0], args[1]); // (notches: < 0 toward the player, a camera zooming out)
       else if (kind === 'key') { push(EV.KEYDOWN, args[0], args[1] || 0, 0); push(EV.KEYUP, args[0], args[1] || 0, 0); }
       else if (kind === 'text') window.orthrosInput.typeText(String(args[0]));
-      else if (kind === 'blur' || kind === 'focus') dispatchEvent(new Event(kind)); // the browser window loses / regains the focus (the game is deactivated / reactivated)
+      else if (kind === 'blur' || kind === 'focus') dispatchEvent(new Event(kind)); // the browser window loses / regains the focus (the game stays active; deactivated / reactivated with --bg pause)
     }, { kind: ev.kind, args: ev.args });
   }
   if (interpRangeAt && !interpRangeAt.done && t >= (interpRangeAt.rel ? (firstFrameAt === null ? Infinity : firstFrameAt + interpRangeAt.t) : interpRangeAt.t)) { interpRangeAt.done = true; console.log(`[input] interpreter ranges ${opt('interp-range')} at ${t.toFixed(0)}s`); await page.evaluate((ranges) => window.orthros.worker?.postMessage({ type: 'interpRange', ranges }), opt('interp-range')); }

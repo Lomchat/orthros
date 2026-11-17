@@ -52,6 +52,17 @@ only from the loading screen's link "Me prévenir quand le jeu est prêt" (shown
 site), never automatically. `shell.ready` = `{ hidden, notified }`; the Win32 page sends it as a `ready` telemetry event
 with the seconds from the loading screen to the first images.
 
+## Another window: the game keeps playing (Windows games, 2026-11-17)
+
+The page losing the focus (another window, another tab) is not an event of the game's desktop: like a virtual machine's
+window, the Win32 page (`main.js`) only releases what it holds — a key up for each key down, a button up for each
+button down — and the game stays the active application: no `WM_ACTIVATEAPP 0`, no lost fullscreen device, no Reset on
+the way back (the owner's "application deactivated: device lost" at each window switch, AotR 2026-11-17, and a switch
+back to a mode that failed on that lost device: docs/sage-display-mode-confirm.md). The "paused" banner is not shown.
+The game keeps running and rendering in the background (the worker and its OffscreenCanvas are not throttled with
+the page; not measured). `?bg=pause`, or `localStorage['orthros.bg'] = 'pause'`, restores the former behaviour, the
+game deactivated on blur (D052) — the harness's `--bg pause`; the emulator's deactivation path is unchanged.
+
 ## One identity: the Orthros account
 
 - **Saves** (`src/web/cloud-sync.js`, `CloudSave`): before a game starts, the account's copy is put in place when
