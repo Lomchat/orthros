@@ -483,7 +483,7 @@ function onWorkerMessage(m) {
       if (state.snapshotFrom === 'shared') { try { sessionStorage.setItem(SHARED_FAILED + state.snapshotKey, '1'); } catch { /* storage off */ } dropPieces(() => snapshotDir(state.manifest)); } // (else the reload fetches it again: a loop)
       dropSnapshot(state.manifest).then(() => { if (!headless) location.reload(); });
       break;
-    case 'log': log(m.kind, m.msg); break;
+    case 'log': if (m.msg?.event === 'flicker-capture') sendFlickerCapture(m.msg); else log(m.kind, m.msg); break; // (the GL backend's flicker capture rides its log channel: gfx/flicker-capture.js)
     case 'stdout': log('stdout', m.text); break;
     case 'started': if (state.sharedSnapshotCopy) { storeSnapshot(state.manifest, state.snapshotKey, state.sharedSnapshotCopy).catch(() => {}).then(() => dropPieces(() => snapshotDir(state.manifest))); state.sharedSnapshotCopy = null; } state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
     case 'dbg': if (/^ORTHROS_HOST_TIMER_HELPER_[A-Z]+$/.test(m.k)) { window[m.k] = m.v === undefined || m.v === '' ? undefined : m.v; state.timerHelper?.apply(); } break; // (harness dbg: steps for the page's own switches, forwarded by the worker)
@@ -555,7 +555,7 @@ function applyCursor() {
 /** Emulator warnings and graphics failures sent to the server as they happen (the first 60 of a session): what a
  * player's GPU / browser rejects (a shader, a GL error), an API the game needed, a slow program build. */
 const TELEMETRY_LOG = /^(warn|crash)$|^gfx$/;
-const TELEMETRY_GFX = /error|fail|lost|restor|built in|unsupported|unavailable|GL timing|flicker sample|CreateDevice \d+x\d+|Reset \d+x\d+/i; // (GL timing: the ?dbg=ORTHROS_GL_TIME=N@F probe on a player's GPU; flicker sample: gfx/flicker-probe.js; CreateDevice / Reset WxH: the display mode a cold start creates its device in — a restored session has none — and each change: a player's resolution kept or reverted, docs/sage-display-mode-confirm.md)
+const TELEMETRY_GFX = /error|fail|lost|restor|built in|unsupported|unavailable|GL timing|flicker sample|flicker capture|CreateDevice \d+x\d+|Reset \d+x\d+/i; // (GL timing: the ?dbg=ORTHROS_GL_TIME=N@F probe on a player's GPU; flicker sample: gfx/flicker-probe.js; CreateDevice / Reset WxH: the display mode a cold start creates its device in — a restored session has none — and each change: a player's resolution kept or reverted, docs/sage-display-mode-confirm.md)
 function log(kind, msg) {
   if (state.telemetry && TELEMETRY_LOG.test(kind) && (kind !== 'gfx' || TELEMETRY_GFX.test(msg)) && (state.logSent = (state.logSent ?? 0) + 1) <= 60) (state.queue ??= []).push({ t: Date.now(), event: 'log', kind, msg: String(msg).slice(0, String(msg).includes('\n') ? 24000 : 4000) });
   // frames of 150 ms and more with what happened during them (translation, program builds, file reads, waits): the
@@ -785,6 +785,18 @@ function sendCompat(final) {
   (state.queue ??= []).push({ t: now, event: 'compat', ...c });
 }
 function telemetryEvent(ev) { if (!state.telemetry) return; (state.queue ??= []).push({ t: Date.now(), ...ev }); flushTelemetry(); }
+/**
+ * The session's flicker capture (gfx/flicker-capture.js: the frames of its first strong flicker, their pictures and GL
+ * work, up to ~400 KB) sent alone, with what the page knows of the session: larger than a batch of records, and than
+ * the 64 KB a keepalive request may carry. tools/dev/flicker-capture.mjs reads it.
+ */
+function sendFlickerCapture(rec) {
+  const body = JSON.stringify({ ...rec, session: state.session, game: state.manifest ?? null, build: state.version ?? null, options: state.perfOptions ?? null, page: { glworker: params.get('glworker'), dbg: params.get('dbg') } });
+  const what = `d3d-webgl: flicker capture: ${rec.frames?.length ?? 0} frames, ${Math.round(body.length / 1024)} KB${rec.cut?.length ? ` (cut: ${rec.cut.join(', ')})` : ''}; the captured frames ${rec.small ? `${rec.small.aba} % A-B-A, ${rec.small.chg12} % changed` : 'without pictures'}`;
+  if (headless) window.__orthrosFlickerCapture = rec; // (a harness run without telemetry reads it there)
+  if (!state.telemetry) { log('gfx', `${what}; not sent (no telemetry)`); return; }
+  fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).then((r) => log(r.ok ? 'gfx' : 'warn', `${what}; sent, server ${r.status}`), (e) => log('warn', `${what}; not sent: ${e?.message ?? e}`));
+}
 /** Send the queued records; resolves to whether the server took them. */
 function flushTelemetry() {
   state.flushTimer = null;

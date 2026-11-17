@@ -260,3 +260,15 @@ scroll; a sample every 10 s can still miss a short one.
   at High no shadow map is made (checked in Node: the survey answers "not available" for formats 111-116 and no 1024x1024
   R32F texture is created). A machine debug flag: such a session takes no shared snapshot made without it.
 
+**His answer, the same evening** (build 5e73c77): "exactly the same" with both URLs. The probe caught it in that day's
+telemetry: session 2r71m0d3 (render worker, ~596 draws per frame) 13.1 % of the pixels flickering, an oval in the
+middle of the screen; 6ik891rf (`glworker=0`, ~574 draws) 72 % — nearly the whole frame alternating between two
+pictures; c2d62qjh (`ORTHROS_FLOAT_RT=0`, ~465 draws) 0.23 %, perhaps another scene. So the two consecutive frames
+differ on his GPU only: something undefined or implementation-dependent in what Orthros asks of WebGL / ANGLE D3D11,
+or a per-frame alternation of the game's own rendering (ping-pong targets, every-other-frame updates) that goes wrong
+there. **To tell which**: his next session's first strong flicker is captured once (src/gfx/flicker-capture.js,
+docs/real-machine-bench.md "Flicker capture"): three consecutive frames as pictures, the GL work of each — passes,
+targets, draws with their programs, textures, states, uniforms, GL errors — compared pass by pass, and his WebGL
+context. `node tools/dev/flicker-capture.mjs /var/lib/orthros/telemetry/telemetry-<date>.jsonl --session <id> --out <dir>`
+reads it: the pass that differs in frames 1-2 and 2-3 but not in 1-3 is the one that alternates.
+
