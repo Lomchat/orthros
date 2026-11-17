@@ -1,5 +1,5 @@
 // Code page conversions used by the A/W API pairs and by MultiByteToWideChar & co.
-// Supported: CP_ACP/1252 (Windows-1252), 28591 (Latin-1), 437/850 approximated as Latin-1,
+// Supported: CP_ACP/CP_THREAD_ACP/1252 (Windows-1252), 28591 (Latin-1), 437/850 approximated as Latin-1,
 // 65001 (UTF-8), 1200 (UTF-16LE).
 
 const CP1252_HIGH = [
@@ -22,7 +22,7 @@ export function decodeBytes(bytes, cp = CP_ACP) {
   if (cp === CP_UTF8) return new TextDecoder('utf-8').decode(unshared(bytes));
   if (cp === 1200) { let s = ''; for (let i = 0; i + 1 < bytes.length; i += 2) s += String.fromCharCode(bytes[i] | (bytes[i + 1] << 8)); return s; }
   let s = '';
-  const win = cp === 0 || cp === 1 || cp === 1252;
+  const win = cp === 0 || cp === 1 || cp === 3 || cp === 1252; // (3: CP_THREAD_ACP, the thread's ANSI code page)
   for (let i = 0; i < bytes.length; i++) {
     const b = bytes[i];
     s += String.fromCharCode(win && b >= 0x80 && b < 0xa0 ? CP1252_HIGH[b - 0x80] : b);
@@ -36,7 +36,7 @@ export function encodeString(s, cp = CP_ACP, defaultChar = 0x3f) {
   if (cp === 1200) { const b = new Uint8Array(s.length * 2); for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); b[2 * i] = c & 0xff; b[2 * i + 1] = c >> 8; } return { bytes: b, lossy: false }; }
   const out = new Uint8Array(s.length);
   let lossy = false;
-  const win = cp === 0 || cp === 1 || cp === 1252;
+  const win = cp === 0 || cp === 1 || cp === 3 || cp === 1252;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
     if (c < 0x80 || (c >= 0xa0 && c <= 0xff)) out[i] = c;
