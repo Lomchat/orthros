@@ -1663,6 +1663,22 @@ export class WebGLDevice {
     const rgba = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba); return rgba;
   }
   dumpTarget(what) {
+    // (debugging, dbg ORTHROS_CAPTURE_PROBE=x,y[;x,y...]: during a frame capture, those back-buffer pixels after every
+    // draw, logged when they change — which draw paints a pixel, or that none does, without dumping every target)
+    const probe = globalThis.ORTHROS_CAPTURE_PROBE;
+    if (probe) {
+      const { h, flip } = this.bindTarget();
+      this.probeSeq = (this.probeSeq ?? 0) + 1;
+      if (!flip) {
+        const gl = this.gl, px = new Uint8Array(4);
+        for (const [i, xy] of String(probe).split(';').entries()) {
+          const [x, y] = xy.split(',').map(Number);
+          gl.readPixels(x, h - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          const v = px.join(','), prev = (this.probeLast ??= [])[i];
+          if (v !== prev) { this.probeLast[i] = v; this.log(`d3d-webgl: [probe] ${x},${y} after draw ${this.probeSeq} (${what}): ${v}`); }
+        }
+      }
+    }
     if (!this.dump || !this.captureDraws) return;
     const { w, h, flip, fl } = this.bindTarget(), rgba = this.readRgba8(w, h, fl);
     if (!flip) { const row = w * 4, tmp = new Uint8Array(row); for (let y = 0; y < h >> 1; y++) { const a = y * row, b = (h - 1 - y) * row; tmp.set(rgba.subarray(a, a + row)); rgba.copyWithin(a, b, b + row); rgba.set(tmp, b); } }
