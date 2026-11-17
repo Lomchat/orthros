@@ -792,7 +792,7 @@ export function d3dCore(vm) {
       this.attachShadow();
       this.createBackBuffers(c);
       this.gfx?.reset?.(this);
-      vm.log('gfx', `d3d8: Reset ${this.pp.width}x${this.pp.height} fmt ${this.pp.format} ${this.pp.windowed ? 'windowed' : 'fullscreen'} swap ${this.pp.swap} x${this.pp.count} interval 0x${(this.pp.interval >>> 0).toString(16)}`);
+      vm.log('gfx', `d3d8: Reset ${this.pp.width}x${this.pp.height} fmt ${this.pp.format} ${this.pp.windowed ? 'windowed' : 'fullscreen'} swap ${this.pp.swap} interval 0x${(this.pp.interval >>> 0).toString(16)}`);
       return D3D_OK;
     }
     /**

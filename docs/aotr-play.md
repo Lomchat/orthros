@@ -292,7 +292,7 @@ lavapipe (the owner's options, 1600x1200 — 4:3, the scenario's menu clicks fit
 |---|---|---|---|
 | play, camera still, render worker | 3 + 8 | 22-23 % of the pixels differ (units, trees, water) | 0.00-0.03 % |
 | pause menu (Escape held 2 s), render worker | 8 | 0.8-2.7 % | 0.00 % |
-| the same, the guest clock slowed 20x (`ORTHROS_TIME_SCALE=0.05`: the game sees ~30 fps, as on the owner's GPU) | 8 | 0.6 % | 0.00 % |
+| the same, the guest clock slowed 20x (`ORTHROS_TIME_SCALE=0.05`, a debug switch of the hunt branch not merged: the game sees ~30 fps, as on the owner's GPU) | 8 | 0.6 % | 0.00 % |
 | play, that fast clock | 8 | 19-23 % | 0.00 % |
 | pause menu, in-thread backend (`--glworker 0`), slow then fast clock | 4 + 8 | 0.6-2.7 % | 0.00 % |
 
@@ -347,8 +347,7 @@ ORTHROS_FLICKER=2 --input-file <learn-aotr-skirmish.txt's steps to the play anch
 then `dbg:ORTHROS_FAKE_FLICKER=3` written to the control file.
 
 **Fixed on the way** (generic, not the cause here — the game clears depth and stencil at the start of each frame): the
-back buffers of a flipping chain (D3DSWAPEFFECT_FLIP with two back buffers: AotR's `swap 2 x2`, now in the CreateDevice
-line) each had their own depth-stencil, rotated with their color at every Present; Direct3D 9's depth surface is not part
+back buffers of a flipping chain (D3DSWAPEFFECT_FLIP with two back buffers: AotR's `swap 2` with BackBufferCount 2) each had their own depth-stencil, rotated with their color at every Present; Direct3D 9's depth surface is not part
 of the chain — the back buffers now share one (`attachDepth`, tests/d3d-flip-depth.test.js). **Left as it is**: Direct3D
 9 rotates `count + 1` buffers (the front buffer is in the queue), Orthros `count` (a single back buffer is never rotated,
 two alternate); a game that redraws its frames (AotR does) cannot see it, and changing it would expose games that rely on

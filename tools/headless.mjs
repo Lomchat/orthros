@@ -52,8 +52,8 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // objects created / opened; --log d3dx describes the first D3DXLoadSurfaceFromMemory calls.
 // Frames compared (flicker): dbg:ORTHROS_CAPTURE_FRAMES=<n> then capture: n consecutive frames captured ([cap] lines name
 // each draw's and clear's target and depth surface — the latter with --glworker 0 only —, blits, the GL error a draw left); dbg:ORTHROS_CAPTURE_NO_TEX=1: no
-// texture dumps with them; dbg:ORTHROS_TIME_SCALE=<s>: the guest's clock from now on at s guest ms per real ms (0.05:
-// the 1.5 fps of a software rasterizer seen by the game as 30, as on a player's GPU).
+// texture dumps with them. (dbg:ORTHROS_TIME_SCALE=<s>, the guest's clock slowed while the game runs, was used for the
+// 2026-11-17 flicker hunt and left out of main: it changes snapshot sources — docs/aotr-play.md.)
 let afterWait = false;
 let pagePointer = null, benchDone = false; // (the pointer position of the pageclick / pagemove steps)
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
