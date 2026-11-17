@@ -231,7 +231,8 @@ field `flicker` = `{ n, aba, chg, max, over1, glErrors, glError }` (percentages;
 `telemetry-report.mjs --session <id>` prints it per stretch. The first 3 samples over 1 % of a session are also logged
 (gfx `d3d-webgl: flicker sample: …`, sent with the telemetry): `mask 64x48` the pixels that flickered (one bit each, 4
 per hex digit, rows from the bottom of the picture) and `lum 32x24` the first frame's luminance (one hex digit per pixel,
-bottom row first) — where it flickers, on what. Reference (the metric computed on frames grabbed in
+bottom row first) — where it flickers, on what; `node tools/dev/flicker-samples.mjs <telemetry .jsonl> [--session <id>]`
+draws them (the luminance, the flickering pixels in red). Reference (the metric computed on frames grabbed in
 SwiftShader, AotR skirmish at 800x600): static camera 0 %, a camera scroll 0.11-0.13 % (max 0.23 %) — perspective
 motion; a picture that alternates gives far more (a measure to compare between sessions and builds). `?dbg=ORTHROS_FLICKER=0` (host-only) turns it off;
 `dbg:ORTHROS_FRAME_GRAB=<n>` (harness) saves the next n presented frames whole as PNG (`<out>/capture/grab-<frame>.png`).
