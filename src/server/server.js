@@ -38,6 +38,7 @@ import { launchSummary, launchSet, entryPieces, contentLight, PRE_PLAYABLE, CONT
 import { createBrCache } from './br-cache.js';
 import { moduleGraph, withPreloads } from './module-graph.js';
 import { PERF_MAX_BYTES, sanitizePerfRecord } from '../shared/perf-record.js';
+import { CAPTURE_POST_MAX_BYTES, sanitizeFlickerRecord } from '../shared/flicker-record.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import { portProfileDb } from '../vfs/profile-share.js';
@@ -99,6 +100,8 @@ export function loadManifests(dir, extra = null) {
   return out;
 }
 
+/** flicker captures the telemetry takes per day (a session sends one at most: src/gfx/flicker-capture.js) */
+const FLICKER_CAPTURES_PER_DAY = 100;
 /**
  * The build the server serves, for telemetry: the git commit of the tree, '+' when tracked files under src/ differ
  * from it, and the newest modification time of the runtime's files (the page loads src/ directly: an edited tree
@@ -149,6 +152,8 @@ export function createServer(opts = {}) {
   // (the game folders' shared bases, `<game>@base`: their files served and listed — /gamez, /game, /api/tree: dataManifest
   // — never a version of the home, of the learned orders or of the jobs that go through `manifests`)
   let bases = baseManifests(manifests);
+  /** flicker captures written today (/api/telemetry): FLICKER_CAPTURES_PER_DAY at most, ~40 MB */
+  let flickerCaptures = { day: null, n: 0 };
   /** A version's manifest, or a shared base's (game-catalog.js baseManifests). */
   const anyManifest = (id) => manifests.get(id) ?? bases.get(id);
   const trees = new Map(), treeObjs = new Map();
@@ -1867,11 +1872,19 @@ export function createServer(opts = {}) {
       if (p === '/api/snapshot-sources') return send(res, 200, JSON.stringify(snapshotSourcesHash(ROOT)), { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
-        let body = '', size = 0;
-        req.on('data', (d) => { size += d.length; if (size <= 256 * 1024) body += d; });
+        // (256 KB per batch; a flicker capture — one per session, src/shared/flicker-record.js — up to CAPTURE_POST_MAX_BYTES,
+        // FLICKER_CAPTURES_PER_DAY at most)
+        const chunks = []; let size = 0;
+        req.on('data', (d) => { size += d.length; if (size <= CAPTURE_POST_MAX_BYTES) chunks.push(d); });
         req.on('end', () => {
-          if (size > 256 * 1024) return send(res, 413, 'too large');
-          let rec; try { rec = JSON.parse(body); } catch { return send(res, 400, 'bad json'); }
+          if (size > CAPTURE_POST_MAX_BYTES) return send(res, 413, 'too large');
+          let rec; try { rec = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return send(res, 400, 'bad json'); }
+          if (rec?.event === 'flicker-capture') {
+            const v = sanitizeFlickerRecord(rec); if (!v.ok) return send(res, 400, v.error);
+            const day = new Date().toISOString().slice(0, 10), c = flickerCaptures.day === day ? flickerCaptures : (flickerCaptures = { day, n: 0 });
+            if (++c.n > FLICKER_CAPTURES_PER_DAY) return send(res, 429, 'enough captures today');
+            rec = v.rec;
+          } else if (size > 256 * 1024) return send(res, 413, 'too large');
           // (a passive session record, perf-record.js: its own size limit, checked and rebuilt from its known fields)
           if (rec?.event === 'perf') {
             if (size > PERF_MAX_BYTES) return send(res, 413, 'too large');

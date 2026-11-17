@@ -220,7 +220,7 @@ export class WebGLDevice {
     if (this.probe) { this.stats.gpu = this.probe.stats.gpu; this.stats.glCalls = this.probe.stats.glCalls; }
     this.tmp = { v4: new Float32Array(4) };
     this.fvfCache = new Map();
-    this.frameDraws = 0; this.sinceFlush = 0;
+    this.frameDraws = 0; this.sinceFlush = 0; this.fakeFlicker = 0; this.fakeN = 0;
     this.dumpShaders = !!opts.dumpShaders;
     this.noCull = !!opts.noCull;
     // (measurement / tests: the draw's sampler and raster states derived again at every draw, as before their caches;
@@ -812,7 +812,7 @@ export class WebGLDevice {
     dev.renderTarget = prev;
     gl.disable(gl.SCISSOR_TEST); this.gs.en[gl.SCISSOR_TEST] = false;
     if (globalThis.ORTHROS_FRAME_GRAB > 0 && this.dump) this.grabFrame(bf);
-    if (this.probe?.flicker && !this.glNull && this.probe.flicker.present(bf.fbo, bf.w, bf.h)) this.invalidateGlState(); // (telemetry: flicker-probe.js — its sample's draw set GL state directly)
+    if (this.probe?.flicker && !this.glNull && this.probe.flicker.present(bf.fbo, bf.w, bf.h, this)) this.invalidateGlState(); // (telemetry: flicker-probe.js — its sample's draw set GL state directly)
     if (this.gammaLut) this.presentGamma(w, h);
     else {
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
@@ -827,7 +827,8 @@ export class WebGLDevice {
     gl.flush(); this.sinceFlush = 0; this.frame++;
     if (!!globalThis.ORTHROS_FLOAT_RGBA !== this.floatRgba) this.switchFloatStorage(!!globalThis.ORTHROS_FLOAT_RGBA); // (measurement: floatStore)
     // (the GL call counter keeps away from the probes that wrap or replace GL methods themselves)
-    if (this.probe) this.probe.busy = !!(globalThis.ORTHROS_GL_TIME || this.glTime || this.glNull || globalThis.ORTHROS_GL_NULL || this.capturing || this.countLeft || this.captureAt > this.frame || this.glCallCounts);
+    if (this.probe) this.probe.busy = !!(globalThis.ORTHROS_GL_TIME || this.glTime || this.glNull || globalThis.ORTHROS_GL_NULL || this.capturing || this.countLeft || this.captureAt > this.frame || this.glCallCounts || this.probe.flicker?.recording);
+    this.fakeFlicker = globalThis.ORTHROS_FAKE_FLICKER > 0 ? globalThis.ORTHROS_FAKE_FLICKER | 0 : 0; this.fakeN = 0;
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
     if (this.pc?.queue.length) this.prewarmStep();
     if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); }
@@ -853,6 +854,55 @@ export class WebGLDevice {
     for (let y = 0; y < h; y++) out.set(px.subarray((h - 1 - y) * row, (h - y) * row), y * row); // (GL rows go up)
     this.dump(`grab-${String(this.frame).padStart(6, '0')}`, w, h, out);
   }
+  /**
+   * Debugging (dbg:ORTHROS_FAKE_FLICKER=<n>): on every other frame, every n-th draw is not issued (1: none of that
+   * frame's draws) — a flicker made on purpose, to check the flicker probe and its capture (flicker-capture.js) end to end.
+   */
+  fakeSkip() { return (this.frame & 1) === 1 && this.fakeN++ % this.fakeFlicker === 0; }
+  /** A flicker capture may wrap the GL methods: nothing else wraps or replaces them now (call counters, GL timing, null mode). */
+  flickerCanRecord() { return !this.probe?.glWrapped && !this.glTime && !this.glNull && !this.glCallCounts && !globalThis.ORTHROS_GL_TIME && !globalThis.ORTHROS_GL_NULL; }
+  /** The devices sharing this GL context (a capture sees all their work). */
+  contextDevices() { return this.pc?.devices?.size ? [...this.pc.devices] : [this]; }
+  /**
+   * A flicker capture's warm-up frame: every program's uniforms sent again at its next draw (their per-program caches
+   * dropped, as when the GL null mode ends), so that the capture knows their values.
+   */
+  flickerResend() {
+    for (const d of this.contextDevices()) for (const r of [...d.programsBySrc.values(), ...(d.pc ? [...d.pc.ready.values()].map((e) => e.rec).filter(Boolean) : [])]) { r.v = undefined; r.cs = null; r.ibU = undefined; }
+  }
+  /**
+   * The GL objects of this context's devices described for a flicker capture: Map object -> description (textures: the
+   * guest resource, its Direct3D format and size, render-target use and scale; framebuffers: the surface they draw into
+   * — back buffer, texture level or surface —, Direct3D and GL sizes, float storage, color and depth objects;
+   * renderbuffers; programs: their key; samplers: their parameters; buffers; vertex arrays: their element buffer;
+   * uniform locations: their names).
+   */
+  flickerDescribe() {
+    const out = new Map(), size = (s) => (s ? `${s.width}x${s.height}` : null);
+    for (const d of this.contextDevices()) {
+      for (const g of d.textures.values()) { const t = g.res, l0 = t?.levels?.[0] ?? t?.faces?.[0]?.[0] ?? null; out.set(g.tex, { kind: 'tex', res: t?.id ?? null, fmt: t?.fmt ?? null, size: size(l0) ?? size(t), levels: t?.levels?.length ?? t?.faces?.[0]?.length ?? null, cube: !!t?.faces, volume: !!t?.depth, rt: !!((t?.usage ?? 0) & 1), scale: g.scale ?? 1 }); }
+      for (const [id, f] of d.fbos) {
+        const s = f.surf, owner = s?.owner ? d.textures.get(s.owner.id)?.tex ?? null : null;
+        out.set(f.fbo, { kind: 'fb', surf: id, fmt: s?.fmt ?? null, size: `${f.dw}x${f.dh}`, gl: `${f.w}x${f.h}`, back: !!f.back, float: f.fl?.tag ?? null, tex: owner, level: s?.owner ? s.level ?? 0 : null, color: f.color ?? owner, depth: f.depth ?? null });
+        if (f.color) out.set(f.color, { kind: 'rb', fmt: f.fl ? f.fl.tag : 'RGBA8', size: `${f.w}x${f.h}` });
+        if (f.depth) out.set(f.depth, { kind: 'rb', fmt: 'DEPTH24_STENCIL8', size: `${f.w}x${f.h}` });
+      }
+      for (const r of [...d.programsBySrc.values(), ...(d.pc ? [...d.pc.ready.values()].map((e) => e.rec).filter(Boolean) : [])]) {
+        out.set(r.prog, { kind: 'prog', key: String(r.key ?? '').slice(0, 200) });
+        for (const n in r.locs ?? {}) { const l = r.locs[n]; if (l) out.set(l, { kind: 'loc', name: n }); }
+      }
+      for (const [k, smp] of d.samplerPool) out.set(smp, { kind: 'smp', key: String(k).slice(0, 80) });
+      for (const [id, b] of d.buffers) out.set(b.buf, { kind: 'buf', res: id, size: b.size ?? null });
+      if (d.upVbo) out.set(d.upVbo, { kind: 'buf', use: 'UP vertices' });
+      if (d.upIbo) out.set(d.upIbo, { kind: 'buf', use: 'UP indices' });
+      for (const v of d.vaos?.values() ?? []) if (v?.vao) out.set(v.vao, { kind: 'vao', ib: v.ib ?? null });
+      if (d.vao) out.set(d.vao, { kind: 'vao', use: 'default' });
+      for (const n of d.nullTex ?? []) if (n?.tex) out.set(n.tex, { kind: 'tex', use: 'stage without texture (black)' });
+    }
+    return out;
+  }
+  /** a captured frame's figures: the device's frame number, draws, render scale, swap chain */
+  flickerInfo() { const dev = this.dev; return { frame: this.frame, draws: this.frameDraws, rscale: this.rscale, mode: `${dev.pp?.width}x${dev.pp?.height}`, backBuffers: dev.backBuffers?.length ?? null, swap: dev.pp?.swap ?? null, devices: this.contextDevices().length }; }
   /** Frame capture: count the WebGL calls of the captured frame per function (instance methods shadow the prototype's). */
   startGlCount() {
     const gl = this.gl, counts = this.glCallCounts = new Map();
@@ -1887,6 +1937,7 @@ export class WebGLDevice {
   }
   drawPrimitive(type, start, count) {
     const gl = this.gl;
+    if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
     this.applyState(P, info);
     if (!this.bindAttributes(P, info.L)) return;
@@ -1922,6 +1973,7 @@ export class WebGLDevice {
   }
   drawIndexedPrimitive(type, minIdx, numV, start, count, baseVertex = this.dev.indices.base) {
     const gl = this.gl, dev = this.dev;
+    if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const ib = this.comImpl(dev.indices.ib); if (!ib) return;
     const info = this.program(); const P = info.p;
     this.applyState(P, info);
@@ -1954,6 +2006,7 @@ export class WebGLDevice {
   streamData(target, addr, n) { this.stats.upBytes = (this.stats.upBytes ?? 0) + n; if (n > 0) { if (typeof addr === 'number') this.gl.bufferData(target, this.mem.u8, this.gl.STREAM_DRAW, addr >>> 0, n); else this.gl.bufferData(target, addr, this.gl.STREAM_DRAW, 0, n); } else this.gl.bufferData(target, 0, this.gl.STREAM_DRAW); }
   drawPrimitiveUP(type, count, data, stride) {
     const gl = this.gl;
+    if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
     this.applyState(P, info);
     const n = this.vertexCount(type, count);
@@ -1968,6 +2021,7 @@ export class WebGLDevice {
   }
   drawIndexedPrimitiveUP(type, minIdx, numV, count, idx, ifmt, data, stride) {
     const gl = this.gl;
+    if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
     this.applyState(P, info);
     const n = this.vertexCount(type, count);
@@ -2073,7 +2127,8 @@ function startProgram(gl, vsSrc, fsSrc, attrNames) {
 /**
  * The program record of a started build: link status (compile logs on failure), uniforms, sampler units (the program
  * left in use). The first query waits until the GPU process has linked it.
- * @returns {{ rec: { prog: WebGLProgram, u: (name: string) => WebGLUniformLocation|null, attrNames: string[], key: string }, ok: boolean }}
+ * @returns {{ rec: { prog: WebGLProgram, u: (name: string) => WebGLUniformLocation|null, attrNames: string[], key: string, locs: object }, ok: boolean }}
+ * (`locs`: the locations by uniform name, u's cache — a flicker capture names the uniforms it records with it)
  */
 function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
   const prog = h.prog, ok = !!gl.getProgramParameter(prog, gl.LINK_STATUS);
@@ -2089,7 +2144,7 @@ function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
   // samplers: stage i always reads texture unit i (uniform values persist in the program: set once here)
   gl.useProgram(prog);
   setSamplerUnits(gl, u);
-  return { rec: { prog, u, attrNames, key }, ok };
+  return { rec: { prog, u, attrNames, key, locs: loc }, ok };
 }
 /** The sampler uniforms of the program in use: stage i reads texture unit i. */
 function setSamplerUnits(gl, u) {
@@ -2172,7 +2227,10 @@ export function createWebGLBackend(canvas, log, dump) {
   // GPU time per frame and GL calls per frame for telemetry (gpu-probe.js; dbg ORTHROS_GL_PROBES=0: off)
   const probe = globalThis.ORTHROS_GL_PROBES === 0 ? null : new GpuProbe(gl);
   // (and the frames' flicker and the WebGL errors: flicker-probe.js, its counters in the GPU stats)
-  if (probe) { probe.flicker = new FlickerProbe(gl, { log, errors: gpuClass(gpuInfo(gl).renderer) !== 'software' }); probe.stats.gpu.flk = probe.flicker.stats; }
+  // (its capture of a session's first strong flicker travels to the page on the log channel, as an object the page
+  // takes apart — src/web/main.js: no new message type through the emulator's worker, src/web/worker.js being one of
+  // the sources a snapshot depends on)
+  if (probe) { probe.flicker = new FlickerProbe(gl, { log, errors: gpuClass(gpuInfo(gl).renderer) !== 'software', send: (rec) => log(rec) }); probe.stats.gpu.flk = probe.flicker.stats; }
   const programCache = { queue: [], ready: new Map(), learned: [], t0: performance.now(), parallel: !!gl.getExtension('KHR_parallel_shader_compile'), used: [], started: 0, pending: 0, hits: 0, devices: new Set() };
   // prewarm(): learned programs started before the game has a device when every guest thread waits (the worker calls
   // it then; nothing is queried), not while the game computes (a first launch's long single-threaded startup: the GPU

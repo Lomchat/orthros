@@ -32,7 +32,12 @@
 // picture moved", and in the probe's first version, 2026-11-17 morning, whose lines say "of the pixels A-B-A over 3
 // frames"; rows from the bottom of the picture: GL order, hex by 4 blocks) and what the
 // screen looked like (`lum`: the first frame's luminance at W/2 x H/2, one hex digit per pixel, bottom row first).
+// The first sample of a session whose still share reaches CAPTURE_STILL (2 %) also starts a capture of the next frames
+// (flicker-capture.js: their pictures and the GL work of each, sent once with the telemetry through `send`); while it
+// runs no sample is taken.
 // ORTHROS_FLICKER (debug global): 0 off, 2 every sample logged.
+import { FlickerCapture, CAPTURE_STILL } from './flicker-capture.js';
+
 export const W = 64, H = 48, PERIOD_MS = 10000, T = 24;
 /**
  * The surroundings of a pixel that must be the same in the first and the third frame for its A-B-A to count as
@@ -109,25 +114,46 @@ export function flickerPictures(mask, px) {
 }
 
 export class FlickerProbe {
-  /** @param {WebGL2RenderingContext} gl @param {{ now?: () => number, log?: (m: string) => void, errors?: boolean }} [opts] `errors`: read getError */
+  /**
+   * @param {WebGL2RenderingContext} gl
+   * @param {{ now?: () => number, log?: (m: string) => void, errors?: boolean, send?: (rec: object) => void, encode?: Function }} [opts]
+   * `errors`: read getError; `send`: where the session's flicker capture goes (none: no capture); `encode`: its pictures' encoder (tests)
+   */
   constructor(gl, opts = {}) {
     this.gl = gl; this.now = opts.now ?? (() => performance.now()); this.log = opts.log ?? null; this.logged = 0; this.errors = opts.errors ?? true;
+    this.send = opts.send ?? null; this.encode = opts.encode; this.cap = null; this.captured = false; this.armed = null;
     this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, abaAlt: 0, glErrors: 0, glError: 0 };
     this.next = this.now() + PERIOD_MS; this.left = 0; this.read = null; this.presents = 0;
     this.reset();
   }
   /** The context was lost (and restored): its objects are gone, the sample in progress dropped. */
-  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; }
+  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; this.cap?.abort(); this.cap = null; }
+  /** a capture records GL calls now (the GL call counter keeps away) */
+  get recording() { return !!this.cap?.recording; }
   /**
-   * A frame is about to be shown: `fbo` (its back buffer's framebuffer, bound, scissor test off) of GL size w x h.
+   * A frame is about to be shown: `fbo` (its back buffer's framebuffer, bound, scissor test off) of GL size w x h;
+   * `dev`: the backend device presenting (a capture asks it for its GL objects and frame figures, flicker-capture.js).
    * Leaves `fbo` bound to FRAMEBUFFER. Returns true when it changed other GL state (the sample's draw: program,
    * textures, viewport, vertex array, capabilities) — the caller's cached GL state is then stale.
    */
-  present(fbo, w, h) {
-    if (globalThis.ORTHROS_FLICKER === 0 || globalThis.ORTHROS_GL_DISCARD) return false; // (nothing rasterized: nothing to compare — and its draw must not lift RASTERIZER_DISCARD)
+  present(fbo, w, h, dev = null) {
+    if (globalThis.ORTHROS_FLICKER === 0 || globalThis.ORTHROS_GL_DISCARD) { if (this.cap) { this.cap.abort(); this.cap = null; } return false; } // (nothing rasterized: nothing to compare — and its draw must not lift RASTERIZER_DISCARD)
     const gl = this.gl, now = this.now();
     this.presents++;
+    if (this.cap) { // (a capture runs: it takes the presents, no sample meanwhile)
+      const r = this.cap.present(fbo, w, h, dev);
+      if (this.cap.phase === 'done') { this.cap = null; this.next = now + PERIOD_MS; }
+      return r;
+    }
     if (this.read) this.poll();
+    // (a capture: armed by a sample, or asked — ORTHROS_FLICKER_CAPTURE=1, debugging —, when the GL methods are free to wrap)
+    const ask = globalThis.ORTHROS_FLICKER_CAPTURE;
+    if ((this.armed || ask === 1) && ask !== 0 && this.send && !this.left && !this.read && (dev?.flickerCanRecord?.() ?? true)) {
+      if (ask === 1) globalThis.ORTHROS_FLICKER_CAPTURE = undefined;
+      this.cap = new FlickerCapture(gl, { send: this.send, trigger: this.armed ?? { asked: true }, now: this.now, encode: this.encode, errors: this.errors });
+      this.armed = null; this.captured = true;
+      return this.cap.present(fbo, w, h, dev);
+    }
     if (!this.left && !this.read && now >= this.next) {
       this.next = now + PERIOD_MS; this.left = 3; this.w = w; this.h = h;
       if (this.errors) { const e = gl.getError(); if (e) { this.stats.glErrors++; this.stats.glError = e; } }
@@ -197,6 +223,7 @@ export class FlickerProbe {
     st.recent.push([st.n, still]); if (st.recent.length > RECENT) st.recent.shift();
     const over1 = still > 10000, alt = still >= ALT_MIN && 2 * still >= chg, abaAlt = !alt && aba >= ALT_MIN && 2 * aba >= chg;
     if (over1) st.over1++;
+    if (still >= CAPTURE_STILL && !this.captured && !this.armed && this.send) this.armed = { still: still / 1e4, aba: aba / 1e4, chg: chg / 1e4, w, h, sample: st.n }; // (the session's capture, at the next present: flicker-capture.js)
     if (alt) st.alt++;
     if (abaAlt) st.abaAlt++;
     const every = globalThis.ORTHROS_FLICKER === 2; // (debugging: every sample logged)

@@ -266,6 +266,42 @@ probe of the first version through `--old <copy>`), the worst case — the noise
 pixels A-B-A by chance — 1.05 against 0.88 ms; there the first version flagged every block of the frame (`over1`), this
 one none.
 
+**Flicker capture** (`src/gfx/flicker-capture.js`, since 2026-11-17 evening: the owner's frames alternate on his GPU only
+— 72 % of the frame with `?glworker=0`, an oval of 13 % with the render worker — and the probe's numbers cannot say why):
+the first sample of a session whose still A-B-A reaches 2 % hands the probe's next presents to a capture, once. It
+records the GL work of one warm-up frame and three kept frames — the context's prototype methods wrapped for those
+frames only (none before: a session without such a sample pays nothing; the methods are given back after; it waits
+while the GL call counter, GL timing or the null mode wraps them, and they keep away from it), the backend sending
+every program's uniforms again in the warm-up frame so their values are known — and copies each kept frame's back
+buffer at its present, downscaled to at most 640x360 (a filtered blit, a pixel-buffer readback behind a fence). Per
+frame: its passes (the framebuffer drawn into until another is bound), each pass's draws, clears, blits, readbacks, the
+GL error at its end (one `getError` per pass, capture frames only) and an incomplete framebuffer's status; per draw its
+program, textures on units 0-15 with sampler (`+n` drawn into by an earlier pass of the frame, `!` attached to the
+framebuffer drawn into, `~h` uploaded during the capture), raster state (blend, color mask, depth, stencil, cull, offset,
+draw buffers: an index into `states`), viewport and scissor, vertex array (with its attribute setup when seen), element
+buffer, the call, a hash of the program's uniform values (element by element: the backend's location names) and of the
+vertex data streamed for it. The record (`event: 'flicker-capture'`, `src/shared/flicker-record.js`) also holds the
+trigger sample, the WebGL context once (unmasked renderer, version, context attributes — antialias,
+preserveDrawingBuffer —, drawing buffer and canvas size, color space, extensions, limits, shader precisions), the
+three pictures as JPEG with their A-B-A share, the GL objects named (the backend's description: guest resource,
+Direct3D format and size, render target or texture level, GL size and render scale, float storage, depth renderbuffer;
+programs by key), what alternates (`alt`: per pass, the events of frames 1 and 3 missing in frame 2, frame 2's found in
+neither, and the draws whose fields are the same in 1 and 3 but not in 2 — what keeps changing, such as a dynamic
+buffer's offset that moves every frame, differs in 1-3 too and is left out) and the frames compared pair by pair (1-2,
+2-3, 1-3; per changed draw, the fields that differ). Passes are paired by framebuffer, the back buffers by role (a
+flipping chain rotates them: AotR's two alternate every frame); draws by equality, then by a loose key (the same draw
+whose offset, uniforms or data moved), then by program and primitive. It is cut to 400 KB (lower JPEG qualities,
+passes the same in every frame emptied, events cut, descriptions dropped; `cut` says which) and travels to the page on
+the backend's log channel as an object (no new message type through `src/web/worker.js`, a snapshot source), which posts
+it alone to `/api/telemetry` (a keepalive request carries 64 KB at most). The server takes a capture up to 416 KB, at most
+100 a day (other telemetry keeps its 256 KB), checked and rebuilt from its known fields. `node tools/dev/flicker-capture.mjs
+<telemetry .jsonl> [--session <id>] [--out <dir>]` writes the pictures as PNG with the difference 1-2 and the A-B-A
+pixels in red, and prints the context, each frame's passes and the comparison. `?dbg=ORTHROS_FLICKER_CAPTURE=0`
+(host-only) never captures, `=1` captures at the next present; `dbg:ORTHROS_FAKE_FLICKER=<n>` (harness) skips every
+n-th draw of every other frame — a flicker on purpose, to check the whole chain. The check above also runs a capture on
+synthetic frames (a square drawn red and blue in turn by a uniform over still stripes: one record, three decodable
+pictures red / blue / red, 1-2 differing in the draw's uniforms and 1-3 not, 77 KB, WebGL's methods native again).
+
 **GL calls**: during a 30-frame window every 20 s the context's methods are wrapped by counting closures (calls made
 through the context object; the wrapping is removed after the window; it stays away while a frame capture, GL timing or
 the GL null mode wraps the methods themselves).

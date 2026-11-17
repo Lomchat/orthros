@@ -4,12 +4,17 @@
 //   the color write mask applies to a blit (the backend sets a float target's missing channels to 1 after one anyway);
 // - the flicker probe (src/gfx/flicker-probe.js) on synthetic frames of 800 x 600: a 4 x 4 patch that goes A-B-A is
 //   counted (16 pixels) in its block, a still frame and a scroll are not, and its cost (CPU time of present() at the
-//   sample's frames and at the others; GPU work of a sample: gl.finish() timed with and without it).
+//   sample's frames and at the others; GPU work of a sample: gl.finish() timed with and without it);
+// - its capture (src/gfx/flicker-capture.js) on frames whose drawn square alternates (a uniform's color) over a still
+//   background: one record sent, its three JPEG pictures decodable and showing the A-B-A, frames 1-2 differing in the
+//   draw's uniforms and 1-3 not, under the size limit, WebGL's own methods back on the prototype afterwards.
 // Usage: tools/with-browser-slot.sh node tools/check/flicker-probe-check.mjs [--old <repo copy>]  (--old: the same
 // flicker scenes through that copy's probe too, for a before / after)
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
+import { decodeJpeg } from '../../src/gfx/codecs/jpeg.js';
+import { CAPTURE_MAX_BYTES } from '../../src/shared/flicker-record.js';
 
 const root = new URL('../..', import.meta.url).pathname;
 const args = process.argv.slice(2), old = args.includes('--old') ? args[args.indexOf('--old') + 1] : null;
@@ -137,6 +142,46 @@ try {
   check(cur.noiseStill.n === 1 && cur.noiseStill.chgPpm === 0 && cur.noiseStill.stillPpm === 0, 'a still textured frame: nothing');
   check(cur.err === 0 && cur.patch.glErrors === 0, 'no GL error');
   if (old) console.log(`flicker probe of ${old}: ${JSON.stringify(await scenes('/old/src/gfx/flicker-probe.js'))}`);
+
+  // ---- the capture: a 200 x 200 square drawn red / blue / red... over still stripes
+  const cap = await page.evaluate(async () => {
+    const { FlickerProbe } = await import('/src/gfx/flicker-probe.js');
+    const gl = document.getElementById('c').getContext('webgl2'), w = 800, h = 600, native = (k) => /\[native code\]/.test(String(WebGL2RenderingContext.prototype[k]));
+    const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, w, h);
+    const back = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, back); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb);
+    const sh = (type, src) => { const x = gl.createShader(type); gl.shaderSource(x, src); gl.compileShader(x); return x; };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, '#version 300 es\nin vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }'));
+    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, '#version 300 es\nprecision mediump float; uniform vec4 u_color; out vec4 o; void main() { o = u_color; }'));
+    gl.bindAttribLocation(prog, 0, 'p'); gl.linkProgram(prog);
+    const uColor = gl.getUniformLocation(prog, 'u_color'), vao = gl.createVertexArray(), vb = gl.createBuffer();
+    gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.25, -0.33, 0.25, -0.33, -0.25, 0.33, 0.25, 0.33]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    let n = 0;
+    const frame = () => {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, back); gl.viewport(0, 0, w, h); gl.enable(gl.SCISSOR_TEST);
+      for (let x = 0; x < w; x += 16) { const v = (x / 16) % 2 ? 0.3 : 0.7; gl.scissor(x, 0, 16, h); gl.clearColor(v, v, v, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+      gl.disable(gl.SCISSOR_TEST);
+      gl.useProgram(prog); gl.uniform4fv(uColor, n++ % 2 ? [0, 0, 1, 1] : [1, 0, 0, 1]); gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    };
+    let t = 0, rec = null;
+    const probe = new FlickerProbe(gl, { now: () => t, send: (r) => { rec = r; } });
+    for (let i = 0; i < 400 && !rec; i++) { frame(); probe.present(back, w, h); gl.bindFramebuffer(gl.FRAMEBUFFER, null); t += 400; await new Promise((r) => setTimeout(r, 5)); }
+    for (let i = 0; i < 50 && probe.cap; i++) { probe.present(back, w, h); await new Promise((r) => setTimeout(r, 5)); }
+    return { rec, json: rec ? JSON.stringify(rec).length : 0, native: ['drawArrays', 'bindFramebuffer', 'uniform4fv', 'getUniformLocation'].every(native), err: gl.getError() };
+  });
+  const rec = cap.rec;
+  check(!!rec, 'a capture sent after a flickering sample');
+  if (rec) {
+    const imgs = rec.images.map((b) => decodeJpeg(new Uint8Array(Buffer.from(b, 'base64'))));
+    const at = (im, x, y) => { const o = 4 * (y * im.width + x); return [im.data[o], im.data[o + 1], im.data[o + 2]]; }, mid = (im) => at(im, im.width >> 1, im.height >> 1);
+    console.log(`capture: ${cap.json} characters, pictures ${rec.img.join('x')} q ${rec.q} (${rec.images.map((b) => b.length).join(', ')} base64), centres ${imgs.map((im) => mid(im).join(',')).join(' / ')}; small ${JSON.stringify(rec.small)}; trigger ${JSON.stringify(rec.trigger)}; diff 1-2 ${JSON.stringify(rec.diff['1-2'].passes.map((p) => p.fields))}, 1-3 ${rec.diff['1-3'].passes.length} passes differ; notes ${JSON.stringify(rec.notes)}; ${rec.gl.renderer}`);
+    const c = imgs.map(mid), red = (p) => p[0] > 200 && p[2] < 60, blue = (p) => p[2] > 200 && p[0] < 60;
+    check(imgs.length === 3 && imgs.every((im) => im.width === rec.img[0]) && ((red(c[0]) && blue(c[1]) && red(c[2])) || (blue(c[0]) && red(c[1]) && blue(c[2]))), 'three pictures: the square red, blue, red (or the other way) in the middle');
+    check(rec.small?.aba > 5, `the downscaled frames A-B-A (${rec.small?.aba} %)`);
+    check(rec.frames.every((f) => f.draws === 1) && rec.diff['1-2'].passes.some((p) => p.fields.uni === 1) && rec.diff['1-3'].passes.length === 0, 'frames 1-2 differ in the draw\'s uniforms, 1-3 not');
+    check(cap.json <= CAPTURE_MAX_BYTES && cap.native && cap.err === 0, 'under the size limit, WebGL\'s methods back, no GL error');
+  }
 } finally { await browser.close(); }
 console.log(failed ? `${failed} check(s) failed` : 'all checks passed');
 process.exit(failed ? 1 : 0);
