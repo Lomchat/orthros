@@ -107,8 +107,8 @@ machine fast enough to play it.
 The owner plays at `StaticGameLOD = High` (his Options.ini: Resolution 800 600, IdealStaticGameLOD VeryLow), whose
 entry in Age of the Ring's GameLOD.ini turns `UseShadowMapping` on (Medium, the scenarios' profile build/saves/aotr-10:
 off; shadow volumes and decals are off at High). The engine (game.dat, RotWK's) keeps depth in a color render target:
-it asks D3DXCreateTexture for R32F render-target textures (game.dat 0x47d419, 1024x1024 here, a second one for the
-post-process), with a D24S8 depth surface; its creation helper (0x51dac0) gives no texture when the format was refused by
+it asks D3DXCreateTexture for R32F render-target textures (game.dat 0x47d419, 1024x1024 here; a second one under a
+flag at 0x47d47e), with a D24S8 depth surface; its creation helper (0x51dac0) gives no texture when the format was refused by
 the CheckDeviceFormat survey of every format at start-up. The pass writes z/w as color (`_CreateShadowMap`: `mov oC0,
 t0.x`), shadow.fxo dilates it (`_ShadowMapPostProcess`, max of 5 taps), and the receivers compare 4 taps against z - 0.002
 (terrain.fxo): it needs float precision — 8 bits per channel would show as acne crawling with the camera.
