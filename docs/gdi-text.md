@@ -188,3 +188,6 @@ game asked the "Arial Unicode MS" stand-in, which claimed every character, and `
 Orthros in the browser, same program (after): Albertus MT -53 gives U+0092 glyph 8, cx 13, ABC 1,12,0 (’) and U+0085
 glyph 121, cx 53 (…), "l\u0092a" drawn like "l’a"; TAB, DEL, U+4E00 0xFFFF / glyph 1, 18 px, blank (Wine's numbers but
 DEL, 26 px in Wine); the "Arial Unicode MS" stand-in: TAB and DEL 0xFFFF, a 40 px box (Wine's Liberation Sans: 40 px).
+In game (AotR 10.0.2 in French, the intro's subtitles at 1024x768, headless Chromium, same run before and after):
+"ténèbres[NEL]", "[NEL]et maîtriser votre destin", "c[ST]ur", "inédits [SPA] 14 missions" became "ténèbres…",
+"[…et maîtriser votre destin]", "cœur", "inédits – 14 missions", in Albertus MT.
