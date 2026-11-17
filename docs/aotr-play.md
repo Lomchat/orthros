@@ -260,3 +260,57 @@ scroll; a sample every 10 s can still miss a short one.
   at High no shadow map is made (checked in Node: the survey answers "not available" for formats 111-116 and no 1024x1024
   R32F texture is created). A machine debug flag: such a session takes no shared snapshot made without it.
 
+
+## Other GL implementations, the pause menu and the frame's work (2026-11-17 evening, still open)
+
+**The owner's evening samples** (build 5e73c77, RTX 4050, ANGLE D3D11, 2560x1440): the two large ones — 13.1 % still
+A-B-A in a round patch at the centre (session 2r71m0d3, render worker) and 72 % of the whole frame (6ik891rf,
+`glworker=0`) — were both taken **with the pause menu open**, a few seconds after the skirmish loaded: the `lum` picture
+shows its dark panel (~800x780 at the centre) and the six buttons, which themselves did not alternate (holes in the
+mask). The `ORTHROS_FLOAT_RT=0` session's sample (c2d62qjh, 0.23 %, small patches) was in play, another view: the three
+URLs compared different screens, so that A/B neither clears nor convicts the R32F shadow map.
+
+**Other rasterizers than SwiftShader on this server** (no GPU; Mesa 25.2.8 is installed): ANGLE on Vulkan with Mesa's
+lavapipe — `tools/headless.mjs --gl vulkan` (`--use-angle=vulkan`, the lavapipe ICD; renderer "ANGLE (Mesa, Vulkan
+1.4.318 (llvmpipe (LLVM 20.1.2 256 bits)))") — and ANGLE on OpenGL ES with Mesa's llvmpipe (`--gl gl-egl`; "ANGLE (Mesa,
+llvmpipe (LLVM 20.1.2 256 bits), OpenGL ES 3.2)"); `--use-angle=gl` and `--use-gl=egl` fall back to SwiftShader. Runs on
+lavapipe (the owner's options, 1600x1200 — 4:3, the scenario's menu clicks fit —, `learn-aotr-skirmish`'s start,
+`ORTHROS_FLICKER=2`, consecutive frames grabbed; 1.2-1.8 fps):
+
+| stretch | frames compared | changed between frames | A-B-A |
+|---|---|---|---|
+| play, camera still, render worker | 3 + 8 | 22-23 % of the pixels differ (units, trees, water) | 0.00-0.03 % |
+| pause menu (Escape held 2 s), render worker | 8 | 0.8-2.7 % | 0.00 % |
+| the same, the guest clock slowed 20x (`ORTHROS_TIME_SCALE=0.05`: the game sees ~30 fps, as on the owner's GPU) | 8 | 0.6 % | 0.00 % |
+| play, that fast clock | 8 | 19-23 % | 0.00 % |
+| pause menu, in-thread backend (`--glworker 0`), slow then fast clock | 4 + 8 | 0.6-2.7 % | 0.00 % |
+
+**The frame's work** (`dbg:ORTHROS_CAPTURE_FRAMES=2` then `capture`: two consecutive frames, in play and in the pause
+menu, both paths): the same in every captured frame, pause or play — the R32F shadow map (1024x1024, its own 1024x1024
+depth surface) cleared then ~209 draws and four border lines; a 512x512 target (the water reflection, with the main
+depth surface) cleared then ~500 draws; the back buffer cleared (color, depth, stencil) then ~390-410 draws; the glow:
+256x256 #10 cleared, #12 cleared, 4 draws #10 → #12 and 4 #12 → #10, composited; the portrait (its viewport's depth and
+stencil cleared); the interface (stencil cleared). Every target is cleared before it is drawn into or sampled in the
+frame, none is sampled while it is the target, nothing reads what an earlier frame left in it — the pause menu draws the
+whole scene again every frame (434 effect passes per frame in the API trace), it does not rely on the back buffer's
+contents. With every target cleared, a frame's picture is a function of that frame's commands alone.
+**Occlusion queries**: the game made no IDirect3DQuery9 call in 13 traced frames; and Orthros' queries never ask GL
+(`GetData` answers S_OK at once, an occlusion count of at least 1: always visible), so no answer can depend on when a GPU
+finishes. **WebGL errors**: none on the owner's sessions (`glErrors` 0: the probe reads `getError` every 10 s there).
+
+So the alternation the owner sees is either commands that alternate on his machine only (not seen with his frame rate
+simulated) or two pictures from the same commands on his GPU. **To tell them apart**, the flicker probe now records each
+sampled frame's command signature (src/gfx/d3d8-webgl.js `sigMix`: every draw's program, the target the game set, its
+primitive count and start; every clear, blit, the frame's upload counts) and its log line says `commands same`, `aba`
+or `differ` with the three values; the summary counts the `alt` samples drawn by the same commands three times
+(`altSame`: the GPU) and those whose commands went A-B-A too (`altCmdAba`: the game). His next pause menu answers it.
+
+**Fixed on the way** (generic, not the cause here — the game clears depth and stencil at the start of each frame): the
+back buffers of a flipping chain (D3DSWAPEFFECT_FLIP with two back buffers: AotR's `swap 2 x2`, now in the CreateDevice
+line) each had their own depth-stencil, rotated with their color at every Present; Direct3D 9's depth surface is not part
+of the chain — the back buffers now share one (`attachDepth`, tests/d3d-flip-depth.test.js). **Left as it is**: Direct3D
+9 rotates `count + 1` buffers (the front buffer is in the queue), Orthros `count` (a single back buffer is never rotated,
+two alternate); a game that redraws its frames (AotR does) cannot see it, and changing it would expose games that rely on
+a single back buffer keeping its contents. **Not done**: the game's depth surface (`SetDepthStencilSurface`) is still
+not what GL attaches — each color target keeps its own; AotR's reflection and glow targets use the main 1600x1200 depth
+surface with a smaller viewport, which this happens to reproduce since they clear it first.

@@ -245,14 +245,16 @@ the frame, mostly missing such a patch and blurring what it saw). The same perio
 feedback loop, a draw WebGL refuses: an error; not on a software rasterizer, where that round trip waits for seconds of
 queued work). Stats `gpu.flk` (cumulative; `aba`, `still`, `chg`, `max` in ppm of the frame, `recent` the last 32 samples'
 still share for a window's own maximum), summary field `flicker` = `{ n, aba, still, chg, max, over1, alt, abaAlt,
-glErrors, glError }` (percentages, 4 decimals; `max`, `over1` and `alt` are about `still`, about `aba` in the first version),
+altSame, altCmdAba, glErrors, glError }` (percentages, 4 decimals; `max`, `over1` and `alt` are about `still`, about `aba` in the first version),
 `telemetry-report.mjs --session <id>` prints it per stretch. Flicker shows as still A-B-A that dominates what changed
 (`alt`). The first 3 samples with still A-B-A over 1 %, `alt` or `abaAlt` of a session are also logged (gfx `d3d-webgl: flicker
 sample: …`, sent with the telemetry, both shares and the changed one in the text): `mask 64x48` the blocks where pixels
 flickered (still A-B-A; any A-B-A for an `abaAlt` sample, whose line says so, and in the first version: a scroll
 flagged the whole terrain; one bit each, 4 per hex digit,
 rows from the bottom of the picture) and `lum 32x24` the first frame's luminance (one hex digit per pixel, bottom row
-first) — where it flickers, on what; `node tools/dev/flicker-samples.mjs <telemetry .jsonl> [--session <id>]` draws them
+first) — where it flickers, on what; `commands same|aba|differ` the three frames' command signatures (`altSame`: `alt`
+samples drawn by the same commands three times — the GPU's doing; `altCmdAba`: the commands alternated too — the game's;
+docs/aotr-play.md "Other GL implementations"); `node tools/dev/flicker-samples.mjs <telemetry .jsonl> [--session <id>]` draws them
 (the luminance, the flickering blocks in red). `?dbg=ORTHROS_FLICKER=0` (host-only) turns it off, `=2` logs every sample
 (a harness run: `dbg:ORTHROS_FLICKER=2`); `dbg:ORTHROS_FRAME_GRAB=<n>` (harness) saves the next n presented frames whole
 as PNG (`<out>/capture/grab-<frame>.png`). `tools/with-browser-slot.sh node tools/check/flicker-probe-check.mjs` checks it

@@ -84,6 +84,14 @@ void main() {
   o = vec4(aba / n, chg / n, la0 / n / 255.0, sab / n);
 }`;
 
+/**
+ * The three sampled frames' command signatures compared: 'same' (one frame's work drawn three times), 'aba' (the first
+ * and the third the same, the second other), 'differ', or null when not known.
+ */
+export function cmdPattern(sigs) {
+  if (!sigs || sigs.some((x) => x === undefined)) return null;
+  return sigs[0] === sigs[1] && sigs[1] === sigs[2] ? 'same' : sigs[0] === sigs[2] ? 'aba' : 'differ';
+}
 /** the first index of each of n blocks over `size` pixels, and size: block k is [e[k], e[k + 1]) (the shader's cut) */
 export const blockEdges = (size, n) => Array.from({ length: n + 1 }, (_, k) => Math.floor(k * size / n));
 /**
@@ -112,18 +120,19 @@ export class FlickerProbe {
   /** @param {WebGL2RenderingContext} gl @param {{ now?: () => number, log?: (m: string) => void, errors?: boolean }} [opts] `errors`: read getError */
   constructor(gl, opts = {}) {
     this.gl = gl; this.now = opts.now ?? (() => performance.now()); this.log = opts.log ?? null; this.logged = 0; this.errors = opts.errors ?? true;
-    this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, abaAlt: 0, glErrors: 0, glError: 0 };
-    this.next = this.now() + PERIOD_MS; this.left = 0; this.read = null; this.presents = 0;
+    this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, abaAlt: 0, altSame: 0, altCmdAba: 0, glErrors: 0, glError: 0 };
+    this.next = this.now() + PERIOD_MS; this.left = 0; this.read = null; this.presents = 0; this.sigs = [0, 0, 0];
     this.reset();
   }
   /** The context was lost (and restored): its objects are gone, the sample in progress dropped. */
   reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; }
   /**
-   * A frame is about to be shown: `fbo` (its back buffer's framebuffer, bound, scissor test off) of GL size w x h.
+   * A frame is about to be shown: `fbo` (its back buffer's framebuffer, bound, scissor test off) of GL size w x h;
+   * `sig`: the signature of the commands that drew it (d3d8-webgl.js sigMix; undefined: not known).
    * Leaves `fbo` bound to FRAMEBUFFER. Returns true when it changed other GL state (the sample's draw: program,
    * textures, viewport, vertex array, capabilities) — the caller's cached GL state is then stale.
    */
-  present(fbo, w, h) {
+  present(fbo, w, h, sig) {
     if (globalThis.ORTHROS_FLICKER === 0 || globalThis.ORTHROS_GL_DISCARD) return false; // (nothing rasterized: nothing to compare — and its draw must not lift RASTERIZER_DISCARD)
     const gl = this.gl, now = this.now();
     this.presents++;
@@ -135,6 +144,7 @@ export class FlickerProbe {
     if (!this.left) return false;
     if (w !== this.w || h !== this.h) { this.left = 0; this.dropCopies(); return false; } // (a resize between the frames: not a sample)
     const k = 3 - this.left--;
+    this.sigs[k] = sig;
     if (!this.copies) { // (bound on the active unit: the caller's cache must forget it — true is returned at the sample's end, these come first)
       this.copies = [0, 1, 2].map(() => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); return t; });
       this.texBound = true;
@@ -175,7 +185,7 @@ export class FlickerProbe {
     gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, 0);
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
     this.dropCopies(); // (deleted once the GPU is done with them: GL keeps them alive for the commands queued)
-    this.read = { buf, sync: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0), at: this.presents, w, h };
+    this.read = { buf, sync: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0), at: this.presents, w, h, sigs: this.sigs.slice() };
   }
   dropCopies() { const gl = this.gl; for (const t of this.copies ?? []) gl.deleteTexture(t); this.copies = null; }
   /** The sample's readback, once the GPU finished it: its shares counted. */
@@ -188,10 +198,15 @@ export class FlickerProbe {
     this.read = null; gl.deleteSync(r.sync);
     const px = new Uint8Array(W * H * 4);
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, r.buf); gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, px); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null); gl.deleteBuffer(r.buf);
-    this.count(px, r.w, r.h);
+    this.count(px, r.w, r.h, r.sigs);
   }
-  /** one sample's result (sampleShares of its readback) into the counters, logged when it flickered */
-  count(px, w, h) {
+  /**
+   * one sample's result (sampleShares of its readback) into the counters, logged when it flickered; `sigs`: the three
+   * frames' command signatures — an `alt` sample with the same commands three times counts in `altSame` (the GPU gave
+   * two pictures for one frame's work: an undefined or implementation-dependent result), one whose commands went A-B-A
+   * too in `altCmdAba` (the game alternates its work: what the GPU does with the second kind of frame)
+   */
+  count(px, w, h, sigs) {
     const s = sampleShares(px, w, h), st = this.stats, aba = Math.round(s.aba * 1e6), chg = Math.round(s.chg * 1e6), still = Math.round(s.still * 1e6);
     st.n++; st.aba += aba; st.still += still; st.chg += chg; if (still > st.max) st.max = still;
     st.recent.push([st.n, still]); if (st.recent.length > RECENT) st.recent.shift();
@@ -199,11 +214,14 @@ export class FlickerProbe {
     if (over1) st.over1++;
     if (alt) st.alt++;
     if (abaAlt) st.abaAlt++;
+    const cmd = cmdPattern(sigs);
+    if (alt && cmd === 'same') st.altSame++;
+    if (alt && cmd === 'aba') st.altCmdAba++;
     const every = globalThis.ORTHROS_FLICKER === 2; // (debugging: every sample logged)
     if (this.log && (every || ((over1 || alt || abaAlt) && this.logged < LOG_MAX))) {
       if (!every) this.logged++;
       const moved = abaAlt && !over1, p = flickerPictures(moved ? s.abaMask : s.mask, px); // (an `abaAlt` sample: where the A-B-A pixels were)
-      this.log(`d3d-webgl: flicker sample: ${(still / 1e4).toFixed(4)} % of the pixels flickered (A-B-A over 3 frames where nothing moved; A-B-A anywhere ${(aba / 1e4).toFixed(4)} %, changed ${(chg / 1e4).toFixed(4)} %, ${w}x${h}${moved ? '; alternating while the picture moved: mask of A-B-A anywhere' : ''}); mask ${W}x${H} ${p.mask}; lum ${W / 2}x${H / 2} ${p.lum}`);
+      this.log(`d3d-webgl: flicker sample: ${(still / 1e4).toFixed(4)} % of the pixels flickered (A-B-A over 3 frames where nothing moved; A-B-A anywhere ${(aba / 1e4).toFixed(4)} %, changed ${(chg / 1e4).toFixed(4)} %, ${w}x${h}${moved ? '; alternating while the picture moved: mask of A-B-A anywhere' : ''}); commands ${cmd ?? 'unknown'}${cmd ? ` (${sigs.map((x) => (x >>> 0).toString(16)).join('/')})` : ''}; mask ${W}x${H} ${p.mask}; lum ${W / 2}x${H / 2} ${p.lum}`);
     }
   }
 }
