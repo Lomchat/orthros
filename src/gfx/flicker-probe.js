@@ -90,8 +90,9 @@ void main() {
 }`;
 
 /**
- * The three sampled frames' command signatures compared: 'same' (one frame's work drawn three times), 'aba' (the first
- * and the third the same, the second other), 'differ', or null when not known.
+ * The three sampled frames' command signatures compared: 'same' (the same commands three times, as far as the signature
+ * sees: d3d8-webgl.js sigMix), 'aba' (the first and the third the same, the second other), 'differ', or null when not
+ * known.
  */
 export function cmdPattern(sigs) {
   if (!sigs || sigs.some((x) => x === undefined)) return null;
@@ -135,7 +136,9 @@ export class FlickerProbe {
     this.reset();
   }
   /** The context was lost (and restored): its objects are gone, the sample in progress dropped. */
-  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; this.cap?.abort(); this.cap = null; }
+  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; this.cap?.abort(); this.cap = null; this.unsign(); }
+  /** the device that signs the sample's frames told to stop */
+  unsign() { if (this.sigDev) { this.sigDev.sigOn = false; this.sigDev = null; } }
   /** a capture records GL calls now (the GL call counter keeps away) */
   get recording() { return !!this.cap?.recording; }
   /**
@@ -146,7 +149,7 @@ export class FlickerProbe {
    * textures, viewport, vertex array, capabilities) — the caller's cached GL state is then stale.
    */
   present(fbo, w, h, dev = null, sig = undefined) {
-    if (globalThis.ORTHROS_FLICKER === 0 || globalThis.ORTHROS_GL_DISCARD) { if (this.cap) { this.cap.abort(); this.cap = null; } return false; } // (nothing rasterized: nothing to compare — and its draw must not lift RASTERIZER_DISCARD)
+    if (globalThis.ORTHROS_FLICKER === 0 || globalThis.ORTHROS_GL_DISCARD) { if (this.cap) { this.cap.abort(); this.cap = null; } this.unsign(); return false; } // (nothing rasterized: nothing to compare — and its draw must not lift RASTERIZER_DISCARD)
     const gl = this.gl, now = this.now();
     this.presents++;
     if (this.cap) { // (a capture runs: it takes the presents, no sample meanwhile)
@@ -160,17 +163,21 @@ export class FlickerProbe {
     if ((this.armed || ask === 1) && ask !== 0 && this.send && !this.left && !this.read && (dev?.flickerCanRecord?.() ?? true)) {
       if (ask === 1) globalThis.ORTHROS_FLICKER_CAPTURE = undefined;
       this.cap = new FlickerCapture(gl, { send: this.send, trigger: this.armed ?? { asked: true }, now: this.now, encode: this.encode, errors: this.errors });
-      this.armed = null; this.captured = true;
+      this.armed = null; this.captured = true; this.unsign();
       return this.cap.present(fbo, w, h, dev);
     }
     if (!this.left && !this.read && now >= this.next) {
+      // (the device signs its frames' commands only when asked — dev.sigOn, d3d8-webgl.js sigMix —: asked now, the
+      // sample starts at the next present, the first frame drawn with it on; switched off after the sample's third)
+      if (dev && dev.sigOn === false) { dev.sigOn = true; this.sigDev = dev; return false; }
       this.next = now + PERIOD_MS; this.left = 3; this.w = w; this.h = h;
       if (this.errors) { const e = gl.getError(); if (e) { this.stats.glErrors++; this.stats.glError = e; } }
     }
     if (!this.left) return false;
-    if (w !== this.w || h !== this.h) { this.left = 0; this.dropCopies(); return false; } // (a resize between the frames: not a sample)
+    if (w !== this.w || h !== this.h) { this.left = 0; this.unsign(); this.dropCopies(); return false; } // (a resize between the frames: not a sample)
     const k = 3 - this.left--;
     this.sigs[k] = sig;
+    if (!this.left) this.unsign();
     if (!this.copies) { // (bound on the active unit: the caller's cache must forget it — true is returned at the sample's end, these come first)
       this.copies = [0, 1, 2].map(() => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); return t; });
       this.texBound = true;
@@ -228,9 +235,11 @@ export class FlickerProbe {
   }
   /**
    * one sample's result (sampleShares of its readback) into the counters, logged when it flickered; `sigs`: the three
-   * frames' command signatures — an `alt` sample with the same commands three times counts in `altSame` (the GPU gave
-   * two pictures for one frame's work: an undefined or implementation-dependent result), one whose commands went A-B-A
-   * too in `altCmdAba` (the game alternates its work: what the GPU does with the second kind of frame)
+   * frames' command signatures (d3d8-webgl.js sigMix) — an `alt` sample whose three signatures are equal counts in
+   * `altSame`: the same commands as far as the signature sees, the alternation then coming from what it leaves out
+   * (buffer or texture contents, constants) or from the GPU (an undefined or implementation-dependent result) — not a
+   * proof of a GPU fault; one whose signatures went A-B-A too in `altCmdAba`: the commands alternate with the picture
+   * (the game's frames, or Orthros' translation of them)
    */
   count(px, w, h, sigs) {
     const s = sampleShares(px, w, h), st = this.stats, aba = Math.round(s.aba * 1e6), chg = Math.round(s.chg * 1e6), still = Math.round(s.still * 1e6);
@@ -238,10 +247,10 @@ export class FlickerProbe {
     st.recent.push([st.n, still]); if (st.recent.length > RECENT) st.recent.shift();
     const over1 = still > 10000, alt = still >= ALT_MIN && 2 * still >= chg, abaAlt = !alt && aba >= ALT_MIN && 2 * aba >= chg;
     if (over1) st.over1++;
-    if (still >= CAPTURE_STILL && !this.captured && !this.armed && this.send) this.armed = { still: still / 1e4, aba: aba / 1e4, chg: chg / 1e4, w, h, sample: st.n }; // (the session's capture, at the next present: flicker-capture.js)
+    const cmd = cmdPattern(sigs);
+    if (still >= CAPTURE_STILL && !this.captured && !this.armed && this.send) this.armed = { still: still / 1e4, aba: aba / 1e4, chg: chg / 1e4, w, h, sample: st.n, cmd }; // (the session's capture, at the next present: flicker-capture.js)
     if (alt) st.alt++;
     if (abaAlt) st.abaAlt++;
-    const cmd = cmdPattern(sigs);
     if (alt && cmd === 'same') st.altSame++;
     if (alt && cmd === 'aba') st.altCmdAba++;
     const every = globalThis.ORTHROS_FLICKER === 2; // (debugging: every sample logged)

@@ -50,4 +50,11 @@ test('a sample: three presents compared in one draw, read back without a stall; 
   assert.deepEqual([st.n, st.alt, st.abaAlt], [2, 1, 1]);
   const moved = /while the picture moved.*mask 64x48 ([0-9a-f]+)/.exec(logs[1] ?? '')?.[1], m = 5 * W + 30;
   assert.ok(moved && (parseInt(moved[m >> 2], 16) >> (3 - (m & 3))) & 1, 'logged where it alternated');
+  // (the device signs its frames' commands for the sampled frames only — d3d8-webgl.js sigMix —: asked one present
+  // before the sample, told to stop after its third frame; the three signatures compared in the sample's line)
+  const dev = { sigOn: false }, signing = [];
+  t += PERIOD_MS;
+  for (let i = 0; i < 5; i++) { signing.push(dev.sigOn); probe.present(fbo, 800, 600, dev, dev.sigOn ? 0xabc : undefined); t += 33; }
+  assert.deepEqual(signing, [false, true, true, true, false]);
+  assert.match(logs[2] ?? '', /commands same \(abc\/abc\/abc\)/);
 });

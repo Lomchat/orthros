@@ -228,7 +228,7 @@ export class WebGLDevice {
     this.noStateCacheOpt = !!opts.noStateCache;
     this.glValidate = !!globalThis.ORTHROS_GL_VALIDATE; // (debugging: cached GL state checked against GL, see validateGlState)
     if (this.glValidate) this.log('d3d-webgl: GL state cache validation on (first 3000 draws, then every 97th)');
-    this.frameSig = 0; this.sigSeq = 0; // (the frame's command signature: sigMix)
+    this.frameSig = 0; this.sigSeq = 0; this.sigOn = false; // (the frame's command signature, made while sigOn: sigMix)
     this.captureAt = opts.captureFrame ?? 0; this.frame = 0; this.capturing = false; // one-frame draw dump (like a mini PIX)
     this.dump = opts.dump ?? null; this.captureDraws = !!opts.captureDraws; this.dumpedTex = new Set(); // capture images: bound textures, target after each draw
     // adaptive internal render resolution (render-scale.js): the scale of the back buffers and of the render targets of
@@ -802,7 +802,7 @@ export class WebGLDevice {
    */
   stretchRect(src, sr, dst, dr, filter) {
     const gl = this.gl, dev = this.dev, mem = this.mem;
-    this.sigMix(src.id, dst.id, filter, -1);
+    if (this.sigOn) this.sigMix(src.id, dst.id, filter, -1);
     if (this.capturing) this.log(`d3d-webgl: [cap] stretchRect ${src.owner ? `tex#${src.owner.id}.${src.level ?? 0}` : `surf#${src.id}`}:${src.width}x${src.height} -> ${dst.owner ? `tex#${dst.owner.id}.${dst.level ?? 0}` : `surf#${dst.id}`}:${dst.width}x${dst.height} filter ${filter}${this.fbos.has(src.id) ? '' : ' (source never drawn to: CPU copy)'}`);
     if (!this.fbos.has(src.id) || (dst.usage & 2)) return null; // (a depth-stencil destination: not a color blit)
     const prev = dev.renderTarget;
@@ -835,16 +835,44 @@ export class WebGLDevice {
   }
   beginScene() { this.frameDraws = 0; }
   /**
-   * The frame's command signature (32 bits, reset at each present): every draw (program, the target the game set, its
-   * primitive count and start), clear (flags, color, target, rectangles), blit and the frame's upload counts mixed in
-   * order. The flicker probe compares it over its three frames: a picture that alternates while the commands are the
-   * same is the GPU's doing (undefined or implementation-dependent results), one whose commands alternate is the
-   * game's (docs/aotr-play.md "Other GL implementations"). Uploaded bytes are counted, not hashed: data that alternates
-   * in buffers of the same size shows as "same commands".
+   * The frame's command signature (32 bits, reset at each present), made while `sigOn` — the flicker probe turns it on
+   * for the frames it samples (flicker-probe.js), nothing is computed otherwise: every draw (sigDraw: program, the render
+   * target and depth surface the game set, primitive type and count, the textures bound to the stages the program
+   * samples, the vertex streams' and index buffer's resources, a hash of the raster states, viewport and scissor), clear
+   * (flags, color, depth, stencil, target, viewport, rectangle count) and blit (source, destination, filter) mixed in
+   * order. Left out, as they move from frame to frame by themselves: a draw's start, base vertex and vertex range (a
+   * dynamic vertex ring — SAGE's — advances every frame), what is uploaded and its size, uniform and shader-constant
+   * values (a camera's matrices). Two identical frames give the same signature. The probe compares it over its three
+   * frames: 'same' means the same commands as far as the signature sees — a picture that alternates then comes from
+   * what it leaves out (buffer or texture contents, constants) or from the GPU (undefined or implementation-dependent
+   * results), not proof of either —; 'aba', commands that alternate with the picture (the game's frames, or Orthros'
+   * translation of them). docs/aotr-play.md "Other GL implementations"; the flicker capture (flicker-capture.js) sees the rest.
    */
   sigMix(a, b, c, d) {
     let h = Math.imul(this.frameSig ^ a, 0x9e3779b1); h = Math.imul((h ^ (h >>> 15)) ^ b, 0x85ebca6b);
     h = Math.imul((h ^ (h >>> 13)) ^ c, 0xc2b2ae35); this.frameSig = Math.imul((h ^ (h >>> 16)) ^ d, 0x27d4eb2f);
+  }
+  /** a draw in the frame's signature (sigMix); `ib`: its index buffer's resource id, -1 none, -2 the UP draws' data (no stream) */
+  sigDraw(P, info, type, count, ib) {
+    const dev = this.dev, rt = dev.renderTarget ?? dev.backBuffers[0], v = dev.viewport;
+    this.sigMix(P.sid ??= ++this.sigSeq, rt.id, dev.depthTarget?.id ?? -1, (type << 24) ^ count);
+    this.sigMix(this.sigState(dev), ib, (v.x & 0xffff) | (v.y << 16), (v.w & 0xffff) | (v.h << 16));
+    this.sigMix((v.minZ * 65536) | 0, (v.maxZ * 65536) | 0, -5, 0);
+    if (dev.api9 && this.rs(RS9.SCISSORTESTENABLE, 0) && dev.scissor) { const s = dev.scissor; this.sigMix(s.l, s.t, s.r, s.b); }
+    const st = info.stages;
+    for (let i = 0; i < st.length; i++) if (st[i].bound) this.sigMix(i, this.comImpl(dev.textures[i])?.id ?? -1, -3, 0);
+    if (ib === -2) return;
+    const ls = info.L.layout.streams, s0 = ls ? null : dev.streams[0];
+    if (s0) this.sigMix(0, s0.vb ? this.comImpl(s0.vb)?.id ?? -1 : -1, s0.stride ?? 0, -4);
+    else if (ls) for (const k of ls.keys()) { const s = dev.streams[k]; this.sigMix(k, s?.vb ? this.comImpl(s.vb)?.id ?? -1 : -1, s?.stride ?? 0, -4); }
+  }
+  /** the signature's hash of the raster states (RASTER_KEYS, what applyRaster reads), made again only after one of them was set */
+  sigState(dev) {
+    const t = dev.rs;
+    if (this.sigRs !== t) { t.watchKeys(WATCH_RASTER, RASTER_KEYS); this.sigRs = t; this.sigRsV = -1; }
+    const ver = t.wv[WATCH_RASTER];
+    if (ver !== this.sigRsV) { this.sigRsV = ver; let h = 0x2545f491; for (const k of RASTER_KEYS) h = Math.imul(h ^ ((t.get(k) ?? -1) | 0), 0x01000193); this.sigRsH = h; }
+    return this.sigRsH;
   }
   endScene() {}
   present() {
@@ -855,9 +883,7 @@ export class WebGLDevice {
     dev.renderTarget = prev;
     gl.disable(gl.SCISSOR_TEST); this.gs.en[gl.SCISSOR_TEST] = false;
     if (globalThis.ORTHROS_FRAME_GRAB > 0 && this.dump) this.grabFrame(bf);
-    const st = this.stats, up = this.sigUp ??= { n: 0, buf: 0, tex: 0 }; // (the uploads of the frame: counts and bytes)
-    this.sigMix(st.uploads - up.n, (st.bufBytes ?? 0) - up.buf, (st.uploadBytes ?? 0) - up.tex, -2); up.n = st.uploads; up.buf = st.bufBytes ?? 0; up.tex = st.uploadBytes ?? 0;
-    const sig = this.frameSig >>> 0; this.frameSig = 0;
+    const sig = this.sigOn ? this.frameSig >>> 0 : undefined; this.frameSig = 0; // (the frame's command signature, when the probe asked for it: sigMix)
     if (this.probe?.flicker && !this.glNull && this.probe.flicker.present(bf.fbo, bf.w, bf.h, this, sig)) this.invalidateGlState(); // (telemetry: flicker-probe.js — its sample's draw set GL state directly)
     if (this.gammaLut) this.presentGamma(w, h);
     else {
@@ -1057,7 +1083,7 @@ export class WebGLDevice {
   }
   clear(n, rects, flags, color, z, stencil) {
     const gl = this.gl, dev = this.dev;
-    this.sigMix(flags, color, (dev.renderTarget ?? dev.backBuffers[0]).id, n);
+    if (this.sigOn) { const v = dev.viewport; this.sigMix(flags, color, (dev.renderTarget ?? dev.backBuffers[0]).id, n); this.sigMix((z * 16777215) | 0, stencil, (v.x & 0xffff) | (v.y << 16), (v.w & 0xffff) | (v.h << 16)); }
     if (this.capturing) { const rt = dev.renderTarget ?? dev.backBuffers[0], ds = dev.depthTarget; this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} stencil ${stencil} target ${dev.backBuffers.includes(rt) ? 'screen' : 'FBO'} rt=${rt.owner ? `tex#${rt.owner.id}.${rt.level ?? 0}` : `surf#${rt.id}`}:${rt.width}x${rt.height} ds=${ds ? `surf#${ds.id}:${ds.width}x${ds.height}` : 'depthTarget' in dev ? 'none' : '?'} vp=${dev.viewport.x},${dev.viewport.y},${dev.viewport.w},${dev.viewport.h}${n ? ` rects ${n}` : ''}`); }
     const f = this.bindTarget(), r = this.tmpRect;
     const v = dev.viewport, gs = this.gs;
@@ -1436,10 +1462,11 @@ export class WebGLDevice {
   }
 
   // ---------------------------------------------------------------- state application
-  applyState(P, info, a = 0, b = 0) {
+  /** the draw's state applied to GL; `type`, `count`, `ib`: what the frame's command signature takes of the draw (sigDraw) */
+  applyState(P, info, type = 0, count = 0, ib = -1) {
     const gl = this.gl, dev = this.dev;
     const tgt = this.bindTarget(), { h, flip } = tgt;
-    this.sigMix(P.sid ??= ++this.sigSeq, (dev.renderTarget ?? dev.backBuffers[0]).id, a, b); // (the frame's signature: sigMix)
+    if (this.sigOn) this.sigDraw(P, info, type, count, ib); // (the frame's signature, for the flicker probe: sigMix)
     const v = dev.viewport, gs = this.gs;
     // (a scaled target: the viewport and scissor rectangles in its GL storage — render-scale.js; the u_viewport uniform
     // stays in Direct3D pixels, so pre-transformed vertices land at the same place of the picture)
@@ -1992,7 +2019,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
-    this.applyState(P, info, count, start);
+    this.applyState(P, info, type, count, -1);
     if (!this.bindAttributes(P, info.L)) return;
     if (this.capturing) {
       const st = this.dev.streams[0], vb = this.comImpl(st.vb);
@@ -2029,7 +2056,7 @@ export class WebGLDevice {
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const ib = this.comImpl(dev.indices.ib); if (!ib) return;
     const info = this.program(); const P = info.p;
-    this.applyState(P, info, count, start ^ (baseVertex << 16));
+    this.applyState(P, info, type, count, ib.id);
     if (!this.bindAttributes(P, info.L, null, baseVertex | 0)) return;
     this.bindIndices(this.glBuffer(ib, 'ib').buf);
     const short = ib.fmt === FMT.INDEX16;
@@ -2061,7 +2088,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
-    this.applyState(P, info, count, stride);
+    this.applyState(P, info, type, count, -2);
     const n = this.vertexCount(type, count);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);
     this.streamData(gl.ARRAY_BUFFER, data, n * stride);
@@ -2076,7 +2103,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
-    this.applyState(P, info, count, numV);
+    this.applyState(P, info, type, count, -2);
     const n = this.vertexCount(type, count);
     const short = ifmt === FMT.INDEX16;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);

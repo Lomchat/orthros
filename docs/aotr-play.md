@@ -311,10 +311,19 @@ finishes. **WebGL errors**: none on the owner's sessions (`glErrors` 0: the prob
 
 So the alternation the owner sees is either commands that alternate on his machine only (not seen with his frame rate
 simulated) or two pictures from the same commands on his GPU. **To tell them apart**, the flicker probe now records each
-sampled frame's command signature (src/gfx/d3d8-webgl.js `sigMix`: every draw's program, the target the game set, its
-primitive count and start; every clear, blit, the frame's upload counts) and its log line says `commands same`, `aba`
-or `differ` with the three values; the summary counts the `alt` samples drawn by the same commands three times
-(`altSame`: the GPU) and those whose commands went A-B-A too (`altCmdAba`: the game). His next pause menu answers it.
+sampled frame's command signature (src/gfx/d3d8-webgl.js `sigMix`, made for the sampled frames only: every draw's
+program, render target and depth surface, primitive type and count, the stages' textures, the vertex streams' and index
+buffer's resources, a hash of the raster states, viewport and scissor; every clear and blit — not a draw's start or base
+vertex, which SAGE's dynamic vertex ring moves every frame, nor upload sizes or constants) and its log line says
+`commands same`, `aba` or `differ` with the three values; the summary counts the `alt` samples whose three signatures
+are equal (`altSame`: the same commands as far as the signature sees — the alternation then comes from what it leaves
+out, buffer or texture contents and constants, or from the GPU; not a proof of a GPU fault) and those whose commands
+went A-B-A too (`altCmdAba`: the game's frames, or Orthros' translation of them). His next pause menu answers it, with
+the session's capture (`docs/real-machine-bench.md` "Flicker capture") for the rest.
+
+**The signature checked on a static screen** (2026-11-17 night): the first version mixed each draw's start and the
+frame's upload sizes in, which change every frame in AotR whatever the picture (its vertex ring advances). See below
+("Signature check") for the runs that show `commands same` on still frames and `aba` with `ORTHROS_FAKE_FLICKER`.
 
 **Fixed on the way** (generic, not the cause here — the game clears depth and stencil at the start of each frame): the
 back buffers of a flipping chain (D3DSWAPEFFECT_FLIP with two back buffers: AotR's `swap 2 x2`, now in the CreateDevice

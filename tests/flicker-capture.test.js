@@ -20,7 +20,7 @@ function protoGl(answers) {
     'createProgram', 'createShader', 'shaderSource', 'compileShader', 'attachShader', 'linkProgram', 'useProgram', 'getUniformLocation', 'uniform1i', 'uniform2i', 'uniform4fv', 'bindTexture', 'activeTexture',
     'texStorage2D', 'texParameteri', 'bindSampler', 'bindVertexArray', 'drawArrays', 'enable', 'disable', 'colorMask', 'viewport', 'bindBuffer', 'bufferData', 'readPixels', 'fenceSync', 'getSyncParameter',
     'deleteSync', 'deleteBuffer', 'deleteTexture', 'deleteFramebuffer', 'deleteRenderbuffer', 'getBufferSubData', 'renderbufferStorage', 'bindRenderbuffer', 'getError', 'getParameter', 'isEnabled',
-    'checkFramebufferStatus', 'clear', 'getExtension', 'getSupportedExtensions', 'getContextAttributes', 'getShaderPrecisionFormat']) {
+    'checkFramebufferStatus', 'clear', 'getExtension', 'getSupportedExtensions', 'getContextAttributes', 'getShaderPrecisionFormat', 'texSubImage2D']) {
     G.prototype[k] = function (...a) { calls.push([k, ...a]); return answers[k]?.(...a); };
   }
   const obj = () => ({});
@@ -37,7 +37,11 @@ test('no work until a sample flickers; then one capture of the next frames, the 
   const unwrapped = () => Object.keys(orig).every((k) => G.prototype[k] === orig[k]);
   let t = 0;
   const sent = [], probe = new FlickerProbe(gl, { now: () => t, send: (r) => sent.push(r), encode: async (imgs) => imgs.map(() => 'QUJD') });
-  const fbo = {}, rt = {}, prog = {}, frame = (count) => { gl.bindFramebuffer(gl.FRAMEBUFFER, rt); gl.useProgram(prog); gl.drawArrays(gl.TRIANGLES, 0, 3); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.drawArrays(gl.TRIANGLES, 0, count); };
+  // (a frame: a texture's contents uploaded then sampled by a draw into a target, then a draw of `count` vertices to the screen)
+  const fbo = {}, rt = {}, prog = {}, tex = {}, frame = (count, content = 1) => {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rt); gl.useProgram(prog); gl.bindTexture(gl.TEXTURE_2D, tex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 2, 2, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(16).fill(content));
+    gl.drawArrays(gl.TRIANGLES, 0, 3); gl.bindTexture(gl.TEXTURE_2D, null); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.drawArrays(gl.TRIANGLES, 0, count);
+  };
   // three sample periods without flicker: the probe's own work only
   for (let i = 0; i < 3 * 30 + 10; i++) { frame(6); probe.present(fbo, 800, 600); t += PERIOD_MS / 30; }
   assert.equal(probe.stats.n, 3, 'samples measured');
@@ -50,16 +54,18 @@ test('no work until a sample flickers; then one capture of the next frames, the 
   assert.ok(probe.cap, 'a capture started');
   assert.ok(!unwrapped(), 'the GL methods wrapped while it records');
   flicker = false;
-  for (const count of [6, 6, 9, 6]) { frame(count); probe.present(fbo, 800, 600); t += 33; } // (the warm-up frame, then frames 1-3: the second draws 9)
+  // (the warm-up frame, then frames 1-3: the second draws 9 and uploads other texture contents — X, Y, X)
+  for (const [count, content] of [[6, 1], [6, 1], [9, 2], [6, 1]]) { frame(count, content); probe.present(fbo, 800, 600); t += 33; }
   assert.ok(unwrapped(), 'the prototype has its own methods back');
-  for (let i = 0; i < 3 && !sent.length; i++) { probe.present(fbo, 800, 600); await new Promise((r) => setTimeout(r, 0)); }
+  // (the record is made in tasks of its own after the present that read the pictures: none of it in a present)
+  for (let i = 0; i < 400 && !sent.length; i++) { probe.present(fbo, 800, 600); await new Promise((r) => setTimeout(r, 0)); }
   assert.equal(sent.length, 1, 'one record sent');
   const rec = sent[0];
   assert.equal(rec.frames.length, 3); assert.deepEqual(rec.images, ['QUJD', 'QUJD', 'QUJD']); assert.equal(rec.trigger.still, 100);
   assert.deepEqual(rec.frames.map((f) => f.draws), [2, 2, 2]);
   assert.ok(JSON.stringify(rec).length <= CAPTURE_MAX_BYTES);
   assert.equal(rec.diff['1-3'].passes.length, 0, 'frames 1-3: the same');
-  assert.deepEqual(rec.alt.fields, { call: 1 }, 'what alternates: that draw\'s call, alone');
+  assert.deepEqual(rec.alt.fields, { call: 1, tex: 1 }, 'what alternates: that draw\'s call, and the texture contents the other one samples');
   // later flicker: no second capture in the session
   flicker = true;
   for (let i = 0; i < 40; i++) { frame(6); probe.present(fbo, 800, 600); t += PERIOD_MS / 10; }
@@ -69,7 +75,9 @@ test('no work until a sample flickers; then one capture of the next frames, the 
 
 test('a capture fits its size: the record cut on the page, taken by the server while other telemetry keeps 256 KB', async (t) => {
   // (a heavy frame: 40 passes x 1500 distinct draws per frame, pictures of 100-150 KB each)
-  const frames = [0, 1, 2].map((f) => ({ ms: 33, info: {}, calls: 9000, draws: 60000, passes: Array.from({ length: 40 }, (_, p) => ({ fb: `F${p}`, ev: Array.from({ length: 1500 }, (_, i) => f === 1 && p === 7 ? 60000 + i : p * 1500 + i) })), ups: [], att: [], errs: [] }));
+  // (and the 1 000 texture uploads a frame lists at most)
+  const ups = () => Array.from({ length: 1000 }, (_, i) => ['texSubImage2D', `T${i}`, 0, 0, 0, 512, 512, 'RGBA', 'UNSIGNED_BYTE', 'deadbeef'.repeat(4)]);
+  const frames = [0, 1, 2].map((f) => ({ ms: 33, info: {}, calls: 9000, draws: 60000, passes: Array.from({ length: 40 }, (_, p) => ({ fb: `F${p}`, ev: Array.from({ length: 1500 }, (_, i) => f === 1 && p === 7 ? 60000 + i : p * 1500 + i) })), ups: ups(), att: [], errs: [] }));
   const draws = []; for (let i = 0; i < 60000; i++) draws.push([`P${i % 300}`, `0:T${i % 900}/S2 1:T${i % 7}`, i % 40, '0,0,2560,1440', 'V3#a1b2c3', 'B9', `e TRIANGLES ${i} UNSIGNED_SHORT @0`, 'deadbeef', '']);
   for (let i = 0; i < 1500; i++) draws.push(draws[7 * 1500 + i].map((v, k) => (k === 1 ? v + '+1' : v)));
   const rec = { event: 'flicker-capture', v: 1, frames, draws, states: [], objs: Object.fromEntries(Array.from({ length: 3000 }, (_, i) => [`T${i}`, { kind: 'tex', size: '512x512', fmt: 21 }])), drawFields: [] };
@@ -85,12 +93,16 @@ test('a capture fits its size: the record cut on the page, taken by the server w
   const server = createServer({ gamesDir: path.join(root, 'games'), enginesDir: path.join(root, 'engines'), telemetryDir: tel, lanLog: () => {} });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { server.closeAllConnections?.(); server.close(resolve); }));
-  const post = (body) => fetch(`http://127.0.0.1:${server.address().port}/api/telemetry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.status);
+  const post = (body) => fetch(`http://127.0.0.1:${server.address().port}/api/telemetry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) }).then((r) => r.status);
   const capture = (bytes) => ({ ...rec, session: 'sess1234', images: ['QUJD'], pad: 'x'.repeat(bytes) });
   assert.equal(await post(capture(CAPTURE_MAX_BYTES - JSON.stringify(rec).length)), 204);
   assert.equal(await post(capture(CAPTURE_POST_MAX_BYTES)), 413);
+  assert.equal(await post(capture(10)), 429, 'one capture per session');
   assert.equal(await post({ session: 'sess1234', samples: [{ pad: 'x'.repeat(300 * 1024) }] }), 413, 'a batch keeps its 256 KB');
+  // (a body nested deeper than JSON.stringify can write back: refused, the server still up)
+  assert.equal(await post(`{"session":"sess5678","samples":${'['.repeat(100000)}${']'.repeat(100000)}}`), 400);
+  assert.equal(await post({ session: 'sess5678', samples: [] }), 204, 'still serving');
   await new Promise((r) => setTimeout(r, 100));
-  const lines = fs.readdirSync(tel).flatMap((f) => fs.readFileSync(path.join(tel, f), 'utf8').trim().split('\n')).map((l) => JSON.parse(l));
-  assert.equal(lines.length, 1); assert.equal(lines[0].event, 'flicker-capture'); assert.equal(lines[0].pad, undefined, 'rebuilt from its known fields');
+  const lines = fs.readdirSync(tel).flatMap((f) => fs.readFileSync(path.join(tel, f), 'utf8').trim().split('\n')).map((l) => JSON.parse(l)), caps = lines.filter((l) => l.event === 'flicker-capture');
+  assert.equal(lines.length, 2); assert.equal(caps.length, 1); assert.equal(caps[0].pad, undefined, 'rebuilt from its known fields');
 });

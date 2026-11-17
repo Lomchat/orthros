@@ -252,9 +252,16 @@ sample: …`, sent with the telemetry, both shares and the changed one in the te
 flickered (still A-B-A; any A-B-A for an `abaAlt` sample, whose line says so, and in the first version: a scroll
 flagged the whole terrain; one bit each, 4 per hex digit,
 rows from the bottom of the picture) and `lum 32x24` the first frame's luminance (one hex digit per pixel, bottom row
-first) — where it flickers, on what; `commands same|aba|differ` the three frames' command signatures (`altSame`: `alt`
-samples drawn by the same commands three times — the GPU's doing; `altCmdAba`: the commands alternated too — the game's;
-docs/aotr-play.md "Other GL implementations"); `node tools/dev/flicker-samples.mjs <telemetry .jsonl> [--session <id>]` draws them
+first) — where it flickers, on what; `commands same|aba|differ` the three frames' command signatures (d3d8-webgl.js
+`sigMix`, made for the sampled frames only — the probe turns `sigOn` on one present before a sample —: per draw the
+program, render target and depth surface, primitive type and count, the stages' texture resources, the vertex streams'
+and index buffer's resources, a hash of the raster states, viewport and scissor; per clear its flags, values, target and
+viewport; per blit its surfaces and filter; not what moves by itself from frame to frame — a draw's start and base vertex,
+SAGE's dynamic vertex ring advancing, upload sizes, constants). `altSame`: `alt` samples whose three signatures are
+equal — the same commands as far as the signature sees, the alternation then coming from what it leaves out (buffer or
+texture contents, constants) or from the GPU; not a proof of a GPU fault, the capture below says more; `altCmdAba`: the
+commands alternated with the picture — the game's frames or Orthros' translation of them; docs/aotr-play.md "Other GL
+implementations"); `node tools/dev/flicker-samples.mjs <telemetry .jsonl> [--session <id>]` draws them
 (the luminance, the flickering blocks in red). `?dbg=ORTHROS_FLICKER=0` (host-only) turns it off, `=2` logs every sample
 (a harness run: `dbg:ORTHROS_FLICKER=2`); `dbg:ORTHROS_FRAME_GRAB=<n>` (harness) saves the next n presented frames whole
 as PNG (`<out>/capture/grab-<frame>.png`). `tools/with-browser-slot.sh node tools/check/flicker-probe-check.mjs` checks it
@@ -279,7 +286,8 @@ buffer at its present, downscaled to at most 640x360 (a filtered blit, a pixel-b
 frame: its passes (the framebuffer drawn into until another is bound), each pass's draws, clears, blits, readbacks, the
 GL error at its end (one `getError` per pass, capture frames only) and an incomplete framebuffer's status; per draw its
 program, textures on units 0-15 with sampler (`+n` drawn into by an earlier pass of the frame, `!` attached to the
-framebuffer drawn into, `~h` uploaded during the capture), raster state (blend, color mask, depth, stencil, cull, offset,
+framebuffer drawn into, `~h` its contents uploaded in this frame — a hash of that frame's uploads, so contents going X,
+Y, X show as an alternation —, `^h` its parameters set during the capture, by value), raster state (blend, color mask, depth, stencil, cull, offset,
 draw buffers: an index into `states`), viewport and scissor, vertex array (with its attribute setup when seen), element
 buffer, the call, a hash of the program's uniform values (element by element: the backend's location names) and of the
 vertex data streamed for it. The record (`event: 'flicker-capture'`, `src/shared/flicker-record.js`) also holds the
@@ -292,13 +300,27 @@ neither, and the draws whose fields are the same in 1 and 3 but not in 2 — wha
 buffer's offset that moves every frame, differs in 1-3 too and is left out) and the frames compared pair by pair (1-2,
 2-3, 1-3; per changed draw, the fields that differ). Passes are paired by framebuffer, the back buffers by role (a
 flipping chain rotates them: AotR's two alternate every frame); draws by equality, then by a loose key (the same draw
-whose offset, uniforms or data moved), then by program and primitive. It is cut to 400 KB (lower JPEG qualities,
-passes the same in every frame emptied, events cut, descriptions dropped; `cut` says which) and travels to the page on
+whose offset, uniforms or data moved), then by program and primitive. The record is made after the present that read
+the last picture, in tasks of their own (setTimeout), never in a present: the comparison runs in slices of ~4 ms
+(`runSliced`), each longest common sequence capped at 200 000 table cells (`PAGE_LCS_CELLS`: past it a band around the
+diagonal as wide as the cap allows — an insertion or removal up to its width still lines the rest up —, by position when
+not even the length difference fits), the cuts one step a task, the JPEG encodes asynchronous; `took` says how long it
+took and its longest slice. Measured in Node on a synthetic AotR-sized record (passes of 200, 500, 1 500, 8, 8 and 120
+draws, every draw's uniforms changing, 30 draws missing in frame 2): before, 240-250 ms in the present's task; now 21
+slices, the longest 7.8 ms, 130 ms in all, the same comparison; the cuts 9 steps, the longest 6.8 ms. It is cut to 400 KB
+(lower JPEG qualities, passes the same in every frame emptied, draws no event names, each frame's uploads and
+attachments — listed up to 1 000 a frame while recording, `nUps` / `nAtt` the counts — cut to 200 then 20, events cut,
+descriptions dropped, then no pictures, last a minimal record of each frame's figures and the comparisons' counts;
+`cut` says which); `diff` and `alt` are computed before the cuts, on every event. It travels to the page on
 the backend's log channel as an object (no new message type through `src/web/worker.js`, a snapshot source), which posts
-it alone to `/api/telemetry` (a keepalive request carries 64 KB at most). The server takes a capture up to 416 KB, at most
-100 a day (other telemetry keeps its 256 KB), checked and rebuilt from its known fields. `node tools/dev/flicker-capture.mjs
-<telemetry .jsonl> [--session <id>] [--out <dir>]` writes the pictures as PNG with the difference 1-2 and the A-B-A
-pixels in red, and prints the context, each frame's passes and the comparison. `?dbg=ORTHROS_FLICKER_CAPTURE=0`
+it alone to `/api/telemetry` (a keepalive request carries 64 KB at most). The server takes a capture up to 416 KB (other
+telemetry keeps its 256 KB), checked and rebuilt from its known fields: one per session a day, two per client network in
+15 minutes (the address kept in memory that long only, as the accounts' rate limits do), 100 a day in all; a body it
+cannot handle (JSON nested deeper than `JSON.stringify` can write) is answered 400, never thrown out of the request
+handler. `node tools/dev/flicker-capture.mjs <telemetry .jsonl> [--session <id>] [--out <dir>]` writes the pictures as PNG
+with the difference 1-2 and the A-B-A pixels in red, and prints the context, each frame's passes and the comparison — the
+page's own (`diff`, `alt`) when the record was cut beyond its pictures' quality, else made again from the record without
+the page's cap. `?dbg=ORTHROS_FLICKER_CAPTURE=0`
 (host-only) never captures, `=1` captures at the next present; `dbg:ORTHROS_FAKE_FLICKER=<n>` (harness) skips every
 n-th draw of every other frame — a flicker on purpose, to check the whole chain. The check above also runs a capture on
 synthetic frames (a square drawn red and blue in turn by a uniform over still stripes: one record, three decodable

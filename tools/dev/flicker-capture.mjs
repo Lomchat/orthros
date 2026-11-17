@@ -35,7 +35,7 @@ function report(rec) {
   const S = rec.session ?? 'x', g = rec.gl ?? {};
   console.log(`=== flicker capture of session ${S} at ${rec.at ?? '?'}: ${rec.game ?? '?'}, build ${rec.build ?? '?'}`);
   console.log(`page: ${JSON.stringify(rec.page ?? {})}; options: ${JSON.stringify(rec.options ?? {})}`);
-  console.log(`trigger: ${JSON.stringify(rec.trigger)}; frames ${rec.size?.join('x')} (pictures ${rec.img?.join('x')}, JPEG q ${rec.q})${rec.cut?.length ? `; cut to fit: ${rec.cut.join(', ')}` : ''}${rec.notes?.length ? `; notes: ${rec.notes.join(' | ')}` : ''}`);
+  console.log(`trigger: ${JSON.stringify(rec.trigger)}; frames ${rec.size?.join('x')} (pictures ${rec.img?.join('x')}, JPEG q ${rec.q})${rec.cut?.length ? `; cut to fit: ${rec.cut.join(', ')}` : ''}${rec.notes?.length ? `; notes: ${rec.notes.join(' | ')}` : ''}${rec.took ? `; made in ${rec.took.ms} ms on the page, ${rec.took.slices} slices, the longest ${rec.took.longest} ms` : ''}`);
   if (rec.small) console.log(`captured pictures: ${rec.small.aba} % of the pixels A-B-A (1 and 3 alike, 2 apart), changed 1-2 ${rec.small.chg12} %, 2-3 ${rec.small.chg23} %, 1-3 ${rec.small.chg13} %`);
   console.log(`context: ${g.renderer} (${g.vendor}); ${g.version}; ${g.glsl}; attributes ${JSON.stringify(g.attrs)}; drawing buffer ${g.drawingBuffer?.join('x')} (canvas ${g.canvas?.join('x')}, ${g.colorSpace}); ${g.ext?.length ?? 0} extensions; precision ${JSON.stringify(g.prec)}`);
   if (full) { console.log(`  extensions: ${(g.ext ?? []).join(' ')}`); console.log(`  limits: ${JSON.stringify(g.limits)}`); }
@@ -44,9 +44,10 @@ function report(rec) {
   const objs = rec.objs ?? {}, desc = (id) => { const o = objs[id]; return o ? `${id} ${Object.entries(o).filter(([k]) => k !== 'key').map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' ')}${o.key ? ` key=${o.key.slice(0, 80)}` : ''}` : id; };
   rec.frames.forEach((f, k) => {
     console.log(`--- frame ${k + 1}: ${f.ms} ms since the previous present, ${f.calls} GL calls recorded, ${f.draws} draws; device ${JSON.stringify(f.info)}${f.errs?.length ? `; GL errors at its end: ${f.errs.join(', ')}` : ''}`);
-    if (f.ups?.length) console.log(`  uploads: ${f.ups.slice(0, limit).map((u) => u.join(' ')).join('; ')}${f.ups.length > limit ? ` ... (${f.ups.length})` : ''}`);
-    if (f.att?.length) console.log(`  attachments: ${f.att.slice(0, limit).map((a) => a.join(' ')).join('; ')}`);
-    f.passes.forEach((p, i) => {
+    if (f.ups?.length) console.log(`  uploads: ${f.ups.slice(0, limit).map((u) => u.join(' ')).join('; ')}${(f.nUps ?? f.ups.length) > limit ? ` ... (${f.nUps ?? f.ups.length})` : ''}`);
+    if (f.att?.length) console.log(`  attachments: ${f.att.slice(0, limit).map((a) => a.join(' ')).join('; ')}${(f.nAtt ?? f.att.length) > limit ? ` ... (${f.nAtt ?? f.att.length})` : ''}`);
+    if (f.nPasses > (f.passes?.length ?? 0)) console.log(`  (${f.nPasses} passes, the first ${f.passes?.length ?? 0} kept)`);
+    (f.passes ?? []).forEach((p, i) => {
       const ev = p.ev ?? [], kinds = {};
       for (const e of ev) { const t = typeof e === 'number' ? 'draw' : e[0]; kinds[t] = (kinds[t] ?? 0) + 1; }
       const special = ev.filter((e) => typeof e !== 'number' && e[0] !== 'clear').slice(0, 6).map((e) => JSON.stringify(e)).join(' ');
@@ -62,26 +63,34 @@ function report(rec) {
     const sa = states[va] ?? {}, sb = states[vb] ?? {};
     return `state ${va} -> ${vb}: ${Object.keys({ ...sa, ...sb }).filter((x) => JSON.stringify(sa[x]) !== JSON.stringify(sb[x])).map((x) => `${x} ${JSON.stringify(sa[x])} -> ${JSON.stringify(sb[x])}`).join(', ')}`;
   };
-  // (first what alternates: same in 1 and 3, not in 2 — then each pair of frames in full)
-  const alt = alternation(rec, limit);
+  // (first what alternates: same in 1 and 3, not in 2 — then each pair of frames in full. A record the page cut (events,
+  // uploads, draws, lists: anything but its pictures' quality) is compared again here only from what is left — the page's
+  // own comparison, made before the cuts on every event, is the one shown then; else it is made again here, without the
+  // page's cap on the work of its longest common sequences)
+  const trimmed = (rec.cut ?? []).some((c) => !/^q[\d.]+$/.test(c)), stored = trimmed && (rec.diff || rec.alt);
+  if (stored) console.log(`(the page's comparison, made before its cuts: ${rec.cut.join(', ')})`);
+  const alt = stored ? rec.alt : alternation(rec, limit);
+  // (a record cut to its minimum keeps only the counts of the comparisons' lists: `?? []`)
   if (alt) {
-    console.log(`=== alternation (1 and 3 alike, 2 apart): ${alt.passes.length} passes${Object.keys(alt.fields).length ? `, draw fields ${Object.entries(alt.fields).map(([f, c]) => `${f} ${c}`).join(', ')}` : ''}${alt.passesMissing.length ? `; passes of 1 and 3 missing in 2: ${alt.passesMissing.map((p) => `${p[0]} ${desc(p[1])} (${p[2]} events)`).join('; ')}` : ''}${alt.passesExtra.length ? `; passes in 2 only: ${alt.passesExtra.map((p) => `${p[0]} ${desc(p[1])} (${p[2]} events)`).join('; ')}` : ''}`);
-    for (const p of alt.passes) {
-      console.log(`  pass ${p.i} (${p.j} in frame 2) ${desc(p.fb)}${p.fb2 !== p.fb ? ` / in 2: ${p.fb2}` : ''}: ${p.n} / ${p.n2} events; ${p.nMissing} of 1 and 3 missing in 2, ${p.nExtra} in 2 only, ${p.nAlt} draws alternating (${Object.entries(p.fields).map(([f, c]) => `${f} ${c}`).join(', ') || '-'})`);
-      for (const [x, y, at, f] of p.alt) console.log(`    alternating at event ${at}: ${drawText(x)}\n      ${f.map((ff) => fieldText(ff, x, y)).join('\n      ')}`);
-      for (const e of p.missing) console.log(`    missing in 2: ${typeof e === 'number' ? drawText(e) : JSON.stringify(e)}`);
-      for (const e of p.extra) console.log(`    in 2 only: ${typeof e === 'number' ? drawText(e) : JSON.stringify(e)}`);
+    const pm = alt.passesMissing ?? [], pe = alt.passesExtra ?? [], fl = alt.fields ?? {};
+    console.log(`=== alternation (1 and 3 alike, 2 apart): ${alt.passes?.length ?? '?'} passes${Object.keys(fl).length ? `, draw fields ${Object.entries(fl).map(([f, c]) => `${f} ${c}`).join(', ')}` : ''}${pm.length ? `; passes of 1 and 3 missing in 2: ${pm.map((p) => `${p[0]} ${desc(p[1])} (${p[2]} events)`).join('; ')}` : ''}${pe.length ? `; passes in 2 only: ${pe.map((p) => `${p[0]} ${desc(p[1])} (${p[2]} events)`).join('; ')}` : ''}`);
+    for (const p of alt.passes ?? []) {
+      console.log(`  pass ${p.i} (${p.j} in frame 2) ${desc(p.fb)}${p.fb2 !== p.fb ? ` / in 2: ${p.fb2}` : ''}: ${p.n} / ${p.n2} events; ${p.nMissing} of 1 and 3 missing in 2, ${p.nExtra} in 2 only, ${p.nAlt} draws alternating (${Object.entries(p.fields ?? {}).map(([f, c]) => `${f} ${c}`).join(', ') || '-'})`);
+      for (const [x, y, at, f] of p.alt ?? []) console.log(`    alternating at event ${at}: ${drawText(x)}\n      ${f.map((ff) => fieldText(ff, x, y)).join('\n      ')}`);
+      for (const e of p.missing ?? []) console.log(`    missing in 2: ${typeof e === 'number' ? drawText(e) : JSON.stringify(e)}`);
+      for (const e of p.extra ?? []) console.log(`    in 2 only: ${typeof e === 'number' ? drawText(e) : JSON.stringify(e)}`);
     }
   }
-  const diff = diffRecord(rec, limit);
+  const diff = stored ? rec.diff ?? {} : diffRecord(rec, limit);
   for (const [pair, d] of Object.entries(diff)) {
     const [a, b] = pair.split('-').map(Number);
-    console.log(`=== frames ${pair}: ${d.same} passes the same, ${d.passes.length} differing${d.onlyA.length ? `; only in ${a}: ${d.onlyA.map((p) => `pass ${p[0]} ${desc(p[1])} (${p[2]} events)`).join('; ')}` : ''}${d.onlyB.length ? `; only in ${b}: ${d.onlyB.map((p) => `pass ${p[0]} ${desc(p[1])} (${p[2]} events)`).join('; ')}` : ''}`);
-    for (const p of d.passes) {
-      console.log(`  pass ${p.i}/${p.j} ${desc(p.fb)}: ${p.na} / ${p.nb} events, ${p.common} in common, ${p.nChanged} draws changed (${Object.entries(p.fields).map(([f, c]) => `${f} ${c}`).join(', ') || '-'}), ${p.nOnlyA} only in ${a}, ${p.nOnlyB} only in ${b}`);
-      for (const [x, y, at, f] of p.changed) console.log(`    changed at event ${at}: ${drawText(x)}\n      ${f.map((ff) => fieldText(ff, x, y)).join('\n      ')}`);
-      for (const e of p.onlyA) console.log(`    only in ${a}: ${typeof e === 'number' ? drawText(e) : JSON.stringify(e)}`);
-      for (const e of p.onlyB) console.log(`    only in ${b}: ${typeof e === 'number' ? drawText(e) : JSON.stringify(e)}`);
+    const oa = d.onlyA ?? [], ob = d.onlyB ?? [];
+    console.log(`=== frames ${pair}: ${d.same} passes the same, ${d.passes?.length ?? '?'} differing${oa.length ? `; only in ${a}: ${oa.map((p) => `pass ${p[0]} ${desc(p[1])} (${p[2]} events)`).join('; ')}` : ''}${ob.length ? `; only in ${b}: ${ob.map((p) => `pass ${p[0]} ${desc(p[1])} (${p[2]} events)`).join('; ')}` : ''}`);
+    for (const p of d.passes ?? []) {
+      console.log(`  pass ${p.i}/${p.j} ${desc(p.fb)}: ${p.na} / ${p.nb} events, ${p.common} in common, ${p.nChanged} draws changed (${Object.entries(p.fields ?? {}).map(([f, c]) => `${f} ${c}`).join(', ') || '-'}), ${p.nOnlyA} only in ${a}, ${p.nOnlyB} only in ${b}`);
+      for (const [x, y, at, f] of p.changed ?? []) console.log(`    changed at event ${at}: ${drawText(x)}\n      ${f.map((ff) => fieldText(ff, x, y)).join('\n      ')}`);
+      for (const e of p.onlyA ?? []) console.log(`    only in ${a}: ${typeof e === 'number' ? drawText(e) : JSON.stringify(e)}`);
+      for (const e of p.onlyB ?? []) console.log(`    only in ${b}: ${typeof e === 'number' ? drawText(e) : JSON.stringify(e)}`);
     }
   }
 }

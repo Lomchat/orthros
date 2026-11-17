@@ -100,8 +100,13 @@ export function loadManifests(dir, extra = null) {
   return out;
 }
 
-/** flicker captures the telemetry takes per day (a session sends one at most: src/gfx/flicker-capture.js) */
-const FLICKER_CAPTURES_PER_DAY = 100;
+/**
+ * Flicker captures the telemetry takes (src/gfx/flicker-capture.js: a session sends one at most): one per session a day,
+ * FLICKER_CAPTURES_PER_CLIENT per client network in FLICKER_CLIENT_WINDOW_MS (the address kept in memory for that long
+ * only, as the accounts' rate limits do — src/web/privacy.html), FLICKER_CAPTURES_PER_DAY in all (~40 MB): one client
+ * cannot spend the day's captures of the others in a burst.
+ */
+const FLICKER_CAPTURES_PER_DAY = 100, FLICKER_CAPTURES_PER_CLIENT = 2, FLICKER_CLIENT_WINDOW_MS = 15 * 60_000;
 /**
  * The build the server serves, for telemetry: the git commit of the tree, '+' when tracked files under src/ differ
  * from it, and the newest modification time of the runtime's files (the page loads src/ directly: an edited tree
@@ -152,8 +157,9 @@ export function createServer(opts = {}) {
   // (the game folders' shared bases, `<game>@base`: their files served and listed — /gamez, /game, /api/tree: dataManifest
   // — never a version of the home, of the learned orders or of the jobs that go through `manifests`)
   let bases = baseManifests(manifests);
-  /** flicker captures written today (/api/telemetry): FLICKER_CAPTURES_PER_DAY at most, ~40 MB */
-  let flickerCaptures = { day: null, n: 0 };
+  /** flicker captures written today (/api/telemetry): their count and sessions; the client networks of the last minutes */
+  let flickerCaptures = { day: null, n: 0, sessions: new Set() };
+  const flickerClients = new Map(); // (client network -> { n, until })
   /** A version's manifest, or a shared base's (game-catalog.js baseManifests). */
   const anyManifest = (id) => manifests.get(id) ?? bases.get(id);
   const trees = new Map(), treeObjs = new Map();
@@ -1873,27 +1879,40 @@ export function createServer(opts = {}) {
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         // (256 KB per batch; a flicker capture — one per session, src/shared/flicker-record.js — up to CAPTURE_POST_MAX_BYTES,
-        // FLICKER_CAPTURES_PER_DAY at most)
+        // within the day's limits: FLICKER_CAPTURES_PER_DAY)
         const chunks = []; let size = 0;
         req.on('data', (d) => { size += d.length; if (size <= CAPTURE_POST_MAX_BYTES) chunks.push(d); });
         req.on('end', () => {
-          if (size > CAPTURE_POST_MAX_BYTES) return send(res, 413, 'too large');
-          let rec; try { rec = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return send(res, 400, 'bad json'); }
-          if (rec?.event === 'flicker-capture') {
-            const v = sanitizeFlickerRecord(rec); if (!v.ok) return send(res, 400, v.error);
-            const day = new Date().toISOString().slice(0, 10), c = flickerCaptures.day === day ? flickerCaptures : (flickerCaptures = { day, n: 0 });
-            if (++c.n > FLICKER_CAPTURES_PER_DAY) return send(res, 429, 'enough captures today');
-            rec = v.rec;
-          } else if (size > 256 * 1024) return send(res, 413, 'too large');
-          // (a passive session record, perf-record.js: its own size limit, checked and rebuilt from its known fields)
-          if (rec?.event === 'perf') {
-            if (size > PERF_MAX_BYTES) return send(res, 413, 'too large');
-            const v = sanitizePerfRecord(rec); if (!v.ok) return send(res, 400, v.error);
-            rec = v.rec;
-          }
-          const day = new Date().toISOString().slice(0, 10);
-          fs.appendFile(path.join(opts.telemetryDir, `telemetry-${day}.jsonl`), JSON.stringify({ at: new Date().toISOString(), ...rec }) + '\n', () => {});
-          send(res, 204, '');
+          // (a body the record's handling cannot take — JSON nested deeper than JSON.stringify's stack, a sanitizer's
+          // throw — is refused, never thrown out of this event handler: that would end the process)
+          try {
+            if (size > CAPTURE_POST_MAX_BYTES) return send(res, 413, 'too large');
+            let rec; try { rec = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return send(res, 400, 'bad json'); }
+            let line;
+            if (rec?.event === 'flicker-capture') {
+              const v = sanitizeFlickerRecord(rec); if (!v.ok) return send(res, 400, v.error);
+              line = JSON.stringify({ at: new Date().toISOString(), ...v.rec }) + '\n'; // (before it is counted: one that cannot be written takes no place)
+              const now = Date.now(), day = new Date(now).toISOString().slice(0, 10), c = flickerCaptures.day === day ? flickerCaptures : (flickerCaptures = { day, n: 0, sessions: new Set() });
+              for (const [k, x] of flickerClients) if (x.until <= now) flickerClients.delete(k);
+              const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim(), client = clientNet(fwd || String(req.socket.remoteAddress ?? ''));
+              const cl = flickerClients.get(client);
+              if (c.sessions.has(v.rec.session)) return send(res, 429, 'this session sent its capture');
+              if ((cl?.n ?? 0) >= FLICKER_CAPTURES_PER_CLIENT) return send(res, 429, 'too many captures, try later');
+              if (c.n >= FLICKER_CAPTURES_PER_DAY) return send(res, 429, 'enough captures today');
+              c.n++; c.sessions.add(v.rec.session);
+              if (cl) cl.n++; else flickerClients.set(client, { n: 1, until: now + FLICKER_CLIENT_WINDOW_MS });
+            } else if (size > 256 * 1024) return send(res, 413, 'too large');
+            // (a passive session record, perf-record.js: its own size limit, checked and rebuilt from its known fields)
+            if (rec?.event === 'perf') {
+              if (size > PERF_MAX_BYTES) return send(res, 413, 'too large');
+              const v = sanitizePerfRecord(rec); if (!v.ok) return send(res, 400, v.error);
+              rec = v.rec;
+            }
+            line ??= JSON.stringify({ at: new Date().toISOString(), ...rec }) + '\n';
+            const day = new Date().toISOString().slice(0, 10);
+            fs.appendFile(path.join(opts.telemetryDir, `telemetry-${day}.jsonl`), line, () => {});
+            send(res, 204, '');
+          } catch { if (!res.headersSent) send(res, 400, 'bad record'); }
         });
         return;
       }

@@ -19,8 +19,8 @@ const X8R8G8B8 = 22, FLIP = 2, D24S8 = 75, CLEAR_TARGET = 1, CLEAR_ZBUFFER = 2, 
 for (const recorded of [false, true]) {
   test(`the back buffers of a flipping chain rotate, the depth-stencil does not${recorded ? ' (render worker)' : ''}`, () => {
     const { gl, calls } = fakeGl(320, 240), sigs = [];
-    const probe = { flicker: { present: (fbo, w, h, dev, sig) => { sigs.push(sig); return false; } }, endRun() {}, frame() {} };
-    const backend = (dev) => { const b = new WebGLDevice(gl, dev, {}); b.probe = probe; return b; };
+    const probe = { flicker: { present: (fbo, w, h, dev, sig) => { sigs.push(sig); return false; } }, endRun() {}, frame() {} }; // (every frame signed: sigOn)
+    const backend = (dev) => { const b = new WebGLDevice(gl, dev, {}); b.probe = probe; b.sigOn = true; return b; };
     let gfx = { createDevice: backend }, link = null;
     if (recorded) {
       const words = new Int32Array(1 << 15), ack = new Int32Array(1 << 16).fill(-1);

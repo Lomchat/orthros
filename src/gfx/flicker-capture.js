@@ -11,7 +11,8 @@
 //   it waits for the queued work) and the framebuffer's status when incomplete;
 //   per draw (DRAW_FIELDS, src/shared/flicker-record.js) its program, the textures bound on units 0-15 with their
 //   sampler (marked '+n' when a pass of this frame drew into them before, '!' when attached to the framebuffer drawn
-//   into: a feedback loop, '~h' their contents uploaded during the capture), its raster state (an index into
+//   into: a feedback loop, '~h' their contents uploaded in this frame — a hash of the frame's uploads into it, so that
+//   contents going X, Y, X show as an alternation —, '^h' their parameters set during the capture), its raster state (an index into
 //   `states`: blend, color mask, depth, stencil, cull, polygon offset...), viewport and scissor, vertex array (its
 //   attribute setup's hash when set during the capture), element buffer, the call, a hash of the program's uniform
 //   values (per element: the backend's location names) and of the vertex data streamed for it;
@@ -21,9 +22,10 @@
 //   precisions), the images, the A-B-A share of the downscaled frames, the frames' signatures, the GL objects they name
 //   (the backend's description: guest resource, Direct3D format and size, render scale...), and the comparison of the
 //   frames (src/shared/flicker-record.js diffRecord: an A-B-A pass shows in 1-2 and 2-3, not in 1-3), cut to
-//   CAPTURE_MAX_BYTES. tools/dev/flicker-capture.mjs turns it into PNGs and a readable diff.
+//   CAPTURE_MAX_BYTES — all of it made after the present that read the last picture, in tasks of a few ms each between
+//   the page's frames (finish: no present waits for it). tools/dev/flicker-capture.mjs turns it into PNGs and a readable diff.
 // ORTHROS_FLICKER_CAPTURE (debug global): 0 never, 1 a capture at the next present (whatever the probe saw).
-import { DRAW_FIELDS, FLICKER_RECORD_VERSION, fitRecord, diffRecord, alternation } from '../shared/flicker-record.js';
+import { DRAW_FIELDS, FLICKER_RECORD_VERSION, CAPTURE_MAX_BYTES, PAGE_LCS_CELLS, fitRecord, diffRecordSteps, alternationSteps, runSliced } from '../shared/flicker-record.js';
 import { gpuInfo } from '../web/gpu-class.js';
 
 /** a probe sample whose still A-B-A share reaches this (ppm of the frame: 2 %) starts the session's capture */
@@ -37,6 +39,11 @@ const UNITS = 16;
 const STALE = 240;
 /** GL calls of one frame at most: past them recording stops (frames that no longer reach the probe's present — the GL null mode switched on meanwhile) */
 const MAX_CALLS = 400000;
+/** a frame's uploads and attachment changes listed at most (past them only counted: nUps, nAtt) */
+const LIST_MAX = 1000;
+/** the record's making (FlickerCapture.finish): its slices' length, ms — the page's frames go on between them */
+const SLICE_MS = 4;
+const tick = () => new Promise((r) => setTimeout(r, 0));
 const TEX_KINDS = ['t2d', 'cube', 't3d', 'arr'];
 const MODES = ['POINTS', 'LINES', 'LINE_LOOP', 'LINE_STRIP', 'TRIANGLES', 'TRIANGLE_STRIP', 'TRIANGLE_FAN'];
 /** components per element of the vector uniform setters */
@@ -85,6 +92,9 @@ export class GlRecorder {
     this.ids = new Map(); this.counts = {}; this.locIds = new Map(); this.locName = new Map(); this.desc = new Map(); this.enumNames = null;
     this.draws = []; this.drawIdx = new Map(); this.states = []; this.stateIdx = new Map();
     this.uni = new Map(); this.vattr = new Map(); this.cattr = new Map(); this.vaoEbo = new Map(); this.fbAtt = new Map(); this.fbBufs = new Map();
+    // (`ver`: per texture, its contents uploaded in this frame — a hash of them, in order: a texture whose contents go
+    // X, Y, X in three frames shows ~X, ~Y, ~X, an A-B-A the comparison finds; `texPar` / `smpPar`: the parameters set
+    // during the capture, by name — their current values hashed, so values that go back show as they were)
     this.ver = new Map(); this.texPar = new Map(); this.smpPar = new Map(); this.store = new Map(); this.checked = new Set();
     this.data = 0; this.cur = null; this.frame = this.newFrame(); this.wr = new Map(); this.passErrors = true;
   }
@@ -200,7 +210,7 @@ export class GlRecorder {
   }
   texKind(target) { const gl = this.gl; return target === gl.TEXTURE_2D ? 't2d' : target === gl.TEXTURE_3D ? 't3d' : target === gl.TEXTURE_2D_ARRAY ? 'arr' : 'cube'; }
   texRef(t) {
-    const w = this.wr.get(t), v = this.ver.get(t), q = this.texPar.get(t);
+    const w = this.wr.get(t), v = this.ver.get(t), q = this.texPar.get(t)?.h;
     let fb = false; for (const o of this.fbAtt.get(this.s.draw || null)?.values() ?? []) if (o === t) fb = true;
     return `${this.id(t, 'T')}${w ? '+' + w : ''}${fb ? '!' : ''}${v ? '~' + hex(v).slice(0, 6) : ''}${q ? '^' + hex(q).slice(0, 4) : ''}`;
   }
@@ -234,7 +244,8 @@ export class GlRecorder {
     for (let u = 0; u < UNITS; u++) {
       const U = s.units[u]; if (!U) continue;
       let t = ''; for (const k of TEX_KINDS) if (U[k]) t += (t ? ',' : '') + this.texRef(U[k]);
-      if (t) tex += `${tex ? ' ' : ''}${u}:${t}${U.smp ? '/' + this.id(U.smp, 'S') : ''}`;
+      const sp = U.smp ? this.smpPar.get(U.smp)?.h : 0; // (a sampler's parameters set during the capture)
+      if (t) tex += `${tex ? ' ' : ''}${u}:${t}${U.smp ? '/' + this.id(U.smp, 'S') + (sp ? '^' + hex(sp).slice(0, 4) : '') : ''}`;
     }
     const vp = `${arr(s.vp).join(',')}${s.en[this.gl.SCISSOR_TEST] ? ' sc ' + arr(s.sc).join(',') : ''}`;
     const ebo = type != null ? (this.id(this.vaoEbo.get(s.vao || null), 'B') ?? '?') : '';
@@ -252,12 +263,12 @@ export class GlRecorder {
     const key = a === 'COLOR_ATTACHMENT0' ? 'c0' : a === 'DEPTH_STENCIL_ATTACHMENT' ? 'ds' : a.toLowerCase();
     let m = this.fbAtt.get(fb); if (!m) this.fbAtt.set(fb, m = new Map());
     if (obj) m.set(key, obj); else m.delete(key);
-    this.frame.att.push([this.fbId(fb), key, desc]);
+    const f = this.frame; if (f.att.length < LIST_MAX) f.att.push([this.fbId(fb), key, desc]); else f.nAtt = (f.nAtt ?? f.att.length) + 1;
   }
-  /** a texture upload into the texture bound to `target`: listed, its contents' version moved */
+  /** a texture upload into the texture bound to `target`: listed, folded into the texture's uploads of this frame (`ver`) */
   upload(fn, target, level, nums, data) {
-    const t = this.bound(target), h = data;
-    this.frame.ups.push([fn, t ? this.id(t, 'T') : null, level, ...nums.slice(0, 6), hex(h)]);
+    const t = this.bound(target), h = data, f = this.frame;
+    if (f.ups.length < LIST_MAX) f.ups.push([fn, t ? this.id(t, 'T') : null, level, ...nums.slice(0, 6), hex(h)]); else f.nUps = (f.nUps ?? f.ups.length) + 1;
     if (t) this.ver.set(t, mix(mix(this.ver.get(t) ?? 0x3c6ef372, strHash(nums.join(','))), h));
   }
   /** a uniform setter of the program in use: per element (the backend's location names), its value's hash folded into the program's */
@@ -280,7 +291,7 @@ export class GlRecorder {
     this.endPass();
     const f = this.frame;
     const e = this.gl.getError(); if (e) f.errs.push(this.name(e));
-    this.frame = this.newFrame(); this.wr.clear();
+    this.frame = this.newFrame(); this.wr.clear(); this.ver.clear();
     f.passes = f.passes.map((p) => ({ fb: p.fb, ev: p.ev }));
     return f;
   }
@@ -295,7 +306,7 @@ export class GlRecorder {
       if (d) for (const [k, v] of Object.entries(d)) x[k] = conv(v);
       const st = this.store.get(o); if (st) x.storage = st;
       const att = this.fbAtt.get(o); if (att?.size) x.att = Object.fromEntries([...att].map(([k, v]) => [k, this.id(v)]));
-      const smp = this.smpPar.get(o); if (smp) x.params = hex(smp);
+      const smp = this.smpPar.get(o)?.h; if (smp) x.params = hex(smp);
       out[id] = x;
     }
     return out;
@@ -372,9 +383,9 @@ function handlers() {
     texStorage2D(a, k) { const t = this.bound(a[0]); if (t) this.store.set(t, `${this.name(a[2])} ${a[3]}x${a[4]} levels ${a[1]}`); this.upload(k, a[0], 0, [a[1], a[3], a[4]], 0); },
     texStorage3D(a, k) { const t = this.bound(a[0]); if (t) this.store.set(t, `${this.name(a[2])} ${a[3]}x${a[4]}x${a[5]} levels ${a[1]}`); this.upload(k, a[0], 0, [a[1], a[3], a[4], a[5]], 0); },
     generateMipmap(a) { this.upload('generateMipmap', a[0], 0, [], 0); },
-    texParameteri(a) { const t = this.bound(a[0]); if (t) this.texPar.set(t, mix(mix(this.texPar.get(t) ?? 0, a[1]), numBits(a[2]))); },
+    texParameteri(a) { const t = this.bound(a[0]); if (t) param(this.texPar, t, a[1], a[2]); },
     texParameterf(a) { H.texParameteri.call(this, a); },
-    samplerParameteri(a) { if (a[0]) this.smpPar.set(a[0], mix(mix(this.smpPar.get(a[0]) ?? 0, a[1]), numBits(a[2]))); },
+    samplerParameteri(a) { if (a[0]) param(this.smpPar, a[0], a[1], a[2]); },
     samplerParameterf(a) { H.samplerParameteri.call(this, a); },
     // vertex data: what the next draw reads, hashed (bufferData(target, data|size, usage, srcOffset, length), bufferSubData(target, dstOffset, data, srcOffset, length))
     bufferData(a) { this.data = mix(mix(this.data, a[0]), hashData(a[1], a[3], a[4])); },
@@ -391,6 +402,14 @@ function handlers() {
   return H;
 }
 function attr(r, i, x) { const v = r.s.vao || null; let m = r.vattr.get(v); if (!m) r.vattr.set(v, m = new Map()); m.set(i, x); }
+/** a texture's or sampler's parameter set: its value by name, `h` the hash of the current values (a value set back: the hash as before) */
+function param(map, o, pname, v) {
+  let p = map.get(o); if (!p) map.set(o, p = { m: new Map(), h: 0 });
+  const nv = numBits(v), old = p.m.get(pname);
+  if (old === nv) return;
+  if (old !== undefined) p.h ^= mix(mix(0x27d4eb2f, pname), old);
+  p.h ^= mix(mix(0x27d4eb2f, pname), nv); p.m.set(pname, nv);
+}
 /** a texture upload call (any of its overloads): its numeric arguments and the hash of its data */
 function upload(r, k, a) {
   const nums = []; let data = null, di = -1;
@@ -531,9 +550,9 @@ export class FlickerCapture {
     if (this.shots.some((s) => s.sync) && ++this.waited < STALE) return;
     if (this.shots.some((s) => s.sync)) this.notes.push('pictures not read back in time');
     this.phase = 'encode';
-    const imgs = this.shots.map((s) => (s.px ? upright(s.px, this.small.sw, this.small.sh) : null));
+    const raws = this.shots.map((s) => s.px), { sw, sh } = this.small;
     this.drop();
-    this.finish(imgs).catch((e) => { this.notes.push(`record failed: ${e?.message ?? e}`); }).finally(() => { this.phase = 'done'; });
+    this.finish(raws, sw, sh).catch((e) => { this.notes.push(`record failed: ${e?.message ?? e}`); }).finally(() => { this.phase = 'done'; });
   }
   /** GL objects of the capture deleted (the context's: GL keeps them alive for the commands queued) */
   drop() {
@@ -545,14 +564,25 @@ export class FlickerCapture {
   }
   /** The context was lost, or the probe switched off: recording stopped, nothing sent. */
   abort() { this.rec.stop(); this.drop(); this.phase = 'done'; }
-  async finish(imgs) {
-    const r = this.rec, sw = this.small?.sw ?? 0, sh = this.small?.sh ?? 0;
-    const rec = {
+  /**
+   * The record made and sent, from the task after the present that read the last picture on: every part in tasks of
+   * its own, a few ms each (the page's frames go on between them) — the pictures turned upright and compared, the
+   * frames' comparison in slices (runSliced; lcsPairs' work capped at PAGE_LCS_CELLS a call), the cuts one step a task,
+   * the JPEG encodes asynchronous. `took`: its time from the first task to the send, the slices and the longest.
+   */
+  async finish(raws, sw, sh) {
+    const t0 = performance.now(), work = { slices: 0, longest: 0 };
+    const step = async (f) => { await tick(); const t = performance.now(), v = await f(); const ms = performance.now() - t; work.slices++; if (ms > work.longest) work.longest = ms; return v; };
+    const imgs = await step(() => raws.map((px) => (px ? upright(px, sw, sh) : null)));
+    const r = this.rec;
+    const rec = await step(() => ({
       event: 'flicker-capture', v: FLICKER_RECORD_VERSION, trigger: this.trigger, gl: this.ctx, size: [this.w, this.h], img: [sw, sh], q: null, images: [],
-      small: smallShares(imgs, sw, sh), frames: this.frames, objs: r.objects(this.w, this.h), states: r.states, draws: r.draws, drawFields: DRAW_FIELDS, diff: null, alt: null, cut: [], notes: [...this.notes, ...r.notes],
-    };
-    rec.diff = diffRecord(rec, 24); rec.alt = alternation(rec, 40);
-    await fitRecord(rec, (q) => this.encode(imgs, sw, sh, q));
+      small: smallShares(imgs, sw, sh), frames: this.frames, objs: r.objects(this.w, this.h), states: r.states, draws: r.draws, drawFields: DRAW_FIELDS, diff: null, alt: null, cut: [], notes: [...this.notes, ...r.notes], took: null,
+    }));
+    rec.diff = await runSliced(diffRecordSteps(rec, 24, PAGE_LCS_CELLS), SLICE_MS, work);
+    rec.alt = await runSliced(alternationSteps(rec, 40, PAGE_LCS_CELLS), SLICE_MS, work);
+    await fitRecord(rec, (q) => this.encode(imgs, sw, sh, q), CAPTURE_MAX_BYTES - 100, work); // (room for `took`)
+    rec.took = { ms: Math.round(performance.now() - t0), slices: work.slices, longest: Math.round(work.longest * 10) / 10 };
     this.send(rec);
   }
 }

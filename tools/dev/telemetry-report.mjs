@@ -55,8 +55,10 @@ export function buildSessions(lines, { from = null, to = null, session = null, g
     const day = typeof r.at === 'string' ? r.at.slice(0, 10) : null;
     if (day && ((from && day < from) || (to && day > to))) continue;
     let s = sessions.get(r.session);
-    if (!s) sessions.set(r.session, (s = { id: r.session, game: r.game ?? null, first: r.at ?? null, last: r.at ?? null, env: null, options: null, version: null, samples: [], summaries: [], benches: [], suites: [], bench: null, slow: 0, events: {}, compat: null }));
+    if (!s) sessions.set(r.session, (s = { id: r.session, game: r.game ?? null, first: r.at ?? null, last: r.at ?? null, env: null, options: null, version: null, samples: [], summaries: [], benches: [], suites: [], bench: null, slow: 0, events: {}, compat: null, capture: null, flickerLogs: [] }));
     if (r.game) s.game = r.game;
+    // (the session's flicker capture, gfx/flicker-capture.js: a line of its own — tools/dev/flicker-capture.mjs reads it)
+    if (r.event === 'flicker-capture') { s.capture = { at: r.at ?? null, trigger: r.trigger ?? null, small: r.small ?? null, frames: r.frames?.length ?? 0, images: r.images?.length ?? 0, cut: r.cut ?? [], took: r.took ?? null, alt: r.alt?.fields ?? null, renderer: r.gl?.renderer ?? null }; continue; }
     if (r.bench) s.bench = r.bench; // (a bench's session: the page marks its batches — its suite run, or the bench's name)
     if (r.at) { if (!s.first || r.at < s.first) s.first = r.at; if (!s.last || r.at > s.last) s.last = r.at; }
     if (r.env) { s.env = r.env; s.version ??= r.env.version ?? null; }
@@ -67,7 +69,11 @@ export function buildSessions(lines, { from = null, to = null, session = null, g
       else if (x.event === 'compat') { if (!s.compat || (x.t ?? 0) >= (s.compat.t ?? 0)) s.compat = x; } // (cumulative: the latest)
       else if (x.event === 'bench') s.benches.push({ ...x, at: x.at ?? r.at ?? null, env: x.env ?? r.env ?? null, session: r.session });
       else if (x.event === 'bench-suite') s.suites.push({ ...x, at: r.at ?? null, env: x.env ?? r.env ?? null });
-      else if (x.event) s.events[x.event] = (s.events[x.event] ?? 0) + 1;
+      else if (x.event) {
+        s.events[x.event] = (s.events[x.event] ?? 0) + 1;
+        // (the probe's logged samples, gfx/flicker-probe.js: their flicker share and the frames' command pattern)
+        if (x.event === 'log' && typeof x.msg === 'string' && x.msg.includes('flicker sample:')) s.flickerLogs.push({ t: x.t ?? null, still: Number(/sample: ([\d.]+) %/.exec(x.msg)?.[1] ?? NaN), cmd: /commands (same|aba|differ|unknown)/.exec(x.msg)?.[1] ?? 'unknown' });
+      }
       else if (x.dt) s.samples.push(x);
     }
   }
@@ -126,7 +132,7 @@ export function summaryStretches(summaries) {
     if (x.gpu?.frames) { cur.gpuFrames += x.gpu.frames; cur.gpuMs += x.gpu.mean * x.gpu.frames; histAddSparse(cur.gpuHist, x.gpu.h); if ((x.gpu.max ?? 0) > cur.gpuMax) cur.gpuMax = x.gpu.max; }
     if (x.render && x.frames) { cur.rwWait += x.render.waitMs * x.frames; cur.rwReplay += x.render.replayMs * x.frames; cur.rwFrames += x.frames; }
     if (x.renderMode) cur.render = x.renderMode;
-    if (x.flicker) { const f = cur.flk ??= { n: 0, aba: 0, still: 0, stillN: 0, chg: 0, max: 0, over1: 0, alt: 0, abaAlt: 0, glErrors: 0, glError: null }; const n = x.flicker.n ?? 0; f.n += n; f.aba += (x.flicker.aba ?? 0) * n; f.chg += (x.flicker.chg ?? 0) * n; if (x.flicker.still != null) { f.still += x.flicker.still * n; f.stillN += n; } if ((x.flicker.max ?? 0) > f.max) f.max = x.flicker.max; f.over1 += x.flicker.over1 ?? 0; f.alt += x.flicker.alt ?? 0; f.abaAlt += x.flicker.abaAlt ?? 0; f.glErrors += x.flicker.glErrors ?? 0; if (x.flicker.glError) f.glError = x.flicker.glError; }
+    if (x.flicker) { const f = cur.flk ??= { n: 0, aba: 0, still: 0, stillN: 0, chg: 0, max: 0, over1: 0, alt: 0, abaAlt: 0, altSame: 0, altCmdAba: 0, glErrors: 0, glError: null }; const n = x.flicker.n ?? 0; f.n += n; f.aba += (x.flicker.aba ?? 0) * n; f.chg += (x.flicker.chg ?? 0) * n; if (x.flicker.still != null) { f.still += x.flicker.still * n; f.stillN += n; } if ((x.flicker.max ?? 0) > f.max) f.max = x.flicker.max; f.over1 += x.flicker.over1 ?? 0; f.alt += x.flicker.alt ?? 0; f.abaAlt += x.flicker.abaAlt ?? 0; f.altSame += x.flicker.altSame ?? 0; f.altCmdAba += x.flicker.altCmdAba ?? 0; f.glErrors += x.flicker.glErrors ?? 0; if (x.flicker.glError) f.glError = x.flicker.glError; }
     cur.visible += (x.visible ?? 1) * (x.seconds ?? 0);
   }
   return out.map((c) => {
@@ -140,7 +146,7 @@ export function summaryStretches(summaries) {
       gpu: c.gpuFrames ? { frames: c.gpuFrames, mean: +(c.gpuMs / c.gpuFrames).toFixed(2), p50: hasGpuHist ? histQuantile(c.gpuHist, 0.5, c.gpuMax || Infinity) : null, p99: hasGpuHist ? histQuantile(c.gpuHist, 0.99, c.gpuMax || Infinity) : null, max: c.gpuMax || null } : c.gpuState,
       renderWaitMs: c.rwFrames ? +(c.rwWait / c.rwFrames).toFixed(2) : null, replayMs: c.rwFrames ? +(c.rwReplay / c.rwFrames).toFixed(2) : null, render: c.render,
       visible: c.seconds ? +(c.visible / c.seconds).toFixed(2) : null,
-      flicker: c.flk ? { n: c.flk.n, aba: c.flk.n ? +(c.flk.aba / c.flk.n).toFixed(4) : null, still: c.flk.stillN ? +(c.flk.still / c.flk.stillN).toFixed(4) : null, chg: c.flk.n ? +(c.flk.chg / c.flk.n).toFixed(4) : null, max: c.flk.max, over1: c.flk.over1, alt: c.flk.alt, abaAlt: c.flk.abaAlt, glErrors: c.flk.glErrors, glError: c.flk.glError } : null,
+      flicker: c.flk ? { n: c.flk.n, aba: c.flk.n ? +(c.flk.aba / c.flk.n).toFixed(4) : null, still: c.flk.stillN ? +(c.flk.still / c.flk.stillN).toFixed(4) : null, chg: c.flk.n ? +(c.flk.chg / c.flk.n).toFixed(4) : null, max: c.flk.max, over1: c.flk.over1, alt: c.flk.alt, abaAlt: c.flk.abaAlt, altSame: c.flk.altSame, altCmdAba: c.flk.altCmdAba, glErrors: c.flk.glErrors, glError: c.flk.glError } : null,
     };
   });
 }
@@ -163,8 +169,10 @@ export function report(sessions, { minSeconds = 60, bench = undefined, players =
     const seconds = s.samples.reduce((a, x) => a + x.dt, 0) || s.summaries.reduce((a, x) => a + (x.seconds ?? 0), 0);
     const benches = bench === undefined ? s.benches : s.benches.filter((b) => bench === true || b.bench === bench);
     if (bench !== undefined && !benches.length) continue;
-    if (seconds < minSeconds && !benches.length) continue;
-    const r = { session: s.id, game: s.game, bench: s.bench, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), compat: s.compat, benches };
+    if (seconds < minSeconds && !benches.length && !s.capture) continue;
+    const cmds = {}; for (const x of s.flickerLogs) cmds[x.cmd] = (cmds[x.cmd] ?? 0) + 1;
+    const r = { session: s.id, game: s.game, bench: s.bench, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), compat: s.compat, benches,
+      flickerCapture: s.capture, flickerLogs: s.flickerLogs.length ? { n: s.flickerLogs.length, maxStill: Math.max(...s.flickerLogs.map((x) => x.still).filter((v) => !Number.isNaN(v)), 0), commands: cmds } : null };
     for (const st of stretches(s.samples)) {
       const min = st.seconds / 60, n = st.acctFrames || 1, slowTotal = Object.values(st.slowCats).reduce((a, b) => a + b, 0);
       r.stretches.push({ kind: st.kind, at: new Date(st.t0).toISOString().slice(11, 19), seconds: Math.round(st.seconds), fps: +(st.frames / st.seconds).toFixed(1), busy: Math.round(st.busy / st.seconds), per33: Math.round(st.s33 / min), per50: Math.round(st.s50 / min),
@@ -273,6 +281,9 @@ export function formatReport(reports, comparison) {
   for (const r of reports) {
     L.push(`session ${r.session}${r.bench ? ` [bench ${r.bench}]` : ''} ${r.game ?? '?'} ${r.first ? r.first.slice(0, 16).replace('T', ' ') : ''} ${r.seconds} s${r.version ? `, build ${r.version}` : ''}${r.render ? `, render ${r.render}` : ''}; ${r.slowEvents} slow-frame events${Object.keys(r.events).length ? `; events ${Object.entries(r.events).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}`);
     L.push(`  machine: ${r.machine}`);
+    // (the flicker probe's logged samples with their frames' command pattern, and the session's flicker capture)
+    if (r.flickerLogs) L.push(`  flicker samples logged: ${r.flickerLogs.n} (largest ${r.flickerLogs.maxStill} % flickering; commands ${Object.entries(r.flickerLogs.commands).map(([k, v]) => `${k} ${v}`).join(', ')})`);
+    if (r.flickerCapture) { const c = r.flickerCapture; L.push(`  flicker capture: ${c.at ? c.at.slice(11, 19) : '?'}, trigger ${c.trigger ? `${c.trigger.asked ? 'asked' : `${c.trigger.still} % flickering, commands ${c.trigger.cmd ?? '?'}`}` : '?'}; ${c.frames} frames, ${c.images} pictures${c.small ? ` (${c.small.aba} % A-B-A)` : ''}${c.alt && Object.keys(c.alt).length ? `; alternating draw fields ${Object.entries(c.alt).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${c.cut.length ? `; cut ${c.cut.join(', ')}` : ''}${c.took ? `; made in ${c.took.ms} ms, longest slice ${c.took.longest} ms` : ''} — node tools/dev/flicker-capture.mjs <telemetry .jsonl> --session ${r.session}`); }
     if (r.options) L.push(`  options: ${Object.entries(r.options).filter(([, v]) => v !== '' && v !== false && v !== null).map(([k, v]) => `${k}=${v}`).join(' ')}`);
     for (const st of r.stretches) {
       L.push(`  ${st.at} ${st.kind.padEnd(9)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps busy ${st.busy}% >33 ms ${st.per33}/min >50 ms ${st.per50}/min${st.work !== null ? `; work ${st.work} ms/frame: ${st.cats}` : ''}`);
@@ -287,7 +298,7 @@ export function formatReport(reports, comparison) {
       // (gfx/flicker-probe.js: frame triples sampled every 10 s, % of their pixels going A-B-A where nothing moved — the
       // flicker; a summary without `still`, from the probe's first version (2026-11-17 morning): only A-B-A anywhere, a
       // scroll's included —, the largest, the samples where it dominates what changed; WebGL errors)
-      if (st.flicker?.n || st.flicker?.glErrors) L.push(`      flicker: ${st.flicker.n} samples, ${st.flicker.still != null ? `flickering ${st.flicker.still} % of pixels` : `A-B-A ${st.flicker.aba ?? '-'} % of pixels`} (max ${st.flicker.max ?? '-'} %, ${st.flicker.over1} over 1 %, ${st.flicker.alt ?? 0} alternating, ${st.flicker.abaAlt ?? 0} alternating while moving)${st.flicker.still != null ? `, A-B-A anywhere ${st.flicker.aba ?? '-'} %` : ''}, changed ${st.flicker.chg ?? '-'} %; WebGL errors ${st.flicker.glErrors}${st.flicker.glError ? ` (last 0x${st.flicker.glError.toString(16)})` : ''}`);
+      if (st.flicker?.n || st.flicker?.glErrors) L.push(`      flicker: ${st.flicker.n} samples, ${st.flicker.still != null ? `flickering ${st.flicker.still} % of pixels` : `A-B-A ${st.flicker.aba ?? '-'} % of pixels`} (max ${st.flicker.max ?? '-'} %, ${st.flicker.over1} over 1 %, ${st.flicker.alt ?? 0} alternating${st.flicker.altSame || st.flicker.altCmdAba ? ` (${st.flicker.altSame ?? 0} with the same commands, ${st.flicker.altCmdAba ?? 0} with A-B-A commands)` : ''}, ${st.flicker.abaAlt ?? 0} alternating while moving)${st.flicker.still != null ? `, A-B-A anywhere ${st.flicker.aba ?? '-'} %` : ''}, changed ${st.flicker.chg ?? '-'} %; WebGL errors ${st.flicker.glErrors}${st.flicker.glError ? ` (last 0x${st.flicker.glError.toString(16)})` : ''}`);
     }
     for (const b of r.benches) {
       L.push(`  bench ${b.bench} (${b.manifest}): ${b.outcome}${b.detail ? ` — ${b.detail}` : ''}, ${b.seconds} s, display ${b.display ?? '?'}${b.firstLaunch ? ', first launch' : ''}${b.interrupted && (b.interrupted.hiddenSeconds || b.interrupted.blurs) ? `, INTERRUPTED (hidden ${b.interrupted.hiddenSeconds} s, ${b.interrupted.blurs} focus losses)` : ''}; marks ${(b.marks ?? []).map((m) => `${m.label}@${m.at}s`).join(' ')}`);
