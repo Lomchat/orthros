@@ -170,6 +170,11 @@ runtime code: AotR's own skirmish setup movie, read from a version-folder overla
 - **Files** (`tools/ops/sage-text/aotr-army-column.py <game folder> <out>`, from the installed files, refusing any other
   release's): `versions/10.0.2/aotr/MpGameSetup.apt`, `versions/10.0.2/aotr/MpGameSetup_geometry/363.ru` and
   `286.ru` of `data/games/age-of-the-ring`.
+- **In game** (headless Chromium, the overlay in a copy of the game folder, `--games-dir`): French 1024x768, the Army
+  column 369-540 px, every name whole closed and in the list (Aléatoire... Royaume des Forêts... Monts Brumeux,
+  Haradrims), the headers centred over the moved line; French 2560x1440 (the owner's mode), the list 620-1045 px with
+  "Royaume des Forêts" far from its edge; English 2560x1440, "Misty Mountains", "Woodland Realm", "Haradwaith" whole.
+  The Captain column keeps room for "-" and a hero's name.
 
 ## Accented letters cut on Windows: CFF seac glyphs (2026-11-17)
 
@@ -199,7 +204,10 @@ the army list shows "Lothlćrien". Every glyph is cut on its right side, at the 
 - **Not validated on Windows here** (no Windows machine): `tools/check/font-seac-check.html`, opened from the Orthros
   server in a browser (`/tools/check/font-seac-check.html`, default: AotR's Albertus MT read from `rotwk/Data1.big`),
   draws the font as the file has it and as Orthros gives it, glyph by glyph, and says whether that browser cuts seac
-  glyphs. Expected on the owner's Chrome: "coupés" for the original, the flattened one whole.
+  glyphs. Expected on the owner's Chrome: "coupés" for the original, the flattened one whole (Chromium 158 on Linux:
+  "entiers", the two columns identical to the pixel). In game on Linux, with the flattened face: the skirmish
+  description at 1024x768 and 2560x1440 and the Create-a-Hero "Nouvelles caractéristiques" screen at 2560x1440 draw
+  à è é ê as before.
 
 ## Characters a font lacks (2026-11-17)
 
