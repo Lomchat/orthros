@@ -4,7 +4,7 @@
 // backend (`vm.host.gfx`, see gfx/d3d8-webgl.js).
 import { snapKnown, snapClass } from '../core/snapshot.js';
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_NOTIMPL, E_OUTOFMEMORY } from './com.js';
-import { d3dCore, FMT, FLOAT_FORMATS, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources, readShaderTokens } from './d3d8.js';
+import { d3dCore, FMT, FLOAT_FORMATS, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources, readShaderTokens, writeFloatTexels } from './d3d8.js';
 import { declLayout9 } from '../gfx/d3d9-shaders.js';
 import { StateTable } from './state-table.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
@@ -25,6 +25,20 @@ const BACKBUFFER_FORMATS = new Set([FMT.X8R8G8B8, FMT.A8R8G8B8, FMT.R5G6B5, FMT.
 const DEPTH_FORMATS = new Set([FMT.D16, FMT.D24S8, FMT.D24X8, FMT.D32, FMT.D16_LOCKABLE, FMT.D15S1, FMT.D24X4S4, 82 /* D24FS8 */]);
 const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.A4L4, FMT.X4R4G4B4, FMT.A8B8G8R8, FMT.G16R16, FMT.A2B10G10R10, FMT.Q8W8V8U8, FMT.V16U16, FMT.L6V5U5, FMT.X8L8V8U8, 81 /* L16 */]); // no R8G8B8 nor palettized P8/A8P8: like every real Direct3D 9 driver, those textures are not offered (applications keep a conversion path)
 const MAX_SAMPLERS = 16, MAX_RTS = 4;
+/** CheckDeviceFormat's D3DUSAGE_QUERY_* bits (questions about a format, not a resource's usage) */
+const QUERY = { LEGACYBUMPMAP: 0x8000, SRGBREAD: 0x10000, FILTER: 0x20000, SRGBWRITE: 0x40000, POSTPIXELSHADER_BLENDING: 0x80000, VERTEXTEXTURE: 0x100000, WRAPANDMIP: 0x200000 };
+/**
+ * The QUERY bits a floating-point format (FLOAT_FORMATS) answers yes to — what Orthros really does with it, the
+ * WebGL 2 context's extensions being unknown here (they are the render worker's): no vertex texture fetch (vertex
+ * shaders 2.0, the translator samples nothing), no sRGB nor legacy bump mapping on floats; the 16-bit ones filter and
+ * blend everywhere (RGBA16F is filterable in WebGL 2, blendable with EXT_color_buffer_float), the 32-bit ones only with
+ * OES_texture_float_linear / EXT_float_blend, which a player's GPU may lack: refused, as the Direct3D 9 GPUs of the time
+ * (GeForce 6/7, Radeon X1000) refused them — games keep a point-sampled, unblended path for R32F.
+ */
+export function floatQueryOk(usage, fmt) {
+  if (usage & (QUERY.LEGACYBUMPMAP | QUERY.SRGBREAD | QUERY.SRGBWRITE | QUERY.VERTEXTEXTURE)) return false;
+  return FLOAT_FORMATS.get(fmt)?.bits !== 32 || !(usage & (QUERY.FILTER | QUERY.POSTPIXELSHADER_BLENDING));
+}
 // snapshot: diagnostics
 const checkedFormats = new Set(), createdFormats = new Set(); // once-per-format diagnostics
 // snapshot: diagnostics
@@ -220,7 +234,11 @@ export function registerDirect3D9(api, vm) {
       const base = s.ensureMem(c.proc);
       const l = rect ? mem.readS32(rect) : 0, t = rect ? mem.readS32(rect + 4) : 0, r = rect ? mem.readS32(rect + 8) : s.width, b = rect ? mem.readS32(rect + 12) : s.height;
       const bpp = surfacePitch(s.fmt, 1);
-      for (let y = t; y < b; y++) for (let x = l; x < r; x++) { const p = base + y * s.pitch + x * bpp; if (bpp === 4) mem.write32(p, color); else if (bpp === 2) mem.write16(p, ((color >> 8) & 0xf800) | ((color >> 5) & 0x7e0) | ((color >> 3) & 0x1f)); else mem.u8[p] = color & 0xff; }
+      if (FLOAT_FORMATS.has(s.fmt)) { // (the color converted as Direct3D converts a D3DCOLOR: each channel / 255 — the format's own channels)
+        const v = [(color >>> 16) & 255, (color >>> 8) & 255, color & 255, color >>> 24], w = Math.max(0, r - l), px = new Uint8Array(4 * w);
+        for (let i = 0; i < px.length; i++) px[i] = v[i & 3];
+        if (w > 0 && b > t) writeFloatTexels(mem.u8, base + t * s.pitch + l * bpp, w, b - t, s.pitch, s.fmt, px, 1 / 255, () => 0);
+      } else for (let y = t; y < b; y++) for (let x = l; x < r; x++) { const p = base + y * s.pitch + x * bpp; if (bpp === 4) mem.write32(p, color); else if (bpp === 2) mem.write16(p, ((color >> 8) & 0xf800) | ((color >> 5) & 0x7e0) | ((color >> 3) & 0x1f)); else mem.u8[p] = color & 0xff; }
       s.dirty = true; this.gfx?.surfaceUpdated?.(s);
       return D3D_OK;
     }
@@ -401,8 +419,9 @@ export function registerDirect3D9(api, vm) {
       if (adapter !== 0) return D3DERR_INVALIDCALL;
       // (the floating-point formats — R32F, G16R16F...: 2D and cube textures and render targets, as the Direct3D 9 GPUs
       // of the games' time offer them; games keep depth in them for shadow maps, where 8 bits per channel show as shadow
-      // acne that crawls with the camera. Not volumes, no automatic mipmaps: not implemented for them)
-      const float = FLOAT_FORMATS.has(fmt) && rtype !== RTYPE.VOLUMETEXTURE && rtype !== RTYPE.VOLUME;
+      // acne that crawls with the camera. Not volumes, no automatic mipmaps: not implemented for them; the QUERY bits
+      // as floatQueryOk answers them)
+      const float = FLOAT_FORMATS.has(fmt) && rtype !== RTYPE.VOLUMETEXTURE && rtype !== RTYPE.VOLUME && floatQueryOk(usage, fmt);
       const hr = (usage & USAGE_DEPTHSTENCIL) ? (DEPTH_FORMATS.has(fmt) ? D3D_OK : D3DERR_NOTAVAILABLE)
         : (usage & USAGE_RENDERTARGET) ? (BACKBUFFER_FORMATS.has(fmt) || fmt === FMT.A8R8G8B8 || float ? D3D_OK : D3DERR_NOTAVAILABLE)
         : (usage & 0x400 /* AUTOGENMIPMAP */) ? (TEXTURE_FORMATS.has(fmt) ? S_OK : D3DERR_NOTAVAILABLE)

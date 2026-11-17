@@ -3,8 +3,8 @@
 // thread runs them (the synchronous path) or a texture helper does (d3dx9-tex-jobs.js, docs/api-layer.md "D3DX texture
 // jobs"): the same functions on the same bytes, in guest memory shared with the helper — the same results.
 // A level is { mem (guest address, 0: none), bytes, fmt, width, height, pitch } (a Surface, or its description).
-import { FMT, surfaceBytes, surfacePitch } from './d3d8.js';
-import { toRgba, toRgbaRows, fromRgba, resizeRgba, applyColorKey, isDxt, mipChain, mipChainReady } from './d3dx9-image.js';
+import { FMT, FLOAT_FORMATS, surfaceBytes, surfacePitch, readFloatTexels, writeFloatTexels } from './d3d8.js';
+import { toRgba, toRgbaRows, fromRgba, resizeRgba, resizeRgbaF, applyColorKey, isDxt, mipChain, mipChainReady } from './d3dx9-image.js';
 
 /** D3DX_FILTER: low byte = filter kind (1 NONE, 2 POINT, 3 LINEAR, 4 TRIANGLE, 5 BOX) */
 export const FILTER_POINT = 2;
@@ -113,6 +113,7 @@ export function sourceSpan(fmt, sr, pitch, sw, sh) {
  * writes a level. The levels filled are always lv[first..] (filledFrom), the formats encodable.
  */
 export function filterChain(mem, lv, src, point, cacheOf, fill) {
+  if (FLOAT_FORMATS.has(lv[0]?.fmt)) { filterChainF(mem, lv, src, point, fill); return; }
   let first = src + 1;
   while (first < lv.length && !lv[first - 1].mem) first++;
   if (!point && first < lv.length && lv.slice(first - 1).every((s) => s.fmt === lv[first].fmt)) {
@@ -131,6 +132,19 @@ export function filterChain(mem, lv, src, point, cacheOf, fill) {
     rgba = resizeRgba(from, p.width, p.height, s.width, s.height, point);
     const enc = fromRgba(s.fmt, rgba, s.width, s.height);
     if (enc) fill(s, enc); else rgba = null;
+  }
+}
+/**
+ * filterChain of floating-point levels: in floats, as D3DX filters them (through RGBA8 their values would be clamped to
+ * [0, 1] and quantized), each level from the one above it.
+ */
+function filterChainF(mem, lv, src, point, fill) {
+  let f = null;
+  for (let i = src + 1; i < lv.length; i++) {
+    const p = lv[i - 1], s = lv[i];
+    if (!p.mem) { f = null; continue; }
+    f = resizeRgbaF(f ?? readFloatTexels(mem.bytes(p.mem, p.bytes), 0, p.width, p.height, p.pitch, p.fmt), p.width, p.height, s.width, s.height, point);
+    const out = new Uint8Array(s.bytes); writeFloatTexels(out, 0, s.width, s.height, s.pitch, s.fmt, f); fill(s, out);
   }
 }
 /** the first level filterChain writes (every one after it too, the formats encodable) — lv.length: none */

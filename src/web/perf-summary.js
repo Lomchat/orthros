@@ -9,6 +9,7 @@ import { HIST_N, histAddSparse, histQuantile, histSparse, histBucket } from '../
 const grow = (a, b) => (b === undefined || b === null ? 0 : a === undefined || a === null || b < a ? b : b - a);
 const r1 = (v) => Math.round(v * 10) / 10;
 const r2 = (v) => Math.round(v * 100) / 100;
+const r4 = (v) => Math.round(v * 10000) / 10000;
 /** a quantile of a histogram, rounded to 0.1 ms (the upper bound of a bucket, or the window's maximum) */
 const hq = (h, q, max) => { const v = histQuantile(h, q, max); return v === null ? null : r1(v); };
 
@@ -22,7 +23,7 @@ function counters(m) {
     glState: gc?.state ?? null, glFrames: gc?.frames, glCalls: gc?.calls, glDraws: gc?.draws,
     rwWaitMs: g?.gpuWaitMs, rwFenceMs: g?.fenceMs, rwFrameMs: g?.frameMs, rwReplayMs: g?.replayMs, rwReadbackMs: g?.readbackMs,
     hw: m?.hostWait ?? null, // (core/host-wait.js totals: the worker's host waits, how late they ended, the spins)
-    flk: gpu?.flk ? { ...gpu.flk } : null, // (gfx/flicker-probe.js counters)
+    flk: gpu?.flk ? { ...gpu.flk, recent: gpu.flk.recent?.slice() ?? null } : null, // (gfx/flicker-probe.js counters)
   };
 }
 
@@ -96,10 +97,12 @@ export class PerfWindow {
         out.gpu[k] = { n, mean: r2(grow(a?.ms, z.ms) / n), p50: hq(hh, 0.5, Infinity), p99: hq(hh, 0.99, Infinity) };
       }
     } else out.gpu = { state: l.gpuState ?? 'none' }; // ('unavailable': no timer query extension; 'none': no Direct3D device)
-    // flicker: sampled frame triples whose pixels went A-B-A (gfx/flicker-probe.js), as percentages; WebGL errors seen
+    // flicker: sampled frame triples whose pixels went A-B-A (gfx/flicker-probe.js, counted in ppm), as percentages: the
+    // mean, this window's largest (its samples among the probe's last ones); WebGL errors seen in the window, the last code
     if (l.flk) {
-      const a = b.flk, z = l.flk, n = grow(a?.n, z.n);
-      out.flicker = { n, aba: n > 0 ? r2(grow(a?.aba, z.aba) / n / 100) : null, chg: n > 0 ? r2(grow(a?.chg, z.chg) / n / 100) : null, max: z.max > (a?.max ?? 0) ? r2(z.max / 100) : null, over1: grow(a?.over1, z.over1), glErrors: grow(a?.glErrors, z.glErrors), glError: z.glError || null };
+      const a = b.flk, z = l.flk, n = grow(a?.n, z.n), from = z.n - n, errs = grow(a?.glErrors, z.glErrors);
+      const mine = (z.recent ?? []).filter(([k]) => k > from).map(([, v]) => v);
+      out.flicker = { n, aba: n > 0 ? r4(grow(a?.aba, z.aba) / n / 1e4) : null, chg: n > 0 ? r4(grow(a?.chg, z.chg) / n / 1e4) : null, max: mine.length ? r4(Math.max(...mine) / 1e4) : null, over1: grow(a?.over1, z.over1), alt: grow(a?.alt, z.alt), glErrors: errs, glError: errs > 0 ? z.glError || null : null };
     }
     // WebGL calls per frame (sampled windows)
     if (l.glState === 'on') { const f = grow(b.glFrames, l.glFrames); out.glCalls = f > 0 ? { frames: f, perFrame: r1(grow(b.glCalls, l.glCalls) / f), drawsPerFrame: r1(grow(b.glDraws, l.glDraws) / f) } : { frames: 0 }; }

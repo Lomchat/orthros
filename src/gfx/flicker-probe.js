@@ -1,41 +1,78 @@
 // A flicker counter for telemetry, cheap enough to stay on in every session (the owner's "everything flickers" on his
 // GPU, 2026-11-17, never seen on the server's software rasterizer): every PERIOD_MS, three consecutive presented frames
-// are copied (a filtered blit) into a small RGBA8 framebuffer of W x H pixels and read back without a stall (readPixels
-// into a pixel buffer, read once a fence says the GPU is done). A sampled pixel flickers when its luminance goes from A
-// to B and back to A over the three frames (|a - b| > T, |b - c| > T, |a - c| < T / 3): a scroll or an animation rarely
-// comes back to the same value one frame later, a picture that alternates (a missing pass, a stale target, a texture
-// sampled from the wrong unit, depth fighting) does. Also counted: what changed between the first two frames, and the
-// WebGL errors (getError once per period — a round trip to the GPU process that waits for the commands queued before
-// it: on a GPU only; a software rasterizer can be seconds behind).
-// Cumulative counters in `stats` (`n` triples measured, `aba` / `chg` their flickering / changed pixels in hundredths of
-// a percent, summed, `max` the largest aba, `over1` the triples over 1 %, `glErrors`, `glError` the last code): readers
-// take differences (web/perf-summary.js). The first LOG_MAX samples over 1 % are also logged (a gfx line the page sends
-// with the telemetry): where the pixels flickered (`mask` W x H bits, rows from the bottom of the picture: GL order, hex
-// by 4 pixels) and what the screen looked like (`lum`: the first frame's luminance at W/2 x H/2, one hex digit per
-// pixel, bottom row first). ORTHROS_FLICKER=0 (debug global): off.
+// are compared pixel by pixel over the whole frame, on the GPU. The first two are copied (a framebuffer blit) into
+// textures, the third too, then one draw into a W x H RGBA8 target reduces them: each of its pixels covers one block of
+// the frame (the frame cut into W x H blocks, every pixel in exactly one) and counts that block's pixels whose
+// luminance went from A to B and back to A (|a - b| > T, |b - c| > T, |a - c| < T / 3: flicker — a scroll or an
+// animation rarely comes back to the same value one frame later, a picture that alternates does: a missing pass, a stale
+// target, a texture sampled from the wrong unit, depth fighting) and those that changed between the first two frames,
+// as fractions of the block (R, G), with the first frame's mean luminance (B). That small picture is read back without
+// a stall (readPixels into a pixel buffer, read once a fence says the GPU is done). Every pixel counts: a few objects
+// that flicker (a 4 x 4 patch: 16 pixels of 480 000) show, which a filtered 64 x 48 blit of the frame (4 texels of each
+// block of ~156) would mostly miss and would blur. Also counted: the WebGL errors (getError once per period — a round
+// trip to the GPU process that waits for the commands queued before it: on a GPU only; a software rasterizer can be
+// seconds behind). Cost: nothing at the other presents; at a sample's three, three blits of the frame, and at the third
+// one draw reading the three copies once (docs/real-machine-bench.md "Flicker": measured).
+// Cumulative counters in `stats` (`n` triples measured, `aba` / `chg` their flickering / changed pixels in parts per
+// million of the frame, summed, `max` the largest aba, `recent` the last RECENT samples' aba ([sample number, ppm]: a
+// window's own maximum), `over1` the triples over 1 %, `alt` those where alternation dominates (aba >= ALT_MIN ppm and at
+// least half of what changed), `glErrors`, `glError` the last code): readers take differences (web/perf-summary.js).
+// The first LOG_MAX samples over 1 % or `alt` are also logged (a gfx line the page sends with the telemetry): where the
+// pixels flickered (`mask` W x H bits, a block's bit set when one of its pixels did; rows from the bottom of the
+// picture: GL order, hex by 4 blocks) and what the screen looked like (`lum`: the first frame's luminance at W/2 x H/2,
+// one hex digit per pixel, bottom row first). ORTHROS_FLICKER (debug global): 0 off, 2 every sample logged.
 export const W = 64, H = 48, PERIOD_MS = 10000, T = 24;
-/** presents after which a readback still not done is given up (a sample whose frames are not consecutive is worthless) */
+/** presents after which a readback still not done is given up */
 const STALE = 120;
-/** samples over 1 % logged per session at most */
+/** samples logged per session at most */
 const LOG_MAX = 3;
+/** samples whose aba is kept for a window's maximum */
+export const RECENT = 32;
+/** an `alt` sample: at least this many ppm of the frame went A-B-A (48 pixels of 800 x 600) */
+export const ALT_MIN = 100;
 
-const lum = (px, p) => 0.299 * px[p] + 0.587 * px[p + 1] + 0.114 * px[p + 2];
-/** the A-B-A and change shares (fractions) of three RGBA8 frames of `n` pixels; `mask` (optional, n entries): 1 where A-B-A */
-export function flickerShares(a, b, c, n, t = T, mask = null) {
-  let aba = 0, chg = 0;
-  for (let i = 0; i < n; i++) {
-    const p = 4 * i, la = lum(a, p), lb = lum(b, p), lc = lum(c, p);
-    let f = 0;
-    if (Math.abs(la - lb) > t) { chg++; if (Math.abs(lb - lc) > t && Math.abs(la - lc) < t / 3) { aba++; f = 1; } }
-    if (mask) mask[i] = f;
+const VS = '#version 300 es\nvoid main() { gl_Position = vec4(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0, 0.0, 1.0); }';
+// (per output pixel: its block [x0, x1) x [y0, y1) of the frame, every pixel fetched from the three copies)
+const FS = `#version 300 es
+precision highp float; precision highp int;
+uniform highp sampler2D u_a, u_b, u_c; uniform ivec2 u_size;
+out vec4 o;
+float lum(vec4 c) { return dot(c.rgb, vec3(0.299, 0.587, 0.114)) * 255.0; }
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  int x0 = p.x * u_size.x / ${W}, x1 = (p.x + 1) * u_size.x / ${W}, y0 = p.y * u_size.y / ${H}, y1 = (p.y + 1) * u_size.y / ${H};
+  float aba = 0.0, chg = 0.0, la0 = 0.0;
+  for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+    ivec2 q = ivec2(x, y);
+    float la = lum(texelFetch(u_a, q, 0)), lb = lum(texelFetch(u_b, q, 0)), lc = lum(texelFetch(u_c, q, 0));
+    la0 += la;
+    if (abs(la - lb) > ${T}.0) { chg += 1.0; if (abs(lb - lc) > ${T}.0 && abs(la - lc) < ${T}.0 / 3.0) aba += 1.0; }
   }
-  return { aba: aba / n, chg: chg / n };
+  float n = float(max(1, (x1 - x0) * (y1 - y0)));
+  o = vec4(aba / n, chg / n, la0 / n / 255.0, 1.0);
+}`;
+
+/** the first index of each of n blocks over `size` pixels, and size: block k is [e[k], e[k + 1]) (the shader's cut) */
+export const blockEdges = (size, n) => Array.from({ length: n + 1 }, (_, k) => Math.floor(k * size / n));
+/**
+ * A sample's result read back (W x H RGBA8: per block its A-B-A and changed fractions, its mean luminance) for a frame
+ * of w x h pixels: the A-B-A and changed shares of the frame's pixels (fractions), and `mask` (W x H, 1 where a block
+ * had A-B-A pixels).
+ */
+export function sampleShares(px, w, h) {
+  const xs = blockEdges(w, W), ys = blockEdges(h, H), mask = new Uint8Array(W * H);
+  let aba = 0, chg = 0;
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const k = j * W + i, n = (xs[i + 1] - xs[i]) * (ys[j + 1] - ys[j]);
+    aba += px[4 * k] / 255 * n; chg += px[4 * k + 1] / 255 * n; mask[k] = px[4 * k] > 0 ? 1 : 0;
+  }
+  return { aba: aba / (w * h), chg: chg / (w * h), mask };
 }
 /** the log line's pictures: the A-B-A mask (W x H bits, 4 per hex digit) and the first frame's luminance at W/2 x H/2 (a hex digit each) */
-export function flickerPictures(mask, a) {
+export function flickerPictures(mask, px) {
   let m = '', l = '';
   for (let i = 0; i < W * H; i += 4) m += ((mask[i] << 3) | (mask[i + 1] << 2) | (mask[i + 2] << 1) | mask[i + 3]).toString(16);
-  for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) l += Math.min(15, Math.round(lum(a, 4 * (y * W + x)) / 17)).toString(16);
+  for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) l += Math.min(15, Math.round(px[4 * (y * W + x) + 2] / 17)).toString(16);
   return { mask: m, lum: l };
 }
 
@@ -43,63 +80,93 @@ export class FlickerProbe {
   /** @param {WebGL2RenderingContext} gl @param {{ now?: () => number, log?: (m: string) => void, errors?: boolean }} [opts] `errors`: read getError */
   constructor(gl, opts = {}) {
     this.gl = gl; this.now = opts.now ?? (() => performance.now()); this.log = opts.log ?? null; this.logged = 0; this.errors = opts.errors ?? true;
-    this.stats = { n: 0, aba: 0, chg: 0, max: 0, over1: 0, glErrors: 0, glError: 0 };
-    this.fbo = null; this.rb = null; this.next = this.now() + PERIOD_MS; this.left = 0; this.reads = []; this.frames = []; this.presents = 0;
+    this.stats = { n: 0, aba: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, glErrors: 0, glError: 0 };
+    this.next = this.now() + PERIOD_MS; this.left = 0; this.read = null; this.presents = 0;
+    this.reset();
   }
   /** The context was lost (and restored): its objects are gone, the sample in progress dropped. */
-  reset() { this.fbo = null; this.rb = null; this.left = 0; this.reads.length = 0; this.frames.length = 0; }
+  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; }
   /**
    * A frame is about to be shown: `fbo` (its back buffer's framebuffer, bound, scissor test off) of GL size w x h.
-   * Leaves `fbo` bound to FRAMEBUFFER.
+   * Leaves `fbo` bound to FRAMEBUFFER. Returns true when it changed other GL state (the sample's draw: program,
+   * textures, viewport, vertex array, capabilities) — the caller's cached GL state is then stale.
    */
   present(fbo, w, h) {
-    if (globalThis.ORTHROS_FLICKER === 0) return;
+    if (globalThis.ORTHROS_FLICKER === 0 || globalThis.ORTHROS_GL_DISCARD) return false; // (nothing rasterized: nothing to compare — and its draw must not lift RASTERIZER_DISCARD)
     const gl = this.gl, now = this.now();
     this.presents++;
-    if (this.reads.length) this.poll();
-    if (!this.left && !this.reads.length && now >= this.next) {
-      this.next = now + PERIOD_MS; this.left = 3; this.frames.length = 0; this.start = this.presents;
+    if (this.read) this.poll();
+    if (!this.left && !this.read && now >= this.next) {
+      this.next = now + PERIOD_MS; this.left = 3; this.w = w; this.h = h;
       if (this.errors) { const e = gl.getError(); if (e) { this.stats.glErrors++; this.stats.glError = e; } }
     }
-    if (!this.left) return;
-    this.left--;
-    if (!this.fbo) {
+    if (!this.left) return false;
+    if (w !== this.w || h !== this.h) { this.left = 0; this.dropCopies(); return false; } // (a resize between the frames: not a sample)
+    const k = 3 - this.left--;
+    if (!this.copies) { // (bound on the active unit: the caller's cache must forget it — true is returned at the sample's end, these come first)
+      this.copies = [0, 1, 2].map(() => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); return t; });
+      this.texBound = true;
+    }
+    this.copyFbo ??= gl.createFramebuffer();
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.copyFbo); gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.copies[k], 0);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fbo);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0); // (no copy kept alive by the attachment)
+    if (k < 2) { gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); const t = this.texBound; this.texBound = false; return t; }
+    this.reduce(w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    return true;
+  }
+  /** the third frame copied: the draw comparing the three into the small target, its readback started */
+  reduce(w, h) {
+    const gl = this.gl;
+    if (!this.prog) {
+      const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+      const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(p);
+      gl.useProgram(p); ['u_a', 'u_b', 'u_c'].forEach((u, i) => gl.uniform1i(gl.getUniformLocation(p, u), i));
+      this.prog = p; this.uSize = gl.getUniformLocation(p, 'u_size'); this.vao = gl.createVertexArray();
       this.fbo = gl.createFramebuffer(); this.rb = gl.createRenderbuffer();
       gl.bindRenderbuffer(gl.RENDERBUFFER, this.rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, W, H);
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, this.rb);
     }
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.fbo);
-    gl.blitFramebuffer(0, 0, w, h, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.LINEAR);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.fbo);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.viewport(0, 0, W, H);
+    for (const cap of [gl.BLEND, gl.DEPTH_TEST, gl.STENCIL_TEST, gl.CULL_FACE, gl.SCISSOR_TEST, gl.POLYGON_OFFSET_FILL, gl.SAMPLE_ALPHA_TO_COVERAGE, gl.DITHER]) gl.disable(cap);
+    gl.colorMask(true, true, true, true);
+    gl.useProgram(this.prog); gl.uniform2i(this.uSize, w, h);
+    for (let i = 0; i < 3; i++) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, this.copies[i]); gl.bindSampler(i, null); }
+    gl.bindVertexArray(this.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.enable(gl.DITHER); // (GL's default, which the backend never changes: the fractions written exactly)
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buf); gl.bufferData(gl.PIXEL_PACK_BUFFER, W * H * 4, gl.STREAM_READ);
     gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, 0);
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    this.reads.push({ buf, sync: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0), at: this.presents });
+    this.dropCopies(); // (deleted once the GPU is done with them: GL keeps them alive for the commands queued)
+    this.read = { buf, sync: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0), at: this.presents, w, h };
   }
-  /** Readbacks the GPU finished: their pixels taken, in order; three of them make a sample. */
+  dropCopies() { const gl = this.gl; for (const t of this.copies ?? []) gl.deleteTexture(t); this.copies = null; }
+  /** The sample's readback, once the GPU finished it: its shares counted. */
   poll() {
-    const gl = this.gl;
-    while (this.reads.length) {
-      const r = this.reads[0];
-      if (gl.getSyncParameter(r.sync, gl.SYNC_STATUS) !== gl.SIGNALED) {
-        if (this.presents - r.at < STALE) return;
-        this.drop(); return;
-      }
-      this.reads.shift(); gl.deleteSync(r.sync);
-      const px = new Uint8Array(W * H * 4);
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, r.buf); gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, px); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null); gl.deleteBuffer(r.buf);
-      this.frames.push(px);
+    const gl = this.gl, r = this.read;
+    if (gl.getSyncParameter(r.sync, gl.SYNC_STATUS) !== gl.SIGNALED) {
+      if (this.presents - r.at >= STALE) { try { gl.deleteSync(r.sync); gl.deleteBuffer(r.buf); } catch { /* context lost */ } this.read = null; }
+      return;
     }
-    if (this.frames.length === 3 && !this.left) {
-      const [a, b, c] = this.frames, mask = new Uint8Array(W * H), s = flickerShares(a, b, c, W * H, T, mask), st = this.stats;
-      const aba = Math.round(s.aba * 10000), chg = Math.round(s.chg * 10000);
-      st.n++; st.aba += aba; st.chg += chg; if (aba > st.max) st.max = aba; if (aba > 100) st.over1++;
-      if (aba > 100 && this.log && this.logged < LOG_MAX) { this.logged++; const p = flickerPictures(mask, a); this.log(`d3d-webgl: flicker sample: ${(aba / 100).toFixed(2)} % of the pixels A-B-A over 3 frames (changed ${(chg / 100).toFixed(2)} %); mask ${W}x${H} ${p.mask}; lum ${W / 2}x${H / 2} ${p.lum}`); }
-      this.frames.length = 0;
-    }
+    this.read = null; gl.deleteSync(r.sync);
+    const px = new Uint8Array(W * H * 4);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, r.buf); gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, px); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null); gl.deleteBuffer(r.buf);
+    this.count(px, r.w, r.h);
   }
-  /** a sample abandoned (a readback that never completed) */
-  drop() { const gl = this.gl; for (const r of this.reads) { try { gl.deleteSync(r.sync); gl.deleteBuffer(r.buf); } catch { /* context lost */ } } this.reads.length = 0; this.frames.length = 0; this.left = 0; }
+  /** one sample's result (sampleShares of its readback) into the counters, logged when it flickered */
+  count(px, w, h) {
+    const s = sampleShares(px, w, h), st = this.stats, aba = Math.round(s.aba * 1e6), chg = Math.round(s.chg * 1e6);
+    st.n++; st.aba += aba; st.chg += chg; if (aba > st.max) st.max = aba;
+    st.recent.push([st.n, aba]); if (st.recent.length > RECENT) st.recent.shift();
+    const over1 = aba > 10000, alt = aba >= ALT_MIN && 2 * aba >= chg;
+    if (over1) st.over1++;
+    if (alt) st.alt++;
+    const every = globalThis.ORTHROS_FLICKER === 2; // (debugging: every sample logged)
+    if (this.log && (every || ((over1 || alt) && this.logged < LOG_MAX))) { if (!every) this.logged++; const p = flickerPictures(s.mask, px); this.log(`d3d-webgl: flicker sample: ${(aba / 1e4).toFixed(4)} % of the pixels A-B-A over 3 frames (changed ${(chg / 1e4).toFixed(4)} %, ${w}x${h}); mask ${W}x${H} ${p.mask}; lum ${W / 2}x${H / 2} ${p.lum}`); }
+  }
 }

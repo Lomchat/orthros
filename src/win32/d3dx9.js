@@ -2,10 +2,10 @@
 // texture loading from image files in memory, shader helpers, buffers and the effect framework (d3dx9-effect.js).
 // One implementation answers to every numbered DLL name (the export sets differ only by additions).
 import { snapClass } from '../core/snapshot.js';
-import { FMT, FLOAT_FORMATS, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
+import { FMT, FLOAT_FORMATS, surfaceBytes, surfacePitch, readShaderTokens, readFloatTexels, writeFloatTexels } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
-import { parseImage, parseImageInfo, toRgba, fromRgba, resizeRgba, applyColorKey, isDxt, isDdsFile } from './d3dx9-image.js';
+import { parseImage, parseImageInfo, toRgba, fromRgba, resizeRgba, resizeRgbaF, applyColorKey, isDxt, isDdsFile } from './d3dx9-image.js';
 import { runJob } from './d3dx9-tex-jobs.js';
 import { FILTER_POINT, encodable, levelData, fillChainFromImage, blitInto, blitKeepsRgba, sourceRgba, sourceSpan, filterChain, filledFrom } from './d3dx9-texwork.js';
 import { defineEffects } from './d3dx9-effect.js';
@@ -100,12 +100,12 @@ export function registerD3DX9(api, vm) {
   const TEXTURE_OK = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.Q8W8V8U8]);
   /**
    * the texture format D3DX picks for a requested one and the file's: a format the device takes (R8G8B8 -> X8R8G8B8...);
-   * `empty`: a texture created without contents (D3DXCreateTexture, the requirement checks) may also be a floating-point
-   * one the device offers — D3DX's image paths only write the integer formats
+   * `float`: it may be a floating-point one, the device offering them (2D and cube textures, not volumes) — D3DX's image
+   * paths write them (fromRgba: each 8-bit channel / 255; float to float in floats)
    */
-  const pickFormat = (req, file, empty = false) => {
+  const pickFormat = (req, file, float = false) => {
     let f = req === 0 || req === D3DX_FROM_FILE ? file : req;
-    if (empty && FLOAT_FORMATS.has(f)) return f;
+    if (float && FLOAT_FORMATS.has(f)) return f;
     if (!TEXTURE_OK.has(f)) f = f === FMT.R8G8B8 || f === 33 || f === FMT.P8 ? FMT.X8R8G8B8 : f === FMT.A8B8G8R8 || f === FMT.A2B10G10R10 ? FMT.A8R8G8B8 : f === FMT.X4R4G4B4 ? FMT.A4R4G4B4 : TEXTURE_OK.has(file) ? file : FMT.A8R8G8B8;
     return f;
   };
@@ -175,7 +175,7 @@ export function registerD3DX9(api, vm) {
     const pick = (v, file) => (v === 0 || v === D3DX_DEFAULT || v === D3DX_DEFAULT_NONPOW2 || v === D3DX_FROM_FILE ? file : v);
     const w = pick(o.w, fileW), h = kind === 'cube' ? w : pick(o.h, fileH), d = kind === 'volume' ? pick(o.d, fileD) : 1;
     const levels = o.levels === D3DX_FROM_FILE ? im.mips : o.levels === 0 || o.levels === D3DX_DEFAULT ? fullChain(w, h, d) : Math.min(o.levels, fullChain(w, h, d));
-    let fmt = pickFormat(o.fmt, im.fmt);
+    let fmt = pickFormat(o.fmt, im.fmt, kind !== 'volume');
     const pp = outSlot(c);
     let r;
     if (kind === 'tex') r = callMethod(c, dev, 'CreateTexture', [w, h, levels, o.usage, fmt, o.pool, pp, 0]);
@@ -320,6 +320,18 @@ export function registerD3DX9(api, vm) {
   // (a snapshot, after the jobs are done: the RGBA a job kept, in shared memory, copied into the heap — snapshots refuse shared buffers)
   vm.d3dx.unshareRgba = () => { for (const s of recentRgba) if (s.rgbaCache?.buffer instanceof SharedArrayBuffer) s.rgbaCache = s.rgbaCache.slice(); };
   const rememberRgba = (s, rgba) => { s.rgbaCache = rgba; recentRgba.push(s); if (recentRgba.length > 4) { const old = recentRgba.shift(); if (!recentRgba.includes(old)) old.rgbaCache = null; } };
+  /**
+   * A float format's texels (RGBA floats `f32`, sw x sh) into the rectangle dr of a float surface: converted in floats, as
+   * D3DX converts between float formats (through RGBA8 their values would be clamped to [0, 1] and quantized), resized
+   * by a box filter (point: D3DX_FILTER_POINT / NONE).
+   */
+  const blitFloat = (c, dst, dr, f32, sw, sh, filter) => {
+    const dw = dr.r - dr.l, dh = dr.b - dr.t; if (dw <= 0 || dh <= 0) return D3DERR_INVALIDCALL;
+    const px = resizeRgbaF(f32, sw, sh, dw, dh, (filter & 0xff) === FILTER_POINT || (filter & 0xff) === 1);
+    writeFloatTexels(mem.u8, dst.ensureMem(c.proc) + dr.t * dst.pitch + dr.l * surfacePitch(dst.fmt, 1), dw, dh, dst.pitch, dst.fmt, px);
+    markFilled(dst);
+    return D3D_OK;
+  };
   X.D3DXLoadSurfaceFromFileInMemory = [9, (c) => { // (dst, dstPal, dstRect, src, size, srcRect, filter, key, info)
     const dst = surfaceOf(c.arg(0)), im = imageAt(c, c.arg(3), c.arg(4));
     if (!dst || !im) return im ? D3DERR_INVALIDCALL : D3DXERR_INVALIDDATA;
@@ -344,6 +356,8 @@ export function registerD3DX9(api, vm) {
       for (let y = 0; y < rows; y++) mem.copy(base + ((dr.t / blk | 0) + y) * dst.pitch + (dr.l / blk | 0) * unit, c.arg(3) + ((sr.t / blk | 0) + y) * pitch + (sr.l / blk | 0) * unit, rowBytes);
       dst.dirty = true; dst.dev.gfx?.surfaceUpdated?.(dst); return D3D_OK;
     }
+    // (float to float: in floats)
+    if (FLOAT_FORMATS.has(fmt) && FLOAT_FORMATS.has(dst.fmt) && !c.arg(9)) return blitFloat(c, dst, dr, readFloatTexels(mem.u8, c.arg(3) + sr.t * pitch + sr.l * surfacePitch(fmt, 1), sw, sh, pitch, fmt), sw, sh, c.arg(8));
     // (by a texture helper: the source's bytes copied — the guest may reuse its buffer at once —, decoded where the job runs)
     if (jobLevel(dst) && texJobs() && encodable(dst.fmt)) { const [start, n] = sourceSpan(fmt, sr, pitch, sw, sh); return blitRgba(c, dst, dr, null, sw, sh, c.arg(8), c.arg(9), { fmt, bytes: mem.bytes(c.arg(3) + start, n).slice(), start, pitch, sr, sw, sh }); }
     const tp = profOn() ? performance.now() : 0;
@@ -354,6 +368,10 @@ export function registerD3DX9(api, vm) {
   X.D3DXLoadSurfaceFromSurface = [8, (c) => { // (dst, dstPal, dstRect, src, srcPal, srcRect, filter, key)
     const dst = surfaceOf(c.arg(0)), src = surfaceOf(c.arg(3)); if (!dst || !src) return D3DERR_INVALIDCALL;
     if (src.usage & 1 && src.dev?.gfx?.readbackSurface) src.dev.gfx.readbackSurface(src); // (a render target: its GPU contents)
+    if (FLOAT_FORMATS.has(src.fmt) && FLOAT_FORMATS.has(dst.fmt) && !c.arg(7)) { // (float to float: in floats)
+      const sr = rectOf(c.arg(5), src.width, src.height), sw = sr.r - sr.l, sh = sr.b - sr.t; if (sw <= 0 || sh <= 0) return D3DERR_INVALIDCALL;
+      return blitFloat(c, dst, rectOf(c.arg(2), dst.width, dst.height), readFloatTexels(mem.u8, src.ensureMem(c.proc) + sr.t * src.pitch + sr.l * surfacePitch(src.fmt, 1), sw, sh, src.pitch, src.fmt), sw, sh, c.arg(6));
+    }
     const full = toRgba(src.fmt, mem.bytes(src.ensureMem(c.proc), src.bytes), src.width, src.height), sr = rectOf(c.arg(5), src.width, src.height);
     const sw = sr.r - sr.l, sh = sr.b - sr.t, sub = new Uint8Array(sw * sh * 4);
     for (let y = 0; y < sh; y++) sub.set(full.subarray(((sr.t + y) * src.width + sr.l) * 4, ((sr.t + y) * src.width + sr.r) * 4), y * sw * 4);

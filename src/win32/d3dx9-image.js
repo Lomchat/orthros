@@ -1,7 +1,7 @@
 // Image files for D3DX (D3DXCreateTextureFromFileInMemory & co): DDS, TGA, BMP, JPEG and PNG parsed into Direct3D
 // pixel data, plus the conversions and box filtering D3DX applies when the texture it creates differs from the file
 // (another format, size or mip chain). The formats are the public ones (Microsoft DDS, Truevision TGA, Windows BMP).
-import { FMT, surfaceBytes, surfacePitch } from './d3d8.js';
+import { FMT, FLOAT_FORMATS, surfaceBytes, surfacePitch, readFloatTexels, writeFloatTexels, floatsToRgba8 } from './d3d8.js';
 import { decodeJpeg, isJpeg, jpegSize } from '../gfx/codecs/jpeg.js';
 import { decodePng, isPng } from '../gfx/codecs/png.js';
 import { decodeDxt } from '../gfx/d3d8-webgl.js';
@@ -218,6 +218,7 @@ const TO_RGBA = {
 const TO_RGBA_DEFAULT = [4, (u8, s, out, o) => { out[o] = u8[s + 2]; out[o + 1] = u8[s + 1]; out[o + 2] = u8[s]; out[o + 3] = u8[s + 3]; }];
 
 function surfaceToRgbaLocal(fmt, u8, w, h, pitch) {
+  if (FLOAT_FORMATS.has(fmt)) return floatsToRgba8(readFloatTexels(u8, 0, w, h, pitch, fmt)); // (clamped to [0, 1], as D3DX converts floats into an 8-bit format)
   if (fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) { const r = wasmSwizzle(u8, pitch, w, h, fmt === FMT.X8R8G8B8 ? 0xff000000 : 0); if (r) return r; }
   const out = new Uint8Array(w * h * 4);
   if ((fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) && ((u8.byteOffset | pitch) & 3) === 0) { // (whole texels: B,G,R,A -> R,G,B,A on 32-bit lanes)
@@ -257,6 +258,7 @@ const QUANT = [4, 5, 6].reduce((m, bits) => { m[bits] = Uint8Array.from({ length
 /** RGBA8 to raw pixels of `fmt` (uncompressed formats; null when not encodable here). */
 export function fromRgba(fmt, rgba, w, h) {
   if (isDxt(fmt)) return encodeDxt(fmt, rgba, w, h);
+  if (FLOAT_FORMATS.has(fmt)) { const pitch = surfacePitch(fmt, w), out = new Uint8Array(pitch * h); writeFloatTexels(out, 0, w, h, pitch, fmt, rgba, 1 / 255); return out; } // (each channel / 255: D3DX's conversion of 8-bit colors)
   if (fmt === FMT.A8R8G8B8 || fmt === FMT.X8R8G8B8) { const r = wasmSwizzle(rgba, w * 4, w, h, fmt === FMT.X8R8G8B8 ? 0xff000000 : 0); if (r) return r; }
   const pitch = surfacePitch(fmt, w), out = new Uint8Array(surfaceBytes(fmt, w, h));
   // the common formats a texel at a time on whole words (the same values as the general loop below)
@@ -292,6 +294,24 @@ export function fromRgba(fmt, rgba, w, h) {
       case FMT.A8L8: s = y * pitch + 2 * x; out[s] = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b); out[s + 1] = a; break;
       case FMT.A4L4: out[y * pitch + x] = (q(a, 4) << 4) | q(Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b), 4); break;
       default: return null;
+    }
+  }
+  return out;
+}
+
+/**
+ * Box-filtered (or point-sampled, `point`) resize of an image of RGBA floats (a float format's texels at full precision:
+ * D3DX filters those in floats): each texel the mean of the source box it covers, or its first texel.
+ */
+export function resizeRgbaF(src, sw, sh, dw, dh, point = false) {
+  if (sw === dw && sh === dh) return src;
+  const out = new Float32Array(dw * dh * 4);
+  for (let y = 0; y < dh; y++) {
+    const y0 = Math.floor(y * sh / dh), y1 = point ? y0 + 1 : Math.max(y0 + 1, Math.floor((y + 1) * sh / dh));
+    for (let x = 0; x < dw; x++) {
+      const x0 = Math.floor(x * sw / dw), x1 = point ? x0 + 1 : Math.max(x0 + 1, Math.floor((x + 1) * sw / dw)), o = (y * dw + x) * 4;
+      for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) { const i = (yy * sw + xx) * 4; out[o] += src[i]; out[o + 1] += src[i + 1]; out[o + 2] += src[i + 2]; out[o + 3] += src[i + 3]; }
+      const n = (y1 - y0) * (x1 - x0); for (let c = 0; c < 4; c++) out[o + c] /= n;
     }
   }
   return out;

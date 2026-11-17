@@ -27,6 +27,53 @@ export const FMT = { UNKNOWN: 0, R8G8B8: 20, A8R8G8B8: 21, X8R8G8B8: 22, R5G6B5:
  * without some channels reads them as 1 when sampled (an R32F texel is (r, 1, 1, 1)).
  */
 export const FLOAT_FORMATS = new Map([[FMT.R16F, { bits: 16, ch: 1 }], [FMT.G16R16F, { bits: 16, ch: 2 }], [FMT.A16B16G16R16F, { bits: 16, ch: 4 }], [FMT.R32F, { bits: 32, ch: 1 }], [FMT.G32R32F, { bits: 32, ch: 2 }], [FMT.A32B32G32R32F, { bits: 32, ch: 4 }]]);
+// (the float formats' texels, read and written in one place: the WebGL backend's uploads and readbacks, D3DX's loads and
+// filters, ColorFill)
+const h2f = new Float32Array(1), h2u = new Uint32Array(h2f.buffer); // snapshot: scratch (a conversion's word, no state)
+/** the value of an IEEE half (its 16 bits) */
+export function halfToFloat(v) {
+  const e = (v >> 10) & 31, m = v & 1023, sign = v & 0x8000 ? -1 : 1;
+  return e === 0 ? sign * m * 2 ** -24 : e === 31 ? (m ? NaN : sign * Infinity) : sign * (1 + m / 1024) * 2 ** (e - 15);
+}
+/** the IEEE half nearest to a float (its 16 bits; round to nearest even, overflow to infinity) */
+export function floatToHalf(x) {
+  h2f[0] = x; const b = h2u[0], sign = (b >>> 16) & 0x8000, e = (b >>> 23) & 255, m = b & 0x7fffff;
+  if (e === 255) return sign | 0x7c00 | (m ? 0x200 : 0);
+  const he = e - 112; // (the half exponent: 127 - 15)
+  if (he >= 31) return sign | 0x7c00;
+  if (he <= 0) { if (he < -10) return sign; const mm = m | 0x800000, sh = 14 - he, r = mm >> sh, rest = mm & ((1 << sh) - 1), half = 1 << (sh - 1); return sign | (r + (rest > half || (rest === half && (r & 1)) ? 1 : 0)); }
+  const r = (he << 10) | (m >> 13), rest = m & 0x1fff;
+  return sign | (r + (rest > 0x1000 || (rest === 0x1000 && (r & 1)) ? 1 : 0)); // (a carry into the exponent is the right rounding)
+}
+/**
+ * The texels of a float format `fmt` (w x h at `addr` of `u8`, rows `pitch` bytes apart) as RGBA floats, the channels
+ * the format lacks 1 (Direct3D reads an R32F texel as (r, 1, 1, 1)).
+ */
+export function readFloatTexels(u8, addr, w, h, pitch, fmt, out = new Float32Array(w * h * 4)) {
+  const fs = FLOAT_FORMATS.get(fmt), ch = fs.ch, dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  if (ch < 4) out.fill(1);
+  for (let y = 0; y < h; y++) {
+    let a = addr + y * pitch, o = y * w * 4;
+    if (fs.bits === 16) for (let x = 0; x < w; x++, o += 4) for (let c = 0; c < ch; c++, a += 2) out[o + c] = halfToFloat(dv.getUint16(a, true));
+    else for (let x = 0; x < w; x++, o += 4) for (let c = 0; c < ch; c++, a += 4) out[o + c] = dv.getFloat32(a, true);
+  }
+  return out;
+}
+/** RGBA8 of RGBA floats: clamped to [0, 1], rounded (a float format converted into an 8-bit one, a capture) */
+export const floatsToRgba8 = (px) => { const out = new Uint8Array(px.length); for (let i = 0; i < px.length; i++) { const v = px[i]; out[i] = v >= 1 ? 255 : v > 0 ? Math.round(v * 255) : 0; } return out; };
+/**
+ * RGBA values (`px`, w x h, `k` times each: 1 for floats, 1 / 255 for RGBA8 bytes) written as the texels of a float
+ * format `fmt` at `addr` of `u8`, rows `pitch` bytes apart (the format's own channels; `rowAt(y)`: the index in `px` of
+ * texel row y's first value, default y * w * 4).
+ */
+export function writeFloatTexels(u8, addr, w, h, pitch, fmt, px, k = 1, rowAt = (y) => y * w * 4) {
+  const fs = FLOAT_FORMATS.get(fmt), ch = fs.ch, dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  for (let y = 0; y < h; y++) {
+    let o = addr + y * pitch, i = rowAt(y);
+    if (fs.bits === 16) for (let x = 0; x < w; x++, i += 4) for (let c = 0; c < ch; c++, o += 2) dv.setUint16(o, floatToHalf(px[i + c] * k), true);
+    else for (let x = 0; x < w; x++, i += 4) for (let c = 0; c < ch; c++, o += 4) dv.setFloat32(o, px[i + c] * k, true);
+  }
+}
 const RTYPE = { SURFACE: 1, VOLUME: 2, TEXTURE: 3, VOLUMETEXTURE: 4, CUBETEXTURE: 5, VERTEXBUFFER: 6, INDEXBUFFER: 7 };
 const POOL = { DEFAULT: 0, MANAGED: 1, SYSTEMMEM: 2, SCRATCH: 3 };
 const USAGE_RENDERTARGET = 1, USAGE_DEPTHSTENCIL = 2, USAGE_DYNAMIC = 0x200;
