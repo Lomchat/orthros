@@ -45,7 +45,8 @@ again. So the version needs a shared first-launch profile in each language (cano
 added on 2026-11-17 for Age of the Ring en/fr, BFME 2.22 fr and BFME II 1.06, which had none). A value may name
 `{modeWidth}` and `{modeHeight}`: the largest display mode the player's machine lists (docs/display-modes.md) — the
 highest resolution of their screen, the owner's choice for BFME, BFME II, RotWK and Age of the Ring (2026-11-17, D127).
-Such a version's snapshots are kept per mode (docs/snapshot.md "Per display mode").
+Such a version's snapshots are kept per mode (docs/snapshot.md "Per display mode"). A resolution the player chooses later is
+saved by the game itself, when its confirmation is answered (docs/sage-display-mode-confirm.md).
 
 ## Merging copies: `src/vfs/profile-merge.js`
 

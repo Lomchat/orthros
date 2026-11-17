@@ -34,3 +34,11 @@ The page keeps the game's frame at its mode's size (`#frame { flex: none }`) and
 the stage's flex layout shrink the frame's box: the scaled picture sat off-centre, shifted right by s·(w − W)/2 and its
 right edge cut (seen at 2560x1440 in a 1280-pixel window: the left half of the picture only). The pointer was right (it
 reads the canvas's own rectangle).
+
+## A mode the player chooses: kept once the game confirms it (2026-11-17)
+
+Changing the resolution in a game's options is the game's business: it writes its own settings. The SAGE games (BFME,
+BFME II, RotWK, Age of the Ring) save it only when the player answers Yes to "keep the current display mode?", a
+dialog whose 10 s ran out in Orthros while the menus were rebuilt at the new mode (30 s headless, 24-41 s on the
+owner's laptop): the mode was reverted, or played but never saved. Their manifests give it 100 s (`patches`):
+docs/sage-display-mode-confirm.md.
