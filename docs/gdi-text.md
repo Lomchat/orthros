@@ -167,8 +167,8 @@ runtime code: AotR's own skirmish setup movie, read from a version-folder overla
   replaces the archive's, while a loose file of an id the archive lacks is listed but never opened (tried: a new
   `287.ru`, found by the listing, was not read). The first try moved 286 only — the smaller table's grid; the
   skirmish's line stayed at 476 px.
-- **Files** (`tools/ops/sage-text/aotr-army-column.py <game folder> <out>`, from the installed files, refusing any other
-  release's): `versions/10.0.2/aotr/MpGameSetup.apt`, `versions/10.0.2/aotr/MpGameSetup_geometry/363.ru` and
+- **Files** (`tools/ops/sage-text/aotr-army-column.py <game folder> <out> [--version 10.0.2]`, from the files the
+  version runs with — its own folder's over base/'s —, refusing any other release's and a folder already widened): `versions/10.0.2/aotr/MpGameSetup.apt`, `versions/10.0.2/aotr/MpGameSetup_geometry/363.ru` and
   `286.ru` of `data/games/age-of-the-ring`.
 - **In game** (headless Chromium, the overlay in a copy of the game folder, `--games-dir`): French 1024x768, the Army
   column 369-540 px, every name whole closed and in the list (Aléatoire... Royaume des Forêts... Monts Brumeux,
@@ -204,7 +204,10 @@ the army list shows "Lothlćrien". Every glyph is cut on its right side, at the 
 - **Not validated on Windows here** (no Windows machine): `tools/check/font-seac-check.html`, opened from the Orthros
   server in a browser (`/tools/check/font-seac-check.html`, default: AotR's Albertus MT read from `rotwk/Data1.big`),
   draws the font as the file has it and as Orthros gives it, glyph by glyph, and says whether that browser cuts seac
-  glyphs. Expected on the owner's Chrome: "coupés" for the original, the flattened one whole (Chromium 158 on Linux:
+  glyphs — relatively (the original against the flattened) and absolutely (each accented letter's ink against its base
+  letter's, in each font: a browser that also cut the flattened glyphs, or cut nothing at that size, says so). If the
+  browser refuses the rewritten font, the text engine loads the original bytes instead. Expected on the owner's
+  Chrome: "coupés" for the original, the flattened one whole (Chromium 158 on Linux:
   "entiers", the two columns identical to the pixel). In game on Linux, with the flattened face: the skirmish
   description at 1024x768 and 2560x1440 and the Create-a-Hero "Nouvelles caractéristiques" screen at 2560x1440 draw
   à è é ê as before.

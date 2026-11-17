@@ -15,6 +15,7 @@ const q = new URLSearchParams(location.search);
 const m = q.get('m') ?? 'aotr-10', f = q.get('f') ?? 'rotwk/Data1.big', o = Number(q.get('o') ?? 687), n = Number(q.get('n') ?? 24712);
 const px = Number(q.get('px') ?? 127), text = q.get('t') ?? 'oóòôöuùúaàáâeèéêëiïcç';
 const res = await fetch(`/game/${encodeURIComponent(m)}/${f}`, { headers: { Range: `bytes=${o}-${o + n - 1}` } });
+if (!res.ok) { document.getElementById('verdict').textContent = `Police introuvable (${res.status} ${res.statusText}) : vérifier m, f, o et n.`; throw new Error(`HTTP ${res.status}`); }
 const bytes = new Uint8Array(await res.arrayBuffer()).slice(0, n);
 const flat = flattenSeac(bytes);
 // (the worker: each character alone, ink box and coverage sum, then the whole line for the eye)
@@ -42,9 +43,17 @@ const fonts = [bytes.slice().buffer, (flat ?? bytes).slice().buffer];
 const [a, b] = await new Promise((resolve) => { w.onmessage = (e) => resolve(e.data); w.postMessage({ fonts, px, text }); });
 const rows = a.glyphs.map((g, i) => ({ ch: g.ch, a: g, b: b.glyphs[i], cut: g.r < b.glyphs[i].r - 1 || g.sum < b.glyphs[i].sum * 0.9 }));
 const cut = rows.filter((r) => r.cut).map((r) => r.ch).join(' ');
-document.getElementById('verdict').innerHTML = !flat ? 'Cette police n’a aucun glyphe seac : rien à comparer.'
+// (an absolute check, in each font: an accented letter's ink reaches as far right as its base letter's and covers at
+// least as much — an accent adds ink, never removes the letter's; a rasterizer that also cut the flattened glyphs, or
+// cut nothing at this size, is told apart from one that draws them whole)
+const short = (r) => text.split('').map((ch, i) => [ch, ch.normalize('NFD')[0], i]).filter(([ch, base]) => base !== ch && text.includes(base))
+  .filter(([, base, i]) => { const g = r.glyphs[i], k = r.glyphs[text.indexOf(base)]; return g.r < k.r - 1 || g.sum < k.sum * 0.95; }).map(([ch]) => ch).join(' ');
+const shortA = short(a), shortB = short(b);
+document.getElementById('verdict').innerHTML = (!flat ? 'Cette police n’a aucun glyphe seac : rien à comparer.'
+  : shortB ? `<b class="bad">Même aplaties, ces lettres accentuées sont plus courtes que leur lettre de base : ${shortB}</b> — la coupe ne vient pas (seulement) des glyphes seac.`
   : cut ? `<b class="bad">Ce navigateur coupe les lettres accentuées seac de la police d’origine : ${cut}</b> — la version d’Orthros (aplatie) les dessine entières.`
-  : '<b>Ce navigateur dessine les glyphes seac entiers</b> : la police d’origine et la version d’Orthros donnent la même chose.';
+  : '<b>Ce navigateur dessine les glyphes seac entiers</b> : la police d’origine et la version d’Orthros donnent la même chose.')
+  + `<br>Contrôle absolu (lettre accentuée contre sa lettre de base, ${px} px) : d’origine ${shortA ? `<span class="bad">courtes : ${shortA}</span>` : 'toutes entières'}, aplaties ${shortB ? `<span class="bad">courtes : ${shortB}</span>` : 'toutes entières'}.`;
 const out = document.getElementById('out');
 for (const [label, r] of [['Police d’origine', a], ['Police donnée au navigateur par Orthros (seac aplatis)', b]]) {
   out.insertAdjacentHTML('beforeend', `<div>${label}</div>`);
@@ -52,5 +61,5 @@ for (const [label, r] of [['Police d’origine', a], ['Police donnée au navigat
 }
 out.insertAdjacentHTML('beforeend', '<table><tr><th>car.</th><th>encre d’origine (g–d)</th><th>encre aplatie</th><th>couverture d’origine</th><th>aplatie</th></tr>'
   + rows.map((r) => `<tr class="${r.cut ? 'bad' : ''}"><td>${r.ch}</td><td>${r.a.l}–${r.a.r}</td><td>${r.b.l}–${r.b.r}</td><td>${r.a.sum}</td><td>${r.b.sum}</td></tr>`).join('') + '</table>');
-document.title += cut ? ' — coupés' : ' — entiers';
+document.title += shortB ? ' — aplatis coupés aussi' : cut ? ' — coupés' : ' — entiers';
 </script>

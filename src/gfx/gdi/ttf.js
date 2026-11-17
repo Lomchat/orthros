@@ -2,7 +2,7 @@
 // family and face names, weight/style, and the vertical metrics GDI derives a font's cell from
 // (head.unitsPerEm, OS/2 usWinAscent/usWinDescent, hhea line gap, xAvgCharWidth). Glyph outlines
 // are left to the rasterizer (the browser's font engine). Written from the public OpenType spec.
-import { readCff, glyphOutline } from './cff.js';
+import { readCff, glyphOutline, cffIndex, parseDict } from './cff.js';
 
 /**
  * @typedef {{ family: string, subfamily: string, fullName: string, unitsPerEm: number, winAscent: number,
@@ -99,8 +99,36 @@ function parseNotdef(dv, dir, unitsPerEm) {
 /** Does glyph `gid` of the CFF table at `cff` draw nothing (its charstring has no outline)? */
 function cffGlyphEmpty(dv, cff, gid) {
   const font = readCff(dv, cff);
-  if (!font || gid >= font.numGlyphs) return true;
+  if (!font) return cffScanEmpty(dv, cff, gid);
+  if (gid >= font.numGlyphs) return true;
   try { return glyphOutline(dv, font, gid).path.length === 0; } catch { return false; } // (unreadable: assume it draws)
+}
+
+/**
+ * The same for a CFF font readCff does not run (CID-keyed: subroutines per font dict; Type 1 charstrings): the
+ * charstring scanned for a moveto before its endchar, a subroutine call taken as drawing.
+ */
+function cffScanEmpty(dv, cff, gid) {
+  try {
+    const names = cffIndex(dv, cff + dv.getUint8(cff + 2)), tops = cffIndex(dv, names.end);
+    const cs = tops.items.length ? parseDict(dv, ...tops.items[0]).find((d) => d.op === 17)?.args : null;
+    if (!cs) return true;
+    const glyphs = cffIndex(dv, cff + cs[0]);
+    if (gid >= glyphs.items.length) return true;
+    const [s, e] = glyphs.items[gid]; // (stems counted for the hintmask bytes)
+    let n = 0, stems = 0;
+    for (let p = s; p < e;) {
+      const b = dv.getUint8(p);
+      if (b === 28) { n++; p += 3; } else if (b === 255) { n++; p += 5; } else if (b >= 32) { n++; p += b <= 246 ? 1 : 2; }
+      else if (b === 21 || b === 22 || b === 4) return false; // rmoveto, hmoveto, vmoveto
+      else if (b === 14) return true; // endchar
+      else if (b === 1 || b === 3 || b === 18 || b === 23) { stems += n >> 1; n = 0; p++; }
+      else if (b === 19 || b === 20) { stems += n >> 1; n = 0; p += 1 + ((stems + 7) >> 3); }
+      else if (b === 10 || b === 29) return false; // subroutines: assume they draw
+      else { n = 0; p += b === 12 ? 2 : 1; }
+    }
+    return true;
+  } catch { return false; } // (unreadable: assume it draws)
 }
 
 /**

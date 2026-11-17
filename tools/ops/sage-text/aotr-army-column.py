@@ -9,12 +9,15 @@ DELTA units of the 1024x768 APT stage (64 by default), taken from the Captain co
   skirmish shows) and 286.ru (the smaller one), from rotwk/apt/MpGameSetup.big. The game opens each geometry its
   archive lists from the loose folders first (C:\\Game\\aotr\\mpgamesetup_geometry\\<id>.ru, seen 2026-11-17), so a
   same-named loose file replaces the archive's; a loose file of an id the archive lacks is never opened.
-Every value is checked against AotR 10.0.2's before it is changed (another release: nothing written).
+Every value is checked against AotR 10.0.2's before it is changed (another release: nothing written). The files read
+are the ones the version runs with: its own folder's (versions/<version>/, case-insensitive) over base/'s — a release
+that ships its own MpGameSetup.apt is checked, not base/'s; a version folder that already holds this script's output is
+refused (already widened).
 
-    python3 -I tools/ops/sage-text/aotr-army-column.py <game folder> <output folder> [delta]
+    python3 -I tools/ops/sage-text/aotr-army-column.py <game folder> <output folder> [delta] [--version <folder>]
 
-e.g. <game folder> = data/games/age-of-the-ring, <output folder> = a scratch folder, then copy its aotr/ into
-versions/10.0.2/ of the game folder (the version's files lie over base/).
+e.g. <game folder> = data/games/age-of-the-ring, <output folder> = a scratch folder, --version 10.0.2 (the default),
+then copy its aotr/ into versions/10.0.2/ of the game folder (the version's files lie over base/).
 """
 import os
 import re
@@ -35,10 +38,35 @@ PLACEMENTS = {
 GRIDS = {363: ('285.05', 10), 286: ('284.8', 10)}
 
 
+def find(root, rel):
+    """`rel` ('a/b/c') under `root`, each component matched case-insensitively; None when absent."""
+    p = root
+    for part in rel.split('/'):
+        if not os.path.isdir(p):
+            return None
+        names = {n.lower(): n for n in os.listdir(p)}
+        if part.lower() not in names:
+            return None
+        p = os.path.join(p, names[part.lower()])
+    return p
+
+
 def main():
-    game, out = sys.argv[1], sys.argv[2]
-    delta = float(sys.argv[3]) if len(sys.argv) > 3 else 64.0
-    apt_path = os.path.join(game, 'base', 'aotr', 'MpGameSetup.apt')
+    args = sys.argv[1:]
+    version = '10.0.2'
+    if '--version' in args:
+        i = args.index('--version')
+        version = args[i + 1]
+        del args[i:i + 2]
+    game, out = args[0], args[1]
+    delta = float(args[2]) if len(args) > 2 else 64.0
+
+    def effective(rel):  # the file the version runs with: its own folder's, else base/'s
+        return find(os.path.join(game, 'versions', version), rel) or find(os.path.join(game, 'base'), rel)
+
+    apt_path = effective('aotr/MpGameSetup.apt')
+    if not apt_path:
+        sys.exit('aotr/MpGameSetup.apt not found in the version folder nor in base/: nothing written')
     d = bytearray(open(apt_path, 'rb').read())
 
     def f32(o):
@@ -64,12 +92,14 @@ def main():
     for key in ('army header', 'captain header'):
         put(at[key] + 32, f32(at[key] + 32) + delta / 2)
 
-    big = Big(os.path.join(game, 'base', 'rotwk', 'apt', 'MpGameSetup.big'))
+    big_path = effective('rotwk/apt/MpGameSetup.big')
+    big = Big(big_path) if big_path else None
     grids = {}
     for gid, (x, count) in GRIDS.items():
-        ru = big.read(f'MpGameSetup_geometry/{gid}.ru')
+        loose = effective(f'aotr/MpGameSetup_geometry/{gid}.ru')  # (a loose one is what the game opens)
+        ru = open(loose, 'rb').read() if loose else big.read(f'MpGameSetup_geometry/{gid}.ru') if big else None
         if ru is None:
-            sys.exit(f'MpGameSetup_geometry/{gid}.ru missing from rotwk/apt/MpGameSetup.big: nothing written')
+            sys.exit(f'MpGameSetup_geometry/{gid}.ru missing (loose and in rotwk/apt/MpGameSetup.big): nothing written')
         ru = ru.decode('latin1')
         line = re.compile(r'(?<![\d.])' + re.escape(x) + r'(?![\d])')
         if len(line.findall(ru)) != count:

@@ -155,10 +155,11 @@ export class TextEngine {
       // a collection face is its own sfnt starting at `offset`: the browser needs the single font; CFF accented letters
       // built with seac are given as plain outlines (cff.js: some platforms' rasterizers cut them)
       const sfnt = info.offset ? extractFace(bytes, info.offset) : bytes;
-      const data = flattenSeac(sfnt) ?? sfnt;
-      const face = new FontFace(info.family, data.slice().buffer, desc);
+      let flat = null; try { flat = flattenSeac(sfnt); } catch { /* unreadable CFF: the bytes as they are */ }
+      const load = (data) => { const face = new FontFace(info.family, data.slice().buffer, desc); return face.load().then(() => { this.fontSet.add(face); }); };
       this.pending++;
-      face.load().then(() => { this.fontSet.add(face); }, () => {}).finally(() => { this.pending--; this.version++; if (!this.pending) this.onReady?.(); });
+      // (a rewritten font the browser refuses: the original bytes, which it may accept)
+      (flat ? load(flat).catch(() => load(sfnt)) : load(sfnt)).catch(() => {}).finally(() => { this.pending--; this.version++; if (!this.pending) this.onReady?.(); });
     } catch { /* unusable font data: the face falls back to a system family */ }
   }
 

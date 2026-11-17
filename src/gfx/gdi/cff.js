@@ -133,7 +133,8 @@ export function runCharString(dv, cff, gid, ox = 0, oy = 0) {
         case 14: takeWidth(n === 1 || n === 5); if (a.length >= 4) seac = a.slice(-4); a.length = 0; ended = true; break; // endchar
         case 12: {
           const e2 = dv.getUint8(p++), s0x = x, s0y = y;
-          if (e2 === 35) { curveTo(x + a[0], y + a[1], x + a[0] + a[2], y + a[1] + a[3], x + a[0] + a[2] + a[4], y + a[1] + a[3] + a[5]); curveTo(x + a[6], y + a[7], x + a[6] + a[8], y + a[7] + a[9], x + a[6] + a[8] + a[10], y + a[7] + a[9] + a[11]); } // flex
+          if (e2 === 0) { /* dotsection: deprecated, ignored (Type 2 specification) */ }
+          else if (e2 === 35) { curveTo(x + a[0], y + a[1], x + a[0] + a[2], y + a[1] + a[3], x + a[0] + a[2] + a[4], y + a[1] + a[3] + a[5]); curveTo(x + a[6], y + a[7], x + a[6] + a[8], y + a[7] + a[9], x + a[6] + a[8] + a[10], y + a[7] + a[9] + a[11]); } // flex
           else if (e2 === 34) { const x1 = x + a[0], x2 = x1 + a[1], y2 = y + a[2], x3 = x2 + a[3]; curveTo(x1, y, x2, y2, x3, y2); const x4 = x + a[4], x5 = x4 + a[5]; curveTo(x4, y2, x5, s0y, x5 + a[6], s0y); } // hflex
           else if (e2 === 36) { const x1 = x + a[0], y1 = y + a[1], x2 = x1 + a[2], y2 = y1 + a[3], x3 = x2 + a[4]; curveTo(x1, y1, x2, y2, x3, y2); const x4 = x + a[5], x5 = x4 + a[6], y5 = y2 + a[7]; curveTo(x4, y2, x5, y5, x5 + a[8], s0y); } // hflex1
           else if (e2 === 37) { // flex1
