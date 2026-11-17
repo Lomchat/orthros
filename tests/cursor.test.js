@@ -81,6 +81,27 @@ test('ttf: character map (GetGlyphIndices: missing characters are reported, glyp
   assert.ok(a > 0 && oacute > 0 && a !== oacute);
   assert.equal(m.toGlyph.get(0x4e00), undefined, 'no CJK glyph: the application falls back to another font');
   assert.equal(m.toChar.get(oacute), 0xf3);
+  // what it draws for a character it lacks: usDefaultChar 0, so glyph 0, a box 1536 units wide (as Wine draws it)
+  assert.deepEqual([m.defaultChar, m.unitsPerEm, m.notdef.advance, m.notdef.box?.xMax], [0, 2048, 1536, 1330]);
+});
+
+test('GDI text: a character the font lacks is drawn as GDI does, never as itself (C1 -> ANSI, default character, glyph 0)', async () => {
+  const { resolveChar, NOTDEF } = await import('../src/gfx/gdi/text.js');
+  // a font like Age of the Ring's Albertus MT: ’ … and space mapped, U+008E mapped by the font itself, default char space
+  const map = (defaultChar) => ({ toGlyph: new Map([[0x20, 1], [0x41, 34], [0x2019, 8], [0x2026, 121], [0x8e, 199]]), toChar: new Map(), defaultChar, unitsPerEm: 1000, notdef: { advance: 333, box: null } });
+  const albertus = map(0x20);
+  assert.deepEqual(resolveChar(albertus, 0x41), { draw: 0x41, glyph: 34 });
+  assert.deepEqual(resolveChar(albertus, 0x92), { draw: 0x2019, glyph: 8 }, 'Windows-1252 text widened byte by byte: U+0092 is ’');
+  assert.deepEqual(resolveChar(albertus, 0x85), { draw: 0x2026, glyph: 121 });
+  assert.deepEqual(resolveChar(albertus, 0x8e), { draw: 0x8e, glyph: 199 }, 'a C1 code point the font maps keeps its glyph');
+  assert.deepEqual(resolveChar(albertus, 0x9c), { draw: 0x20, glyph: -1 }, 'œ absent: missing, drawn as the default character');
+  assert.deepEqual(resolveChar(albertus, 0x81), { draw: 0x20, glyph: -1 }, 'an undefined Windows-1252 slot stays missing');
+  assert.deepEqual(resolveChar(map(0), 0x4e00), { draw: NOTDEF, glyph: -1 }, 'no default character: glyph 0');
+  // host stand-ins (Arial...): every character but the controls
+  assert.deepEqual(resolveChar(null, 0x41), { draw: 0x41, glyph: 0x41 });
+  assert.deepEqual(resolveChar(null, 0x92), { draw: 0x2019, glyph: 0x2019 });
+  assert.deepEqual(resolveChar(null, 0x0d), { draw: 0x20, glyph: 2 }, 'CR: Arial\'s blank nonmarkingreturn, not a box');
+  for (const c of [0x01, 0x7f, 0x81]) assert.deepEqual(resolveChar(null, c), { draw: NOTDEF, glyph: -1 }, `U+${c.toString(16)}`);
 });
 
 test('strings: Windows case mapping keeps lengths and code pages; CP1252 undefined slots round-trip', async () => {

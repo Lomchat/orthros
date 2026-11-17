@@ -9,6 +9,45 @@
 // (Node: tests and the CLI), whose output is unchanged from the original GDI text path.
 import { parseFontFile, parseCmap } from './ttf.js';
 import { drawText as drawBitmapText, CELL_W, CELL_H } from './font.js';
+import { ansiChar } from '../../win32/strings.js';
+
+/** The engine's code for a font's glyph 0 (.notdef) in its strings: U+FFFF, a noncharacter no font maps. */
+export const NOTDEF = 0xffff;
+/** Glyph 0 of the host stand-ins (no file at hand), in em: Arial's box, as Liberation Sans (metric-compatible) has it. */
+const STANDIN_NOTDEF = { advance: 0.75, box: { xMin: 0.1, yMin: 0, xMax: 0.649, yMax: 0.688 } };
+
+/**
+ * What GDI draws for character `code` of a font whose character map is `map` (null: a host stand-in for a Windows
+ * system font, assumed to have every character but the C0/C1 controls, like Arial and its kind — NUL and CR blank as
+ * in those fonts, TAB and LF blank):
+ * - the character itself when the font has it;
+ * - a C1 code point (U+0080-U+009F) the font lacks: the ANSI code page's character for that byte (U+0092 -> ’, U+0085
+ *   -> …) when the font has it — Windows-1252 text widened byte by byte reaches GDI that way and is read as intended
+ *   on Windows (docs/gdi-text.md, "Characters a font lacks");
+ * - else the font's default character (OS/2 usDefaultChar) when it has one, else its glyph 0 (NOTDEF: a box or a
+ *   blank, as the font draws it) — never the character itself, which the browser would draw from another font.
+ * @param {import('./ttf.js').CharMap|null} map
+ * @returns {{ draw: number, glyph: number }} draw: the character measured and drawn in its place (NOTDEF: glyph 0);
+ *   glyph: the index GetGlyphIndices reports, -1 when the font lacks the character
+ */
+export function resolveChar(map, code) {
+  if (code === NOTDEF) return { draw: NOTDEF, glyph: -1 };
+  if (!map) {
+    if (!(code < 0x20 || (code >= 0x7f && code < 0xa0))) return { draw: code, glyph: code };
+    // (the Windows system fonts map U+0000 to an empty zero-width .null and U+000D to an empty nonmarkingreturn as wide as
+    // a space; TAB and LF, which text passed whole often carries, are kept blank as before rather than boxed — a box there
+    // is not established for the real fonts)
+    if (code === 0) return { draw: 0x200b, glyph: 0 };
+    if (code === 0x09 || code === 0x0a || code === 0x0d) return { draw: 0x20, glyph: code === 0x0d ? 2 : -1 };
+    const a = ansiChar(code);
+    return a !== code ? { draw: a, glyph: a } : { draw: NOTDEF, glyph: -1 };
+  }
+  const g = map.toGlyph.get(code);
+  if (g !== undefined) return { draw: code, glyph: g };
+  if (code >= 0x80 && code < 0xa0) { const a = ansiChar(code), ga = map.toGlyph.get(a); if (ga !== undefined) return { draw: a, glyph: ga }; }
+  const d = map.defaultChar;
+  return { draw: d && map.toGlyph.has(d) ? d : NOTDEF, glyph: -1 };
+}
 
 /** Windows face names -> CSS families of the host (metric-compatible stand-ins first). */
 const SYSTEM_FACES = {
@@ -208,22 +247,41 @@ export class TextEngine {
   /** A bold face (weight >= 600) of this family was registered (else GDI simulates bold). */
   hasBoldFace(family) { for (const e of this.faces.values()) if (e.info.family === family && e.info.weight >= FW_SEMIBOLD) return true; return false; }
 
+  /** The character map of a realized font: its file's (a registered font), null for a host stand-in or the bitmap font. */
+  charMap(r) { return (r.cmapKey && this.cmaps.get(r.cmapKey)) || null; }
+
+  /** What is drawn for a character of a realized font (resolveChar). */
+  resolve(r, code) { return resolveChar(this.charMap(r), code); }
+
   /**
-   * GetGlyphIndices: the glyph of a character in the realized font, -1 when the font has none. Registered fonts answer
-   * from their character map; system fonts (the host's stand-ins, no file at hand) have every character, the glyph
-   * index then being the character code (the glyph-index calls map it back, see charOfGlyph).
+   * GetGlyphIndices: the glyph of a character in the realized font, -1 when the font has none (resolveChar). Registered
+   * fonts answer from their character map; system fonts (the host's stand-ins, no file at hand) have every character
+   * but the controls, the glyph index then being the character code (the glyph-index calls map it back, see charOfGlyph).
    */
-  glyphIndex(r, code) {
-    const m = r.cmapKey ? this.cmaps.get(r.cmapKey) : null;
-    if (!m) return code;
-    return m.toGlyph.get(code) ?? -1;
+  glyphIndex(r, code) { return this.resolve(r, code).glyph; }
+
+  /** GetGlyphIndices without GGI_MARK_NONEXISTING_GLYPHS: a missing character's index, the default character's glyph. */
+  defaultGlyph(r) { const m = this.charMap(r); return (m?.defaultChar && m.toGlyph.get(m.defaultChar)) || 0; }
+
+  /** The character drawn for a glyph index (ETO_GLYPH_INDEX, GetCharABCWidthsI, GetTextExtentPointI); NOTDEF for glyph 0. */
+  charOfGlyph(r, glyph) {
+    const m = this.charMap(r);
+    if (!m) return glyph;
+    return m.toChar.get(glyph) ?? NOTDEF;
   }
 
-  /** The character drawn for a glyph index (ETO_GLYPH_INDEX, GetCharABCWidthsI, GetTextExtentPointI). */
-  charOfGlyph(r, glyph) {
-    const m = r.cmapKey ? this.cmaps.get(r.cmapKey) : null;
-    if (!m) return glyph;
-    return m.toChar.get(glyph) ?? 0xfffd;
+  /**
+   * Glyph 0 of a realized font in pixels: its advance and its outline's box relative to the pen on the baseline (null:
+   * a blank). From the font's file, else Arial's (STANDIN_NOTDEF; a fixed-pitch stand-in keeps its cell width).
+   */
+  notdef(r) {
+    const m = this.charMap(r);
+    const u = m ? m.unitsPerEm : 1, nd = m ? m.notdef : STANDIN_NOTDEF;
+    const sx = r.em * r.hscale / u, sy = r.em / u;
+    let advance = Math.round(nd.advance * sx) + (r.boldExtra ?? 0), kx = 1;
+    if (!m && r.fixedPitch) { kx = r.aveCharWidth / Math.max(1, advance); advance = r.aveCharWidth; }
+    const b = nd.box;
+    return { advance, box: b ? { l: Math.round(b.xMin * sx * kx), r: Math.round(b.xMax * sx * kx), t: -Math.round(b.yMax * sy), b: -Math.round(b.yMin * sy) } : null };
   }
 
   /** Integer advance of one character (GDI positions every glyph on whole pixels). */
@@ -231,7 +289,11 @@ export class TextEngine {
     let a = r.adv.get(code);
     if (a !== undefined) return a;
     if (r.bitmap) a = CELL_W * r.scale;
-    else { const ctx = this.context(); ctx.font = r.font; a = Math.round(ctx.measureText(String.fromCharCode(code)).width * r.hscale) + (r.boldExtra ?? 0); }
+    else {
+      const d = this.resolve(r, code).draw;
+      if (d === NOTDEF) a = this.notdef(r).advance;
+      else { const ctx = this.context(); ctx.font = r.font; a = Math.round(ctx.measureText(String.fromCharCode(d)).width * r.hscale) + (r.boldExtra ?? 0); }
+    }
     r.adv.set(code, a);
     return a;
   }
@@ -250,8 +312,10 @@ export class TextEngine {
   abc(r, code) {
     const adv = this.advance(r, code);
     if (r.bitmap) return { a: 0, b: adv, c: 0 };
+    const d = this.resolve(r, code).draw;
+    if (d === NOTDEF) { const box = this.notdef(r).box; const a = box ? box.l : 0, b = box ? Math.max(1, box.r - box.l) : 1; return { a, b, c: adv - a - b }; }
     const ctx = this.context(); ctx.font = r.font;
-    const m = ctx.measureText(String.fromCharCode(code));
+    const m = ctx.measureText(String.fromCharCode(d));
     const left = Math.floor(-(m.actualBoundingBoxLeft ?? 0) * r.hscale), right = Math.ceil((m.actualBoundingBoxRight ?? adv) * r.hscale);
     const b = Math.max(1, right - left);
     return { a: left, b, c: adv - left - b };
@@ -268,7 +332,7 @@ export class TextEngine {
   draw(surf, clip, x, y, text, r, color, adv, bg = null) {
     let total = 0; for (let i = 0; i < adv.length; i++) total += adv[i];
     if (bg !== null) fill(surf, clip, x, y, x + total, y + r.height, bg);
-    if (r.bitmap) { let px = x; for (let i = 0; i < text.length; i++) { drawBitmapText(surf, clip, px, y, text[i], color, r.scale, null); px += adv[i]; } return; }
+    if (r.bitmap) { let px = x; for (let i = 0; i < text.length; i++) { drawBitmapText(surf, clip, px, y, String.fromCharCode(this.resolve(r, text.charCodeAt(i)).draw), color, r.scale, null); px += adv[i]; } return; }
     if (!text.length) return;
     // rasterize the whole run once (glyphs on their integer pen positions), then blend the coverage
     const pad = Math.ceil(r.em * 0.5) + 2;
@@ -281,8 +345,10 @@ export class TextEngine {
     if ('fontKerning' in ctx) ctx.fontKerning = 'none';
     let pen = pad;
     for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      if (ch !== ' ' && ch !== '\t') {
+      const d = this.resolve(r, text.charCodeAt(i)).draw;
+      if (d === NOTDEF) strokeNotdef(ctx, this.notdef(r), pen, pad + r.ascent, r.em);
+      else if (d !== 0x20 && d !== 0x09) {
+        const ch = String.fromCharCode(d);
         if (r.hscale !== 1) { ctx.setTransform(r.hscale, 0, 0, 1, pen, 0); ctx.fillText(ch, 0, pad + r.ascent); ctx.setTransform(1, 0, 0, 1, 0, 0); }
         else ctx.fillText(ch, pen, pad + r.ascent);
       }
@@ -318,7 +384,7 @@ export class TextEngine {
     if (r.bitmap) {
       const w = CELL_W * r.scale, h = CELL_H * r.scale, data = new Uint8Array(w * h);
       const s = { width: w, height: h, setPixel: (x, y) => { data[y * w + x] = 255; }, getPixel: () => 0 };
-      drawBitmapText(s, { l: 0, t: 0, r: w, b: h }, 0, 0, String.fromCharCode(code), 0xffffff, r.scale, null);
+      drawBitmapText(s, { l: 0, t: 0, r: w, b: h }, 0, 0, String.fromCharCode(this.resolve(r, code).draw), 0xffffff, r.scale, null);
       return trimGlyph(data, w, h, 0, r.ascent, adv);
     }
     const pad = Math.ceil(r.em) + 2, w = adv + 2 * pad, h = r.height + 2 * pad;
@@ -326,9 +392,13 @@ export class TextEngine {
     if (this.canvas.width < w || this.canvas.height < h) { this.canvas.width = Math.max(this.canvas.width, w); this.canvas.height = Math.max(this.canvas.height, h); }
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, w, h);
     ctx.font = r.font; ctx.fillStyle = '#fff'; ctx.textBaseline = 'alphabetic';
-    if (r.hscale !== 1) ctx.setTransform(r.hscale, 0, 0, 1, pad, 0); else ctx.setTransform(1, 0, 0, 1, pad, 0);
-    ctx.fillText(String.fromCharCode(code), 0, pad + r.ascent);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const d = this.resolve(r, code).draw;
+    if (d === NOTDEF) strokeNotdef(ctx, this.notdef(r), pad, pad + r.ascent, r.em);
+    else {
+      if (r.hscale !== 1) ctx.setTransform(r.hscale, 0, 0, 1, pad, 0); else ctx.setTransform(1, 0, 0, 1, pad, 0);
+      ctx.fillText(String.fromCharCode(d), 0, pad + r.ascent);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
     const img = ctx.getImageData(0, 0, w, h).data, data = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) data[i] = r.antialias ? img[i * 4 + 3] : (img[i * 4 + 3] >= 128 ? 255 : 0);
     return trimGlyph(data, w, h, pad, pad + r.ascent, adv);
@@ -349,6 +419,15 @@ function measureAverage(ctx) {
   let sum = 0;
   for (let i = 0; i < 27; i++) sum += ctx.measureText(i < 26 ? String.fromCharCode(97 + i) : ' ').width * AVG_WEIGHTS[i];
   return sum / 1000;
+}
+
+/** Glyph 0 drawn as the hollow box of its outline (nothing for a blank one), the pen at (x, baseline). */
+function strokeNotdef(ctx, nd, x, baseline, em) {
+  const b = nd.box;
+  if (!b || b.r <= b.l || b.b <= b.t) return;
+  const t = Math.max(1, Math.round(em / 24)), w = b.r - b.l, h = b.b - b.t;
+  ctx.fillRect(x + b.l, baseline + b.t, w, Math.min(t, h)); ctx.fillRect(x + b.l, baseline + b.b - Math.min(t, h), w, Math.min(t, h));
+  ctx.fillRect(x + b.l, baseline + b.t, Math.min(t, w), h); ctx.fillRect(x + b.r - Math.min(t, w), baseline + b.t, Math.min(t, w), h);
 }
 
 function fill(surf, clip, l, t, r, b, color) {
