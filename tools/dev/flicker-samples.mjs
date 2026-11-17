@@ -1,6 +1,7 @@
 // The flicker samples a session logged (src/gfx/flicker-probe.js: `d3d-webgl: flicker sample: ...`, sent with the
 // telemetry) as pictures: the first frame's luminance (32x24, scaled x16) with the blocks of the frame (64x48) where
-// pixels went A-B-A in red.
+// pixels flickered in red (went A-B-A where nothing moved; the probe's first version, 2026-11-17 morning: any A-B-A,
+// a scroll's included).
 // Usage: node tools/dev/flicker-samples.mjs <telemetry .jsonl> [--session <id>] [--out <dir>]   (default out: the
 // current directory; one PNG per sample: flicker-<session>-<n>.png)
 import fs from 'node:fs';

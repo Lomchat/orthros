@@ -4,7 +4,7 @@
 // backend (`vm.host.gfx`, see gfx/d3d8-webgl.js).
 import { snapKnown, snapClass } from '../core/snapshot.js';
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_NOTIMPL, E_OUTOFMEMORY } from './com.js';
-import { d3dCore, FMT, FLOAT_FORMATS, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources, readShaderTokens, writeFloatTexels } from './d3d8.js';
+import { d3dCore, FMT, FLOAT_FORMATS, floatFormat, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources, readShaderTokens, writeFloatTexels } from './d3d8.js';
 import { declLayout9 } from '../gfx/d3d9-shaders.js';
 import { StateTable } from './state-table.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
@@ -171,7 +171,7 @@ export function registerDirect3D9(api, vm) {
     CreateTexture(c) {
       const w = c.arg(1), h = c.arg(2), levels = c.arg(3), usage = c.arg(4), fmt = c.arg(5), pool = c.arg(6), pp = c.arg(7);
       if (!pp || !w || !h) return D3DERR_INVALIDCALL;
-      if (!TEXTURE_FORMATS.has(fmt) && !DEPTH_FORMATS.has(fmt) && !BACKBUFFER_FORMATS.has(fmt) && !FLOAT_FORMATS.has(fmt)) { mem.write32(pp, 0); vm.log('gfx', `d3d9: CreateTexture unsupported format ${fmt}`); return D3DERR_INVALIDCALL; }
+      if (!TEXTURE_FORMATS.has(fmt) && !DEPTH_FORMATS.has(fmt) && !BACKBUFFER_FORMATS.has(fmt) && !floatFormat(fmt)) { mem.write32(pp, 0); vm.log('gfx', `d3d9: CreateTexture unsupported format ${fmt}`); return D3DERR_INVALIDCALL; }
       const t = new Texture(this, w, h, usage & 0x400 /* AUTOGENMIPMAP */ ? 1 : levels, usage, fmt, pool);
       vm.log('tex', `CreateTexture #${t.id} ${w}x${h} ${fmtName(fmt)} levels ${levels} usage 0x${usage.toString(16)} pool ${pool} [t${c.thread.id}] from ${c.proc.symbolize(c.retAddr)}`);
       if (!createdFormats.has(fmt)) { createdFormats.add(fmt); vm.log('gfx', `d3d9: first texture in format ${fmtName(fmt)} (${w}x${h}, ${levels} levels, usage 0x${usage.toString(16)}, pool ${pool})`); }
@@ -421,7 +421,7 @@ export function registerDirect3D9(api, vm) {
       // of the games' time offer them; games keep depth in them for shadow maps, where 8 bits per channel show as shadow
       // acne that crawls with the camera. Not volumes, no automatic mipmaps: not implemented for them; the QUERY bits
       // as floatQueryOk answers them)
-      const float = FLOAT_FORMATS.has(fmt) && rtype !== RTYPE.VOLUMETEXTURE && rtype !== RTYPE.VOLUME && floatQueryOk(usage, fmt);
+      const float = floatFormat(fmt) && rtype !== RTYPE.VOLUMETEXTURE && rtype !== RTYPE.VOLUME && floatQueryOk(usage, fmt);
       const hr = (usage & USAGE_DEPTHSTENCIL) ? (DEPTH_FORMATS.has(fmt) ? D3D_OK : D3DERR_NOTAVAILABLE)
         : (usage & USAGE_RENDERTARGET) ? (BACKBUFFER_FORMATS.has(fmt) || fmt === FMT.A8R8G8B8 || float ? D3D_OK : D3DERR_NOTAVAILABLE)
         : (usage & 0x400 /* AUTOGENMIPMAP */) ? (TEXTURE_FORMATS.has(fmt) ? S_OK : D3DERR_NOTAVAILABLE)

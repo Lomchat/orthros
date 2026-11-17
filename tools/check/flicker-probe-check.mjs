@@ -61,8 +61,17 @@ try {
     const gl = document.getElementById('c').getContext('webgl2');
     const w = 800, h = 600, rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, w, h);
     const back = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, back); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb);
-    // (a frame: vertical stripes 16 pixels wide, shifted by `shift`; a 4 x 4 patch at (403, 301) of value `patch`)
-    const frame = (shift, patch) => {
+    // (a textured picture: grey noise, a fixed pseudo-random sequence — a scroll over it brings a pixel's value back one
+    // frame later by chance, as a scroll over a game's terrain does)
+    const noiseFbo = (() => {
+      const W2 = w + 64, px = new Uint8Array(W2 * h * 4); let s = 12345;
+      for (let i = 0; i < px.length; i += 4) { s = (Math.imul(s, 1103515245) + 12345) >>> 0; px[i] = px[i + 1] = px[i + 2] = s >>> 24; px[i + 3] = 255; }
+      const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W2, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0); return f;
+    })();
+    // (a frame: vertical stripes 16 pixels wide — or the noise — shifted by `shift`; a 4 x 4 patch at (403, 301) of value `patch`)
+    const frame = (shift, patch, noise) => {
+      if (noise) { gl.bindFramebuffer(gl.READ_FRAMEBUFFER, noiseFbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, back); gl.blitFramebuffer(shift, 0, shift + w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST); gl.bindFramebuffer(gl.FRAMEBUFFER, back); return; }
       gl.bindFramebuffer(gl.FRAMEBUFFER, back); gl.enable(gl.SCISSOR_TEST);
       for (let x = -32; x < w; x += 16) { const v = ((x + 32) / 16) % 2 ? 0.3 : 0.7; gl.scissor(x + shift, 0, 16, h); gl.clearColor(v, v, v, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
       if (patch !== null) { gl.scissor(403, 301, 4, 4); gl.clearColor(patch, patch, patch, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
@@ -74,21 +83,23 @@ try {
     const run = async (frames) => {
       const probe = new FlickerProbe(gl, { now: () => t, errors: true, log: (m) => logs.push(m) }); t += 20000; logs.length = 0;
       const cpu = [];
-      for (let i = 0; i < frames.length + 30; i++) {
-        const [shift, patch] = frames[Math.min(i, frames.length - 1)]; frame(shift, patch);
+      for (let i = 0; i < frames.length + 100; i++) {
+        const [shift, patch, noise] = frames[Math.min(i, frames.length - 1)]; frame(shift, patch, noise);
         const t0 = performance.now(); probe.present(back, w, h); cpu.push(performance.now() - t0);
-        gl.finish(); await new Promise((r) => setTimeout(r, 0));
+        gl.finish(); await new Promise((r) => setTimeout(r, 10));
         if (probe.stats.n) break;
       }
       const s = probe.stats;
       const mask = /mask \d+x\d+ ([0-9a-f]+)/.exec(logs[0] ?? '')?.[1] ?? '', blocks = [];
       for (let k = 0; k < mask.length * 4; k++) if ((parseInt(mask[k >> 2], 16) >> (3 - (k & 3))) & 1) blocks.push([k % W, Math.floor(k / W)]);
-      return { n: s.n, abaPpm: s.aba, chgPpm: s.chg, abaPixels: Math.round(s.aba * w * h / 1e6), alt: s.alt, over1: s.over1, glErrors: s.glErrors, blocks, sampleCpuMs: cpu.slice(0, 3).map((v) => +v.toFixed(2)) };
+      return { n: s.n, abaPpm: s.aba, stillPpm: s.still, chgPpm: s.chg, abaPixels: Math.round(s.aba * w * h / 1e6), stillPixels: s.still === undefined ? undefined : Math.round(s.still * w * h / 1e6), alt: s.alt, over1: s.over1, glErrors: s.glErrors, blocks, sampleCpuMs: cpu.slice(0, 3).map((v) => +v.toFixed(2)) };
     };
     const out = {};
     out.patch = await run([[0, 0.15], [0, 0.85], [0, 0.15]]);
     out.still = await run([[0, 0.15], [0, 0.15], [0, 0.15]]);
     out.scroll = await run([[0, null], [3, null], [6, null]]);
+    out.noiseScroll = await run([[0, null, true], [3, null, true], [6, null, true]]);
+    out.noiseStill = await run([[0, null, true], [0, null, true], [0, null, true]]);
     // (cost: present() between samples, and the GPU time of a sample's frames — finish() after each, with and without)
     const probe = new FlickerProbe(gl, { now: () => t }); t += 20000;
     let idle = 0; for (let i = 0; i < 210; i++) { const t0 = performance.now(); probe.present(back, w, h); if (i >= 10) idle += performance.now() - t0; } // (the first 3 sample, then their readback: the last 200 idle)
@@ -96,11 +107,13 @@ try {
     // — after each, against the same frames without the probe; one probe, its program compiled at the warm-up)
     globalThis.ORTHROS_FLICKER = 1;
     const px = new Uint8Array(4), sync = () => { gl.bindFramebuffer(gl.FRAMEBUFFER, back); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); };
-    const gpu = (withProbe) => {
+    // (`scroll`: the noise scrolled 3 pixels a frame — A-B-A by chance on a few % of the pixels, whose surroundings the
+    // probe then reads: its most expensive picture)
+    const gpu = (withProbe, scroll = false) => {
       let ms = 0;
       for (let k = 0; k < 20; k++) {
         t += 20000;
-        for (let i = 0; i < 3; i++) { frame(0, 0.5); sync(); const t0 = performance.now(); if (withProbe) probe.present(back, w, h); sync(); ms += performance.now() - t0; }
+        for (let i = 0; i < 3; i++) { if (scroll) frame(3 * i, null, true); else frame(0, 0.5); sync(); const t0 = performance.now(); if (withProbe) probe.present(back, w, h); sync(); ms += performance.now() - t0; }
         if (withProbe) for (let i = 0; i < 3; i++) { probe.present(back, w, h); sync(); } // (its readback taken)
       }
       return ms / 20;
@@ -109,15 +122,19 @@ try {
     gpu(true);
     const g0 = gpu(false), g1 = gpu(true);
     out.sampleMs = +(g1 - g0).toFixed(2); out.sampleMsWith = +g1.toFixed(2); out.sampleMsWithout = +g0.toFixed(2);
+    const s0 = gpu(false, true), s1 = gpu(true, true);
+    out.sampleMsScroll = +(s1 - s0).toFixed(2);
     out.patchBlock = [Math.floor(403 * W / w), Math.floor(301 * 48 / h)];
     out.err = gl.getError();
     return out;
   }, src);
   const cur = await scenes('/src/gfx/flicker-probe.js');
   console.log(`flicker probe: ${JSON.stringify(cur)}`);
-  check(cur.patch.n === 1 && cur.patch.abaPixels === 16 && JSON.stringify(cur.patch.blocks) === JSON.stringify([cur.patchBlock]), 'a 4 x 4 patch going A-B-A: its 16 pixels counted, in its block');
+  check(cur.patch.n === 1 && cur.patch.stillPixels === 16 && cur.patch.abaPixels === 16 && JSON.stringify(cur.patch.blocks) === JSON.stringify([cur.patchBlock]), 'a 4 x 4 patch going A-B-A in a still picture: its 16 pixels counted as flicker, in its block');
   check(cur.still.n === 1 && cur.still.abaPpm === 0 && cur.still.chgPpm === 0, 'a still frame: nothing');
   check(cur.scroll.n === 1 && cur.scroll.abaPpm === 0 && cur.scroll.alt === 0, 'a scroll: changes, no A-B-A');
+  check(cur.noiseScroll.n === 1 && cur.noiseScroll.abaPpm > 10000 && cur.noiseScroll.stillPpm === 0 && cur.noiseScroll.alt === 0 && cur.noiseScroll.over1 === 0 && cur.noiseScroll.blocks.length === 0, `a scroll over a texture: A-B-A by chance (${(cur.noiseScroll.abaPpm / 1e4).toFixed(2)} % of the pixels), no flicker, nothing flagged`);
+  check(cur.noiseStill.n === 1 && cur.noiseStill.chgPpm === 0 && cur.noiseStill.stillPpm === 0, 'a still textured frame: nothing');
   check(cur.err === 0 && cur.patch.glErrors === 0, 'no GL error');
   if (old) console.log(`flicker probe of ${old}: ${JSON.stringify(await scenes('/old/src/gfx/flicker-probe.js'))}`);
 } finally { await browser.close(); }

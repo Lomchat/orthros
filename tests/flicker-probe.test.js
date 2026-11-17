@@ -10,9 +10,10 @@ import { fakeGl } from './fake-gl.js';
 
 test('a sample: three presents compared in one draw, read back without a stall; a flicker in one block counted there', () => {
   const { gl, calls } = fakeGl(800, 600);
-  // (the sample's readback: block (10, 20) — 12 x 13 pixels of the frame — had every pixel go A-B-A)
+  // (the sample's readback: block (10, 20) — 12 x 13 pixels of the frame — had every pixel go A-B-A where nothing moved;
+  // block (30, 5) A-B-A pixels whose surroundings moved — a scroll's — which are no flicker)
   const bi = 10, bj = 20, xs = blockEdges(800, W), ys = blockEdges(600, H), nBlock = (xs[bi + 1] - xs[bi]) * (ys[bj + 1] - ys[bj]);
-  gl.getBufferSubData = (target, off, px) => { const k = 4 * (bj * W + bi); px[k] = 255; px[k + 1] = 255; px[k + 2] = 128; };
+  gl.getBufferSubData = (target, off, px) => { const k = 4 * (bj * W + bi); px[k] = 255; px[k + 1] = 255; px[k + 2] = 128; px[k + 3] = 255; const m = 4 * (5 * W + 30); px[m] = 64; px[m + 1] = 64; };
   let t = 0;
   const logs = [], probe = new FlickerProbe(gl, { now: () => t, log: (m) => logs.push(m) }), fbo = { back: true };
   for (let i = 0; i < 5; i++) { assert.equal(probe.present(fbo, 800, 600), false); t += 33; }
@@ -31,9 +32,11 @@ test('a sample: three presents compared in one draw, read back without a stall; 
   assert.equal(calls.filter((c) => c[0] === 'clientWaitSync' || c[0] === 'finish').length, 0, 'no wait for the GPU');
   const st = probe.stats;
   assert.equal(st.n, 1, 'one sample measured');
-  assert.equal(st.aba, Math.round(nBlock / 480000 * 1e6), 'its pixels counted, a share of the whole frame');
+  const nScroll = (xs[31] - xs[30]) * (ys[6] - ys[5]);
+  assert.equal(st.still, Math.round(nBlock / 480000 * 1e6), 'its pixels counted, a share of the whole frame');
+  assert.equal(st.aba, Math.round((nBlock + 64 / 255 * nScroll) / 480000 * 1e6), 'A-B-A anywhere: the moving block too');
   assert.equal(st.alt, 1, 'what changed came back: an alternating sample');
-  assert.deepEqual(st.recent, [[1, st.aba]]);
+  assert.deepEqual(st.recent, [[1, st.still]]);
   const mask = /mask 64x48 ([0-9a-f]+)/.exec(logs[0] ?? '')?.[1], k = bj * W + bi;
   assert.ok(mask, 'logged');
   assert.equal((parseInt(mask[k >> 2], 16) >> (3 - (k & 3))) & 1, 1, 'where it flickered');

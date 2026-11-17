@@ -27,6 +27,13 @@ export const FMT = { UNKNOWN: 0, R8G8B8: 20, A8R8G8B8: 21, X8R8G8B8: 22, R5G6B5:
  * without some channels reads them as 1 when sampled (an R32F texel is (r, 1, 1, 1)).
  */
 export const FLOAT_FORMATS = new Map([[FMT.R16F, { bits: 16, ch: 1 }], [FMT.G16R16F, { bits: 16, ch: 2 }], [FMT.A16B16G16R16F, { bits: 16, ch: 4 }], [FMT.R32F, { bits: 32, ch: 1 }], [FMT.G32R32F, { bits: 32, ch: 2 }], [FMT.A32B32G32R32F, { bits: 32, ch: 4 }]]);
+/**
+ * A floating-point format offered to the game (Direct3D 9's CheckDeviceFormat and CreateTexture, D3DX's format choice):
+ * yes unless the worker debug global ORTHROS_FLOAT_RT is 0 (`?dbg=ORTHROS_FLOAT_RT=0`, set from the start: read when the
+ * game asks) — Direct3D 9 as before 2026-11-17, without them, a player's A/B of what they bring (Age of the Ring / RotWK
+ * at High then make no shadow map).
+ */
+export const floatFormat = (fmt) => FLOAT_FORMATS.has(fmt) && globalThis.ORTHROS_FLOAT_RT !== 0;
 // (the float formats' texels, read and written in one place: the WebGL backend's uploads and readbacks, D3DX's loads and
 // filters, ColorFill)
 const h2f = new Float32Array(1), h2u = new Uint32Array(h2f.buffer); // snapshot: scratch (a conversion's word, no state)
