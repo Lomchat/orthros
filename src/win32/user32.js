@@ -302,7 +302,12 @@ export class WindowManager {
     if (d && d.defaultWidth === undefined) { d.defaultWidth = d.width; d.defaultHeight = d.height; }
     if (!w || !h) { w = d?.defaultWidth ?? this.screen.width; h = d?.defaultHeight ?? this.screen.height; }
     if (d) d.setMode(w, h, bpp, fullscreen);
+    const resized = w !== this.screen.width || h !== this.screen.height;
     this.screen = { width: w, height: h, bpp, fullscreen };
+    // (a new screen size removes the cursor clipping, as Windows does with a display settings change: a game's ClipCursor
+    // rectangle of the old mode would keep the cursor in a part of the new screen — an 800x600 corner of 2560x1440, the
+    // new mode's "keep it?" buttons out of reach; the game clips again when it wants to, e.g. at its next activation)
+    if (resized) { this.clip = null; this.cursor = this.clampCursor(this.cursor.x, this.cursor.y); this.reportCursor(); }
     this.desktop.rect = { l: 0, t: 0, r: w, b: h }; this.desktop.client = { l: 0, t: 0, r: w, b: h };
     this.vm.log('win', `display mode ${w}x${h}x${bpp}${fullscreen ? ' fullscreen' : ''}`);
     for (const x of this.zorder) this.post(x, WM.DISPLAYCHANGE, bpp, (h << 16) | w);

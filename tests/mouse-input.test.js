@@ -158,6 +158,12 @@ test('SetCursorPos mouse-look: the motion since the warp, exactly, every frame; 
   call('user32.dll', 'ClipCursor', 0);
   env.input(rel(300, 300, 22));
   assert.deepEqual(cursor(), [499, 400], 'no clip: the screen only');
+  // a display mode change removes the clip (an AotR 800x600 rectangle kept after a switch to 2560x1440 put the
+  // confirmation's Yes out of reach, 2026-11-17)
+  call('user32.dll', 'ClipCursor', scratch);
+  env.wm.setDisplayMode(1600, 1200);
+  env.input(rel(900, 700, 23));
+  assert.deepEqual(cursor(), [1099, 849], 'the new screen, no clip');
 });
 
 test('host input in a wait condition: sent messages delivered by the window thread, not run there', { skip }, () => {

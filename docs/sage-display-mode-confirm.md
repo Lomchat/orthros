@@ -42,6 +42,17 @@ The game then switches back — or, most likely the owner's case (not reproduced
 device, failed as on Windows, and the game went on at 2560x1440 for the session without saving it. Either way the next
 launch is at the old resolution again.
 
+## And the cursor could not reach Yes (fixed in the runtime, 2026-11-17)
+
+Integration run (AotR fr, the owner's profile at 800x600, `--screen 2560x1440`, the 127 s patch): the dialog stayed on
+screen 127 s (2560x1440 from t = 292 s, reverted to 800x600 at t = 419 s), but the click on Yes at (1068, 861) reached
+the game at (799, 599): the game had clipped the cursor to its 800x600 window (`ClipCursor 0,0-800,600`) and did not clip
+it again after the switch. Windows removes the cursor clipping with a display settings change; Orthros kept the old
+rectangle, so the new mode's buttons outside the old one's corner were out of reach — on the owner's laptop too, until
+a window switch deactivated and reactivated the game (it clips again then), which background play no longer does
+(docs/game-frame.md). `user32.js` `setDisplayMode` now drops the clip when the screen size changes
+(`tests/mouse-input.test.js`).
+
 ## The fix: 127 seconds to answer (manifest `patches`)
 
 The 6 bytes that load the 10.0 (`fld dword [10.0f]`) become `push 127; fild dword [esp]; pop ecx` (`6a7fdb042459`):
