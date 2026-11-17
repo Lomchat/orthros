@@ -175,3 +175,58 @@ GLSL statements in the same order for them, and every generated vertex shader (D
 declares `invariant gl_Position`. Nothing to make canonical in the translator; whether ANGLE's D3D11 back end and the driver keep that invariance across two programs
 whose other code differs could only be checked on the owner's GPU (the flicker probe's `alt` samples and their blocks
 would show it).
+
+## The owner's flicker of 2026-11-17 afternoon: no frame alternates (2026-11-17)
+
+His evidence (build a5a7614, RTX 4050, ANGLE D3D11, 2560x1440, French; session z4c413il; `data/proof/aotr-owner-2026-11-17/`):
+a 16 s screen recording, his screenshots and three flicker-probe samples. Measured on all 488 frames of the recording
+(30 frames per second: the game's ~12 fps frames each shown 2-3 times), not only on its 2-per-second contact sheets:
+
+- **Static camera** (recording frames 24-70 and 80-180, ~5 s): no pixel alternates. With the probe's rule (A-B-A:
+  |a-b| > 24, |b-c| > 24, |a-c| < 8 on 0-255) 0.000-0.005 % of the pixels per triple of consecutive frames, the mean
+  difference between frames 0.1-0.4 levels (the video's compression).
+- **The large dark region with a soft curved edge** is fixed to the ground, not to the frames: it enters the screen as
+  the camera scrolls south (frames 13-24; the luminance of the lower right goes 73 → 33 step by step with the scroll) and
+  leaves as it scrolls back north (71-79, 33 → 74); its edge moves with the rock and the trees beside it frame after
+  frame, and at the same camera position it is the same before and after (73-74 north, 33-37 south). Inside it the
+  trees still cast their shadows. It is the game's fog of war: the ground outside the sight of the player's units and
+  buildings darkened, the soft round edge their sight radius. At the D112 camera height (x1.5) far more of it is in
+  view than at the game's own maximum; the contact sheets' 2 frames per second made the camera's back-and-forth look
+  like a toggle. The same region appears in SwiftShader at max zoom (below).
+- **The probe's samples**: the 2560x1440 one (2.46 % A-B-A, 21.5 % changed) was a scroll — the same rule on his
+  recording's consecutive scroll frames gives 2.0-2.8 % A-B-A and 18-29 % changed, spread over the whole terrain, while
+  those frames show a clean scroll (textures, shadows and the fog in place from frame to frame). The two 800x600 ones
+  (1.25 % and 1.20 %, 13-18 % changed, 24 fps, 2 draws per frame, black bars above and below) were the intro movie.
+- **The black band at the top** where the terrain stops (objects beyond it still drawn) follows the camera: the
+  terrain's own drawn area at the D112 height, not a flicker (another track). Seen here too: right after a wheel zoom-out
+  to the maximum the top 21 % of a 1280x960 frame stays black while the camera does not move, and the first frame of a
+  scroll fills it (grabbed frames 1086 → 1087 below).
+
+His report of 11-13 ("everything flickers as soon as I move or build, shadows and all") predates this morning's
+2c7d27f: at High the shaders sample the shadow map's stage, which had no texture then (no R32F), and GL sampled whatever
+texture an earlier draw had left on that unit — a value that changes with what the camera shows. Plausibly that, not
+checked on his GPU; today's recording shows no alternation.
+
+**Reproduction** (SwiftShader, his options: StaticGameLOD High, 1280x960 — a 4:3 mode the scenario's menu clicks fit —,
+`learn-aotr-skirmish`'s start, six wheel steps of 3 notches out to the D112 maximum, 15 s static, 6 s scroll south, 15 s
+static, 6 s scroll east; 10-14 consecutive frames grabbed in each stretch, `ORTHROS_FLICKER=2`). Render worker
+(`?glworker=1`, his path), 41 triples of consecutive frames: 24 static, 0.010-0.125 % changed, 0.001-0.009 % A-B-A,
+0.0000-0.0016 % A-B-A with still surroundings (single pixels of swaying foliage); 17 in scrolls, 18-37 % changed,
+1.7-2.2 % A-B-A all over the terrain while the camera moves, 0.0000-0.0005 % still — the frames show the scroll and, at the edges of the player's sight, the same soft dark fog,
+nothing alternating. The textures the game writes by rectangles while frames that read them are still pending went
+through the render worker's copies on write (130-134 per scroll phase) without a wrong frame.
+
+**What changed**: the probe (src/gfx/flicker-probe.js, docs/real-machine-bench.md "Flicker") now counts as flicker an
+A-B-A pixel whose surroundings are the same in the first and third frames (12 points at 4-8 pixels, scaled with the
+width), and flags, logs and reports that (`still`, `max`, `over1`, `alt`, the logged `mask`); the raw A-B-A stays in the
+summary as `aba`. On the frames above: scrolls 1.7-2.8 % → 0.0000-0.0005 %, a 4x4 patch alternating in a still picture
+still 16 pixels in its block. The owner's next samples tell a real alternation from a scroll.
+
+**For the owner, an A/B in two URLs** (each a whole session; the probe's summary and samples land in the telemetry):
+- `https://orthros.chalco.website/?manifest=aotr-10&glworker=0` — the Direct3D work rendered on the emulator's thread,
+  no render worker (`docs/render-worker.md`);
+- `https://orthros.chalco.website/?manifest=aotr-10&dbg=ORTHROS_FLOAT_RT=0` — Direct3D 9 without the floating-point
+  formats (`floatFormat`, src/win32/d3d8.js: CheckDeviceFormat, CreateTexture and D3DX refuse them, as before 2c7d27f):
+  at High no shadow map is made (checked in Node: the survey answers "not available" for formats 111-116 and no 1024x1024
+  R32F texture is created). A machine debug flag: such a session takes no shared snapshot made without it.
+

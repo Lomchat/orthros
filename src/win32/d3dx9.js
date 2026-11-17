@@ -2,7 +2,7 @@
 // texture loading from image files in memory, shader helpers, buffers and the effect framework (d3dx9-effect.js).
 // One implementation answers to every numbered DLL name (the export sets differ only by additions).
 import { snapClass } from '../core/snapshot.js';
-import { FMT, FLOAT_FORMATS, surfaceBytes, surfacePitch, readShaderTokens, readFloatTexels, writeFloatTexels } from './d3d8.js';
+import { FMT, FLOAT_FORMATS, floatFormat, surfaceBytes, surfacePitch, readShaderTokens, readFloatTexels, writeFloatTexels } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
 import { parseImage, parseImageInfo, toRgba, fromRgba, resizeRgba, resizeRgbaF, applyColorKey, isDxt, isDdsFile } from './d3dx9-image.js';
@@ -105,7 +105,7 @@ export function registerD3DX9(api, vm) {
    */
   const pickFormat = (req, file, float = false) => {
     let f = req === 0 || req === D3DX_FROM_FILE ? file : req;
-    if (float && FLOAT_FORMATS.has(f)) return f;
+    if (float && floatFormat(f)) return f;
     if (!TEXTURE_OK.has(f)) f = f === FMT.R8G8B8 || f === 33 || f === FMT.P8 ? FMT.X8R8G8B8 : f === FMT.A8B8G8R8 || f === FMT.A2B10G10R10 ? FMT.A8R8G8B8 : f === FMT.X4R4G4B4 ? FMT.A4R4G4B4 : TEXTURE_OK.has(file) ? file : FMT.A8R8G8B8;
     return f;
   };
