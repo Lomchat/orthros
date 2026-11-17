@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- A game's CFF font drawn by this browser as the GDI text engine draws it (a worker's OffscreenCanvas), as the file has
+     it and as src/gfx/gdi/cff.js flattenSeac gives it (seac accented letters as plain outlines): on a browser whose
+     rasterizer cuts seac glyphs (Chrome on Windows, 2026-11-17: "ó" drawn as "ć") the two columns differ. Open on the
+     Orthros server: /tools/check/font-seac-check.html[?m=<manifest>&f=<file>&o=<offset>&n=<size>&px=<size>&t=<text>]
+     (default: Age of the Ring's Albertus MT, inside rotwk/Data1.big). -->
+<meta charset="utf-8">
+<title>Orthros: CFF seac glyphs in this browser</title>
+<style>body { background: #111; color: #ddd; font: 14px sans-serif; } canvas { background: #000; display: block; margin: 4px 0 12px; } td, th { padding: 2px 8px; text-align: right; } .bad { color: #f66; }</style>
+<p id="verdict">…</p>
+<div id="out"></div>
+<script type="module">
+import { flattenSeac } from '/src/gfx/gdi/cff.js';
+const q = new URLSearchParams(location.search);
+const m = q.get('m') ?? 'aotr-10', f = q.get('f') ?? 'rotwk/Data1.big', o = Number(q.get('o') ?? 687), n = Number(q.get('n') ?? 24712);
+const px = Number(q.get('px') ?? 127), text = q.get('t') ?? 'oóòôöuùúaàáâeèéêëiïcç';
+const res = await fetch(`/game/${encodeURIComponent(m)}/${f}`, { headers: { Range: `bytes=${o}-${o + n - 1}` } });
+const bytes = new Uint8Array(await res.arrayBuffer()).slice(0, n);
+const flat = flattenSeac(bytes);
+// (the worker: each character alone, ink box and coverage sum, then the whole line for the eye)
+const src = `self.onmessage = async ({ data: { fonts, px, text } }) => {
+  const out = [];
+  for (const [i, buf] of fonts.entries()) {
+    const face = new FontFace('F' + i, buf); await face.load(); self.fonts.add(face);
+    const W = Math.ceil(px * 3), H = Math.ceil(px * 2), cv = new OffscreenCanvas(W, H), ctx = cv.getContext('2d', { willReadFrequently: true });
+    const glyphs = [];
+    for (const ch of text) {
+      ctx.clearRect(0, 0, W, H); ctx.font = px + 'px F' + i; ctx.fillStyle = '#fff';
+      const x0 = Math.round(px), y0 = Math.round(px * 1.3); ctx.fillText(ch, x0, y0);
+      const d = ctx.getImageData(0, 0, W, H).data; let l = W, r = -1, sum = 0;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const a = d[(y * W + x) * 4 + 3]; if (a) { sum += a; if (x < l) l = x; if (x > r) r = x; } }
+      glyphs.push({ ch, l: l - x0, r: r + 1 - x0, sum });
+    }
+    const line = new OffscreenCanvas(Math.ceil(px * 0.7 * text.length), Math.ceil(px * 1.5)), lc = line.getContext('2d');
+    lc.font = px + 'px F' + i; lc.fillStyle = '#fff'; lc.fillText(text, 4, Math.round(px * 1.1));
+    out.push({ glyphs, image: line.transferToImageBitmap() });
+  }
+  self.postMessage(out);
+};`;
+const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+const fonts = [bytes.slice().buffer, (flat ?? bytes).slice().buffer];
+const [a, b] = await new Promise((resolve) => { w.onmessage = (e) => resolve(e.data); w.postMessage({ fonts, px, text }); });
+const rows = a.glyphs.map((g, i) => ({ ch: g.ch, a: g, b: b.glyphs[i], cut: g.r < b.glyphs[i].r - 1 || g.sum < b.glyphs[i].sum * 0.9 }));
+const cut = rows.filter((r) => r.cut).map((r) => r.ch).join(' ');
+document.getElementById('verdict').innerHTML = !flat ? 'Cette police n’a aucun glyphe seac : rien à comparer.'
+  : cut ? `<b class="bad">Ce navigateur coupe les lettres accentuées seac de la police d’origine : ${cut}</b> — la version d’Orthros (aplatie) les dessine entières.`
+  : '<b>Ce navigateur dessine les glyphes seac entiers</b> : la police d’origine et la version d’Orthros donnent la même chose.';
+const out = document.getElementById('out');
+for (const [label, r] of [['Police d’origine', a], ['Police donnée au navigateur par Orthros (seac aplatis)', b]]) {
+  out.insertAdjacentHTML('beforeend', `<div>${label}</div>`);
+  const c = document.createElement('canvas'); c.width = r.image.width; c.height = r.image.height; c.getContext('2d').drawImage(r.image, 0, 0); out.append(c);
+}
+out.insertAdjacentHTML('beforeend', '<table><tr><th>car.</th><th>encre d’origine (g–d)</th><th>encre aplatie</th><th>couverture d’origine</th><th>aplatie</th></tr>'
+  + rows.map((r) => `<tr class="${r.cut ? 'bad' : ''}"><td>${r.ch}</td><td>${r.a.l}–${r.a.r}</td><td>${r.b.l}–${r.b.r}</td><td>${r.a.sum}</td><td>${r.b.sum}</td></tr>`).join('') + '</table>');
+document.title += cut ? ' — coupés' : ' — entiers';
+</script>

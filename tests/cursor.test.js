@@ -85,6 +85,46 @@ test('ttf: character map (GetGlyphIndices: missing characters are reported, glyp
   assert.deepEqual([m.defaultChar, m.unitsPerEm, m.notdef.advance, m.notdef.box?.xMax], [0, 2048, 1536, 1330]);
 });
 
+test('cff: seac accented letters become plain outlines for the browser (same contours, width, other glyphs untouched)', async () => {
+  const { flattenSeac, readCff, glyphOutline, cffIndex, cffIndexBytes } = await import('../src/gfx/gdi/cff.js');
+  // Type 2 numbers and operators; DICT operands as 5-byte integers
+  const cs = (...xs) => new Uint8Array(xs.flatMap((x) => (typeof x === 'string' ? (x === 'endchar' ? [14] : x === 'rmoveto' ? [21] : x === 'rlineto' ? [5] : x === 'hstem' ? [1] : x === 'callsubr' ? [10] : [11]) : x >= -107 && x <= 107 ? [x + 139] : [28, (x >> 8) & 0xff, x & 0xff])));
+  const dict = (...entries) => new Uint8Array(entries.flatMap(([op, ...args]) => [...args.flatMap((v) => [29, (v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff]), op]));
+  const font = (glyphs) => {
+    // header, Name, Top DICT, String ("oacute", SID 391), Global Subrs; charset (o, acute, oacute), CharStrings, Private, its Subrs
+    const subrs = cffIndexBytes([cs(0, 100, 'rlineto', 'return')]);
+    const charset = new Uint8Array([0, 0, 80, 0, 125, 0x01, 0x87]);
+    const csIndex = cffIndexBytes(glyphs), priv = dict([21, 500], [19, 12]); // (Subrs right after the 12-byte Private DICT)
+    const head = new Uint8Array([1, 0, 4, 4]), names = cffIndexBytes([new TextEncoder().encode('T')]), strings = cffIndexBytes([new TextEncoder().encode('oacute')]), gsubrs = cffIndexBytes([]);
+    const topLen = cffIndexBytes([dict([15, 0], [17, 0], [18, 0, 0])]).length;
+    const at = head.length + names.length + topLen + strings.length + gsubrs.length;
+    const top = cffIndexBytes([dict([15, at], [17, at + charset.length], [18, priv.length, at + charset.length + csIndex.length])]);
+    const parts = [head, names, top, strings, gsubrs, charset, csIndex, priv, subrs];
+    const cff = new Uint8Array(parts.reduce((s, p) => s + p.length, 0)); let p = 0; for (const x of parts) { cff.set(x, p); p += x.length; }
+    // the sfnt: 'CFF ' and 'head'
+    const headT = new Uint8Array(54), sf = new Uint8Array(12 + 32 + ((cff.length + 3) & ~3) + 56), dv = new DataView(sf.buffer);
+    dv.setUint32(0, 0x4f54544f); dv.setUint16(4, 2);
+    [['CFF ', cff, 44], ['head', headT, 44 + ((cff.length + 3) & ~3)]].forEach(([tag, data, off], i) => { for (let k = 0; k < 4; k++) sf[12 + 16 * i + k] = tag.charCodeAt(k); dv.setUint32(12 + 16 * i + 8, off); dv.setUint32(12 + 16 * i + 12, data.length); sf.set(data, off); });
+    return sf;
+  };
+  const o = cs(0, 50, 'hstem', 100, 0, 'rmoveto', 100, 0, 'rlineto', -107, 'callsubr', -100, 0, 'rlineto', 'endchar'); // (a hint, a subroutine)
+  const acute = cs(20, 500, 'rmoveto', 30, 0, 'rlineto', 0, 40, 'rlineto', 'endchar');
+  const glyphs = [cs('endchar'), o, acute, cs(50, 10, 0, 111, 194, 'endchar')]; // oacute: width 500 + 50, acute at (10, 0)
+  assert.equal(flattenSeac(font(glyphs.slice(0, 3))), null, 'nothing to change');
+  const src = font(glyphs), out = flattenSeac(src);
+  assert.ok(out);
+  const cffOf = (sf) => { const dv = new DataView(sf.buffer, sf.byteOffset, sf.byteLength); return { dv, cff: readCff(dv, dv.getUint32(12 + 8)) }; };
+  const a = cffOf(src), b = cffOf(out);
+  const before = glyphOutline(a.dv, a.cff, 3), after = glyphOutline(b.dv, b.cff, 3);
+  assert.deepEqual(before.seac, [10, 0, 111, 194]);
+  assert.equal(after.seac, null, 'no seac left');
+  assert.deepEqual(after.path, [['M', 100, 0], ['L', 200, 0], ['L', 200, 100], ['L', 100, 100], ['M', 30, 500], ['L', 60, 500], ['L', 60, 540]]);
+  assert.deepEqual(after.path, before.path);
+  assert.equal(after.width, 50);
+  for (const g of [0, 1, 2]) { const [s0, e0] = a.cff.charStrings.items[g], [s1, e1] = b.cff.charStrings.items[g]; assert.deepEqual(out.subarray(s1, e1), src.subarray(s0, e0), `glyph ${g} unchanged`); }
+  assert.equal(cffIndex(b.dv, b.cff.base + b.cff.hdrSize).items.length, 1);
+});
+
 test('GDI text: a character the font lacks is drawn as GDI does, never as itself (C1 -> ANSI, default character, glyph 0)', async () => {
   const { resolveChar, NOTDEF } = await import('../src/gfx/gdi/text.js');
   // a font like Age of the Ring's Albertus MT: ’ … and space mapped, U+008E mapped by the font itself, default char space
