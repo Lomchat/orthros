@@ -1,0 +1,49 @@
+# GPU cost at high resolution (docs/render-worker.md section 12): learn-aotr-skirmish's start, then static-camera phases
+# switching the float targets' storage (ORTHROS_FLOAT_RGBA: compact / RGBA / compact / RGBA), the GL calls of 3 frames, a frame
+# capture (every draw's target and viewport). Profile: the owner's options (data/proof/aotr-flicker-text-2026-11-17/flicker/
+# profile-owner-options) with Resolution = 2560 1440, harness --screen 2560x1440 --coords 1024x768.
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++15:key:27
++18:key:27
++20:waitframe:14,100000
+0:mark:menu
+4:move:199,148
+5:click:199,148
+8:move:400,149
+9:click:400,149
+10:waitframe:100,180
+0:mark:profile
+2:click:505,364
+4:text:Orthros
+7:move:404,513
+8:click:404,513
+9:waitframe:190,600
+0:mark:setup
+2:move:542,289
+3:click:542,289
+5:move:873,734
+6:click:873,734
+7:mark:load
+8:waitframe:60,110
+0:mark:loadscreen
+1:waitframe:400,100000
+0:mark:play
+15:mark:settle
+20:mark:A1
+45:mark:sw1
+45:dbg:ORTHROS_FLOAT_RGBA=1
+48:mark:B1
+73:mark:sw2
+73:dbg:ORTHROS_FLOAT_RGBA=
+76:mark:A2
+101:mark:sw3
+101:dbg:ORTHROS_FLOAT_RGBA=1
+104:mark:B2
+129:mark:gl
+129:dbg:ORTHROS_FLOAT_RGBA=
+132:glcount:3
+145:capture
+155:mark:end

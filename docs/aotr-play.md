@@ -118,7 +118,8 @@ Orthros did not offer R32F (nor D3DX create it): no shadow map was ever made and
 floating-point formats (R16F, G16R16F, A16B16G16R16F, R32F, G32R32F, A32B32G32R32F) as 2D and cube textures and render
 targets, D3DX creates them when asked without image data, and the WebGL backend stores them as RGBA16F / RGBA32F
 (EXT_color_buffer_float to render into them; missing channels read 1 as in Direct3D, kept by a write mask; uploads,
-readbacks and captures convert). With it the game creates its 1024x1024 R32F map and renders shadows (tower, trees,
+readbacks and captures convert — since the same evening with their own channels instead, R32F as GL R32F, the missing
+channels' 1s supplied by the programs that sample them: docs/render-worker.md section 12). With it the game creates its 1024x1024 R32F map and renders shadows (tower, trees,
 units), stable: on the frames grabbed every frame (ORTHROS_FRAME_GRAB) after a device loss and Reset, a static camera
 changes 0.00-0.06 % of the pixels between frames and 0.000-0.001 % flicker (A-B-A), a scroll gives the same A-B-A share
 (1.8-1.9 %: perspective motion of textures) as without shadows. Cost: draws per frame in play ~880-950 → ~1 060-1 190

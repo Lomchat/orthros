@@ -85,8 +85,17 @@ const TEXTURE_FORMATS = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R
 
 /** bytes of one row / total bytes for a surface of this format */
 /** Distinct values each render / stage state took (end-of-run report: which pipeline features a game uses). */
-/** kind of a texture object for the backend's program key: 0 none, 1 2D, 2 cube, 3 volume */
-const texKindOf = (t) => (!t ? 0 : t.faces ? 2 : t.depth ? 3 : 1);
+/**
+ * The channels a texture of format `fmt` holds: 1 or 2 for the float formats with fewer than 4 (R16F, R32F; G16R16F,
+ * G32R32F), whose other channels read 1 when sampled — the WebGL backend stores them with just those channels and
+ * its shaders supply the 1s —, else 4.
+ */
+export const texChannels = (fmt) => FLOAT_FORMATS.get(fmt)?.ch ?? 4;
+/**
+ * kind of a texture object for the backend's program key: 0 none, 1 2D, 2 cube, 3 volume, plus 4 x its channels when
+ * fewer than 4 (texChannels: the program reads such a texture through a swizzle)
+ */
+export const texKindOf = (t) => { if (!t) return 0; const ch = texChannels(t.fmt); return (t.faces ? 2 : t.depth ? 3 : 1) | (ch < 4 ? ch << 2 : 0); };
 export function noteState(dev, group, s, v) {
   // (numeric keys: this runs for every state change — group name and state number joined only for the report)
   const gid = STATE_GROUPS.get(group) ?? STATE_GROUPS.set(group, STATE_GROUP_NAMES.push(group) - 1).get(group);

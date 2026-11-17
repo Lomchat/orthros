@@ -1227,6 +1227,121 @@ What would help GPU-less machines, from these numbers: fewer GPU-process wake-up
 (`ORTHROS_BROWSER_CPUS`) rather than by a quota alone, which makes the emulator wait out throttled periods that a real
 4-core machine does not have.
 
+## 12. High resolution: what Orthros adds to the GPU's work per frame (2026-11-17)
+
+Question: the owner's session of 2026-11-17 (z4c413il: RTX 4050 Laptop, ANGLE D3D11, Chrome 157, AotR 10 at High — the
+R32F shadow maps — at 2560×1440) ran at 12.2 fps with the GPU at 42.9 ms present to present (p50 41) and **20.1 ms for
+the run of draws** (p50 19, 537 draws per frame), where his session of the same morning (mgs5t4em, build of 11-13: no
+shadow map; 800×600 by his Options.ini then) read 3-12 ms for 300-440 draws. D127 starts new players at their screen's largest mode (1440p, 4K): what
+in Orthros' GL path costs per pixel or per frame, beyond the game's own draws?
+
+### 12.1 The frame at 2560×1440 (SwiftShader, the owner's options, `learn-aotr-skirmish`'s start, static camera)
+
+A frame capture (`capture` step) and the GL calls of 3 frames (`glcount:3`):
+- 582 draws: 249 into the back buffer (2560×1440 viewport), 172 into the 1024×1024 R32F shadow map, 146 into a
+  512×512 target (terrain, RGB), 8 into a 256×256 one; 197 of the back buffer's draws read the shadow map, point-sampled
+  (terrain `ps_2_0`: four `tex` of s5 compared with `t7.z - 0.002`, the `.x` of each only).
+- 8 clears, 1 blit (the present), no gamma pass (the ramp is identity), no StretchRect; 3 466 GL calls (6.0 per draw).
+- SwiftShader's GPU process (4 pinned cores, its threads included): **3.24 s of CPU per frame** (32 frames in 30 s, 1.1 fps)
+  against 0.57 s at 800×600 (183 frames in 31 s, 6 fps, 621 draws): ×5.7 for ×7.7 the pixels — at 2560×1440 ~95 % of
+  the GPU's work follows the pixels, nearly all of it the game's own draws.
+
+What Orthros itself adds around those draws, per frame: the present's copy of the back buffer into the canvas (a
+framebuffer object, so that only finished frames reach it); the browser's clear of the canvas after each frame it hands
+over (`preserveDrawingBuffer: false`) — color, and depth and stencil when the context has them; the float targets'
+storage; the GL state the backend sends again after a clear; every 10 s the flicker probe's three copies of the frame
+and its reduction (`flicker-probe.js`). Render scale is off on a GPU, no MSAA (`antialias: false`), DXT kept compressed
+(`WEBGL_compressed_texture_s3tc`), no mipmaps generated for render targets, depth written by a shader only where the
+Direct3D shader writes it, alpha test (`discard`) only in the programs of draws that use it.
+
+### 12.2 What changed
+
+- **Float targets stored with their own channels** (`floatStore`, `src/gfx/d3d8-webgl.js`): R32F as GL R32F (and R16F,
+  G16R16F, G32R32F as R16F, RG16F, RG32F), no longer RGBA32F — the 1024×1024 shadow map weighs 4 MB instead of 16, each
+  write and each tap moves 4 bytes instead of 16 (and 128-bit texels are fetched at a fraction of the 32-bit rate on
+  GPUs). A Direct3D R32F texel reads (r, 1, 1, 1): WebGL 2 has no texture swizzle, so the programs that sample such a
+  texture supply the 1s (`texelOf` in the fixed-function and ps_1_x-3_0 translators; the channel count is part of the
+  texture's kind in the program key, `texKindOf`, and of the key itself: `t1` / `t2` after a stage's letter, a 13th
+  field in a fixed-function stage — keys of every other texture unchanged, learned programs still match), and a blit out
+  of one sets green and blue to 1 in the destination rectangle (`onesAfterBlit`). Readbacks write only the format's
+  channels as before; captures fill the missing ones. `ORTHROS_FLOAT_RGBA=1` (measurement, switchable within a
+  session) stores them as RGBA as before. Not covered: a vertex shader sampling a 1- or 2-channel float texture would
+  read 0 in green and blue (CheckDeviceFormat refuses vertex texture fetch for every float format, d3d9.js
+  `floatQueryOk`).
+- **No depth or stencil buffer on the canvas** (`createWebGLBackend`): nothing draws into it with a depth or stencil
+  test (present's blit, the gamma pass), and the browser cleared a 2560×1440 D24S8 buffer (14.7 MB) after every frame
+  it handed over, besides allocating it.
+- **A clear keeps the GL state cache** (`clear`): it dropped the whole cache (`invalidateGlState`), so the next draw
+  bound its program, textures, samplers and vertex array and set every capability again — 8 clears per frame here. It
+  now tells the cache what it set (color, depth and stencil write masks, scissor) and has the raster states compared
+  again at the next draw.
+
+### 12.3 Measurements
+
+AotR at 2560×1440, same scenario, same start position, static camera (GL calls per frame over 3 frames, `glcount:3`):
+
+| | main (a5a7614) | this change |
+|---|---|---|
+| GL calls per frame | 3 466 for 582 draws (5.96 per draw) | 3 297 for 568 draws (5.80 per draw) |
+| of which enable / disable, depthMask, bindFramebuffer | 163, 68, 16 | 123, 60, 9 |
+| of which useProgram, bindTexture, bindSampler, bindVertexArray | 133, 498, 150, 388 | 127, 488, 141, 366 |
+| depthRange, cullFace, blendEquationSeparate, blendColor | 6, 5, 5, 5 | 0, 0, 0, 0 |
+
+The present path alone (`tools/bench/present-bench.mjs`: a worker's OffscreenCanvas, the frame cleared and drawn into a
+framebuffer object, blitted to the canvas and handed to the page, 60 frames per variant, 3 rounds alternated; SwiftShader,
+4 pinned cores; first round dropped as warm-up):
+
+| 2560×1440, ms of wall time per frame (rounds 2-3 of two runs: round 1 of the first was disturbed, 100 ms for both) | before | after |
+|---|---|---|
+| canvas with depth + stencil → without | 51.2-52.9; 51.3-52.8 | 49.7-51.1; 49.7-51.2 |
+| 1024×1024 one-channel float map drawn, one full-screen pass reading it 4 times: RGBA32F → R32F | 84.9-85.4 | 80.0-81.6 |
+
+In the game the same changes are inside SwiftShader's noise at this resolution: one session switching
+`ORTHROS_FLOAT_RGBA` every 25 s (compact / RGBA / compact / RGBA) read 1.1 / 1.5 / 1.7 / 2.0 fps — the machine's load
+fell from 47 to 22 during the run — and the GPU process's CPU per frame does not follow the work on SwiftShader (its
+pool spins, section 11.1). The changes are measured where they act (the table above) and their share estimated: on
+SwiftShader at 2560×1440 ~2 ms per frame for the canvas and ~5 ms per full-screen pass of shadow taps, in frames of
+~500-3 000 ms; on the owner's GPU a fraction of a millisecond, by estimate (a 14.7 MB clear fewer; 4 bytes instead of 16
+per write and per tap of the shadow map, whose taps cover the screen ~4 times per receiving pass) — not measured there.
+
+Images: `?glworker=compare-worker` replays every command of a session in a second context and compares the two back
+buffers pixel for pixel every 20 frames; a scratch build kept the old paths in the in-thread reference
+(`ORTHROS_FLOAT_RGBA=1` and the old clear) and this change in the render worker, so each comparison is the same frame
+rendered both ways. AotR 10 at High, 800×600, menus to play (static camera, then a scroll), with `--gl-validate` (the
+GL state cache checked against GL at every draw of the first 3 000, then every 97th): the shadow map `rgba32f` in one
+context, `r32f` in the other, **every compared frame identical** (43 frames, 10 of them in play with the shadows). The
+validation found no stale state from the new clear; it did find texture units still cached with a texture deleted
+since (GL unbinds a deleted texture), which the old clear's drop used to hide until the next clear: `destroyResource`
+now clears them from the cache (and a deleted framebuffer's binding). The same comparison without the validation (the
+caches' own paths), with that fix: RotWK 2.02 at High, 800×600, intro to play (`rgba32f` / `r32f` again): 44 frames
+compared, 6 in play, all identical; BFME 1.08 (Direct3D 8: the clear alone), 1024×768, intro to play: 38 frames, 3 in
+play, all identical.
+
+Reproduce: `tools/with-browser-slot.sh node tools/headless.mjs aotr-10 --profile-dir <copy of the owner's options with
+Resolution = 2560 1440> --screen 2560x1440 --coords 1024x768 --input-file tools/scenarios/aotr-gpu-cost-ab.txt`;
+`tools/with-browser-slot.sh node tools/bench/present-bench.mjs 2560x1440 60 canvas-ds canvas direct texdraw map-rgba32f
+map-r32f --rounds 3`; the image comparisons: `--glworker compare-worker --dbg ORTHROS_FLOAT_RGBA=1,ORTHROS_COMPARE_EVERY=20`
+with the render worker made to ignore `ORTHROS_FLOAT_RGBA` (and the old clear switchable in the reference: two lines of
+scratch patch, not kept).
+
+### 12.4 What remains, and what it means for the owner's 20 ms
+
+- The present's copy (one blit of the back buffer's framebuffer object into the canvas per present). Measured alone
+  (`present-bench.mjs`, 2560×1440, 3 rounds): frame drawn into a framebuffer object and blitted 47.8-51.1 ms per frame,
+  the same frame drawn straight into the canvas 22.5-22.9 ms, the framebuffer object's color in a texture copied by a
+  full-screen draw 39.5-39.8 ms: the copy and the canvas's clear cost SwiftShader ~26 ms there. Rendering the back buffer into the
+  canvas itself would save that copy (~26 ms at 2560×1440 on SwiftShader, ~3.5 ms at 800×600; ~0.15 ms on a GPU), but
+  the canvas loses its contents at each hand-over (`preserveDrawingBuffer: false`), which Direct3D's COPY swap effect,
+  games drawing over their previous frame (Vice City's menu, section 11.1), flip chains, back buffers smaller or larger
+  than the canvas, readbacks after Present and the render scale all depend on; a texture back buffer copied by a draw
+  saves a third of it on SwiftShader and nothing on a GPU. Not done: a few percent of a software-rendered frame at most.
+- The flicker probe at 2560×1440: every 10 s, three 14.7 MB textures created, three copies and one reduction over
+  3.7 M pixels — nothing at the other frames.
+- What Orthros adds per pixel is small next to the game's own pixel work, and the owner's draw run is mostly not pixels:
+  his 800×600 session read 9-12 ms for ~430 draws already (~25 µs per draw on the GPU's timeline: ANGLE's D3D11
+  translation of the GL calls in the GPU process, the GPU waiting for them), 20 ms for 537 draws (with the shadow pass)
+  at 2560×1440. Fewer GL calls per draw (12.3: −5 %) help there; the rest of the per-draw cost is the next track.
+
 ## Appendix: how the numbers were taken
 
 Each run: `tools/with-browser-slot.sh node tools/headless.mjs <manifest> --gl-discard --timescale 1.5 --learn <copy of
