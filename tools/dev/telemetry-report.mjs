@@ -285,8 +285,8 @@ export function formatReport(reports, comparison) {
       L.push(`  ${st.at ?? '--:--:--'} ${st.kind.padEnd(9)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps; frame ms p50 ${st.p50} p90 ${st.p90} p99 ${st.p99} max ${st.max}; >33 ${st.per33}/min >40 ${st.per40} >50 ${st.per50} >100 ${st.per100}; draws/frame ${st.drawsPerFrame ?? '-'}, GL calls/frame ${st.glCallsPerFrame ?? '-'}; GPU ${typeof st.gpu === 'object' && st.gpu ? `${st.gpu.mean} ms/frame p50 ${st.gpu.p50} p99 ${st.gpu.p99} (${st.gpu.frames} frames timed)` : st.gpu ?? '-'}${st.renderWaitMs !== null ? `; render worker waits ${st.renderWaitMs} ms/frame, replay ${st.replayMs}` : ''}${st.visible !== null && st.visible < 0.99 ? `; visible ${Math.round(st.visible * 100)}%` : ''}`);
       if (st.work !== null) L.push(`      work ${st.work} ms/frame: ${st.cats}${st.slowShares ? `; slow frames' time (%): ${st.slowShares}` : ''}`);
       // (gfx/flicker-probe.js: frame triples sampled every 10 s, % of their pixels going A-B-A where nothing moved — the
-      // flicker; a summary without `still`, from the probe's first version (2026-11-17 morning): only A-B-A anywhere, a scroll's included —, the largest, the samples where it dominates
-      // what changed; WebGL errors)
+      // flicker; a summary without `still`, from the probe's first version (2026-11-17 morning): only A-B-A anywhere, a
+      // scroll's included —, the largest, the samples where it dominates what changed; WebGL errors)
       if (st.flicker?.n || st.flicker?.glErrors) L.push(`      flicker: ${st.flicker.n} samples, ${st.flicker.still != null ? `flickering ${st.flicker.still} % of pixels` : `A-B-A ${st.flicker.aba ?? '-'} % of pixels`} (max ${st.flicker.max ?? '-'} %, ${st.flicker.over1} over 1 %, ${st.flicker.alt ?? 0} alternating)${st.flicker.still != null ? `, A-B-A anywhere ${st.flicker.aba ?? '-'} %` : ''}, changed ${st.flicker.chg ?? '-'} %; WebGL errors ${st.flicker.glErrors}${st.flicker.glError ? ` (last 0x${st.flicker.glError.toString(16)})` : ''}`);
     }
     for (const b of r.benches) {

@@ -38,7 +38,8 @@ const QUERY = { LEGACYBUMPMAP: 0x8000, SRGBREAD: 0x10000, FILTER: 0x20000, SRGBW
 export function floatQueryOk(usage, fmt) {
   if (usage & (QUERY.LEGACYBUMPMAP | QUERY.SRGBREAD | QUERY.SRGBWRITE | QUERY.VERTEXTEXTURE)) return false;
   return FLOAT_FORMATS.get(fmt)?.bits !== 32 || !(usage & (QUERY.FILTER | QUERY.POSTPIXELSHADER_BLENDING));
-}// snapshot: diagnostics
+}
+// snapshot: diagnostics
 const checkedFormats = new Set(), createdFormats = new Set(); // once-per-format diagnostics
 // snapshot: diagnostics
 const checkTrail = []; // last CheckDeviceFormat calls (args + verdict), kept for the placeholder-texture diagnostic
