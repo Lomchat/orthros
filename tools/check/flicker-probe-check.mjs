@@ -69,8 +69,10 @@ try {
       gl.disable(gl.SCISSOR_TEST);
     };
     let t = 0;
+    const logs = [];
+    globalThis.ORTHROS_FLICKER = 2; // (every sample logged: where it flickered)
     const run = async (frames) => {
-      const probe = new FlickerProbe(gl, { now: () => t, errors: true }); t += 20000;
+      const probe = new FlickerProbe(gl, { now: () => t, errors: true, log: (m) => logs.push(m) }); t += 20000; logs.length = 0;
       const cpu = [];
       for (let i = 0; i < frames.length + 30; i++) {
         const [shift, patch] = frames[Math.min(i, frames.length - 1)]; frame(shift, patch);
@@ -79,7 +81,9 @@ try {
         if (probe.stats.n) break;
       }
       const s = probe.stats;
-      return { n: s.n, abaPpm: s.aba, chgPpm: s.chg, abaPixels: Math.round(s.aba * w * h / 1e6), alt: s.alt, over1: s.over1, glErrors: s.glErrors, sampleCpuMs: cpu.slice(0, 3).map((v) => +v.toFixed(2)) };
+      const mask = /mask \d+x\d+ ([0-9a-f]+)/.exec(logs[0] ?? '')?.[1] ?? '', blocks = [];
+      for (let k = 0; k < mask.length * 4; k++) if ((parseInt(mask[k >> 2], 16) >> (3 - (k & 3))) & 1) blocks.push([k % W, Math.floor(k / W)]);
+      return { n: s.n, abaPpm: s.aba, chgPpm: s.chg, abaPixels: Math.round(s.aba * w * h / 1e6), alt: s.alt, over1: s.over1, glErrors: s.glErrors, blocks, sampleCpuMs: cpu.slice(0, 3).map((v) => +v.toFixed(2)) };
     };
     const out = {};
     out.patch = await run([[0, 0.15], [0, 0.85], [0, 0.15]]);
@@ -88,25 +92,30 @@ try {
     // (cost: present() between samples, and the GPU time of a sample's frames — finish() after each, with and without)
     const probe = new FlickerProbe(gl, { now: () => t }); t += 20000;
     let idle = 0; for (let i = 0; i < 210; i++) { const t0 = performance.now(); probe.present(back, w, h); if (i >= 10) idle += performance.now() - t0; } // (the first 3 sample, then their readback: the last 200 idle)
-    // (one probe for every sample: its program compiled once, at the warm-up)
-    const gpu = async (withProbe) => {
-      t += 20000; let ms = 0;
-      for (let i = 0; i < 3; i++) { frame(0, 0.5); gl.finish(); const t0 = performance.now(); if (withProbe) probe.present(back, w, h); gl.finish(); ms += performance.now() - t0; }
-      if (withProbe) for (let i = 0; i < 5; i++) { probe.present(back, w, h); gl.finish(); } // (its readback taken)
-      return ms;
+    // (a sample's work, GPU included: 20 samples' three frames timed with present() and a 1-pixel readback — a full sync
+    // — after each, against the same frames without the probe; one probe, its program compiled at the warm-up)
+    globalThis.ORTHROS_FLICKER = 1;
+    const px = new Uint8Array(4), sync = () => { gl.bindFramebuffer(gl.FRAMEBUFFER, back); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); };
+    const gpu = (withProbe) => {
+      let ms = 0;
+      for (let k = 0; k < 20; k++) {
+        t += 20000;
+        for (let i = 0; i < 3; i++) { frame(0, 0.5); sync(); const t0 = performance.now(); if (withProbe) probe.present(back, w, h); sync(); ms += performance.now() - t0; }
+        if (withProbe) for (let i = 0; i < 3; i++) { probe.present(back, w, h); sync(); } // (its readback taken)
+      }
+      return ms / 20;
     };
     out.idlePresentUs = +(1000 * idle / 200).toFixed(1);
-    await gpu(true);
-    const g0 = [], g1 = []; for (let k = 0; k < 5; k++) { g0.push(await gpu(false)); g1.push(await gpu(true)); }
-    const med = (a) => a.sort((x, y) => x - y)[2];
-    out.sampleGpuMs = +(med(g1) - med(g0)).toFixed(1);
-    out.blockOf = Math.floor(403 * W / w);
+    gpu(true);
+    const g0 = gpu(false), g1 = gpu(true);
+    out.sampleMs = +(g1 - g0).toFixed(2); out.sampleMsWith = +g1.toFixed(2); out.sampleMsWithout = +g0.toFixed(2);
+    out.patchBlock = [Math.floor(403 * W / w), Math.floor(301 * 48 / h)];
     out.err = gl.getError();
     return out;
   }, src);
   const cur = await scenes('/src/gfx/flicker-probe.js');
   console.log(`flicker probe: ${JSON.stringify(cur)}`);
-  check(cur.patch.n === 1 && cur.patch.abaPixels === 16 && cur.patch.alt === 1, 'a 4 x 4 patch going A-B-A: its 16 pixels counted, an alternating sample');
+  check(cur.patch.n === 1 && cur.patch.abaPixels === 16 && JSON.stringify(cur.patch.blocks) === JSON.stringify([cur.patchBlock]), 'a 4 x 4 patch going A-B-A: its 16 pixels counted, in its block');
   check(cur.still.n === 1 && cur.still.abaPpm === 0 && cur.still.chgPpm === 0, 'a still frame: nothing');
   check(cur.scroll.n === 1 && cur.scroll.abaPpm === 0 && cur.scroll.alt === 0, 'a scroll: changes, no A-B-A');
   check(cur.err === 0 && cur.patch.glErrors === 0, 'no GL error');

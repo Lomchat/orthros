@@ -130,3 +130,48 @@ settings — static camera, scroll, mouse moves over the map, deactivation / Res
 that build no shadow map existed at all. Not reached by the scripted runs: placing a building (the dwarf selected at the
 start is no builder; its command bar has Stop and Extinguish Fire only). The frames' flicker and WebGL errors are now
 measured on players' GPUs (src/gfx/flicker-probe.js, docs/real-machine-bench.md "Flicker").
+
+Review of the float formats (same day): CheckDeviceFormat answers the `D3DUSAGE_QUERY_*` bits of a float format as
+Orthros renders it (no vertex texture fetch, no sRGB; the 32-bit formats neither filtered nor blended — the WebGL
+extensions that allow it are not on every player's GPU; a draw that blends into an RGBA32F target without
+EXT_float_blend is drawn unblended, WebGL would refuse it); StretchRect between a float and a fixed-point target is a
+blit both ways, on the threaded and the render-worker paths alike (before: an error on one, nothing copied on the
+other); ColorFill converts the color into the float format; D3DX reads, writes, converts and filters float surfaces
+(in floats between float formats); a float level's missing channels are set to 1 by a clear of those channels only, so
+texels uploaded before it becomes a target stay. The game's survey asks no QUERY bit (every format number as a
+texture, usage 0 and render target): it still takes R32F and creates its 1024x1024 map, the shadows drawn and stable
+(frames grabbed at the start position: 0.00-0.04 % of the pixels changed between frames, 0.000-0.002 % A-B-A; the
+flicker probe, every sample logged, 0.000-0.005 % on static frames).
+
+Cost of the shadow maps (SwiftShader, the owner's profile, `learn-aotr-skirmish`'s start then 20 s of static camera, a
+6 s scroll, 18 s static; one browser at a time through the slot script, main against this branch):
+
+| phase (AotR 10, 800x600) | main (no shadow map) | with the R32F shadow map |
+|---|---|---|
+| static camera, rendered (2 pairs) | 7.5-7.6 fps, worker 24.8-25.0 ms/frame, 432-433 draws/frame | 5.6-6.1 fps, 33.3-33.9 ms/frame, 646-649 draws/frame |
+| scroll, rendered | 4.8-5.1 fps, 40.0-43.2 ms/frame, 817-865 draws/frame | 3.9-4.0 fps, 48.3-50.0 ms/frame, 1 017-1 031 draws/frame |
+| static after the scroll, rendered | 4.8-4.9 fps, 32.6-33.7 ms/frame, 879-889 draws/frame | 4.2 fps, 37.7-41.6 ms/frame, 1 061-1 062 draws/frame |
+| static camera, `--gl-discard` (1 pair) | 25.5 fps, 22.3 ms/frame | 20.5 fps, 28.2 ms/frame |
+| static after the scroll, `--gl-discard` | 14.2 fps, 33.6 ms/frame | 10.5 fps, 44.3 ms/frame |
+| RotWK 2.02 at High (its skirmish start, 1 pair): static, rendered | 7.9 fps, 22.5 ms/frame, 199 draws/frame | 6.3 fps, 29.4 ms/frame, 334 draws/frame |
+| RotWK 2.02: static after the scroll, rendered | 6.5 fps, 18.8 ms/frame, 304 draws/frame | 5.0 fps, 24.1 ms/frame, 470 draws/frame |
+
+The game's High setting costs what it costs on Windows: the casters drawn a second time into the 1024x1024 map
+(+180 to +215 draws per frame, +20 to +50 %; RotWK +135 to +165, +45 to +70 %), so the emulator's worker spends 5-10 ms
+more per frame on them (`--gl-discard`: the CPU side alone, one pair, the run with the map under a higher machine load)
+and SwiftShader's GPU process 12-28 % more CPU per frame; on a real GPU the depth pass into a 1024x1024 R32F target is
+small, the CPU side stays. It is the owner's choice of High (fidelity): Medium or lower has no shadow map.
+
+Position code of the multi-pass techniques (the hypothesis for the owner's flicker: a second pass drawn with another
+vertex shader, LESSEQUAL and no depth write — terrain.fxo `Default_M` P1 — z-fighting when the two programs do not
+compute the same position bit for bit): `node tools/dev/fx-position-check.mjs <Shaders.big>` lists, for every
+technique with several passes, the instructions oPos depends on in each pass's vertex shaders and the GLSL the
+translator emits for them. RotWK's and BFME II's Shaders.big (Age of the Ring uses RotWK's): terrain `Default_M` (the
+five `VSDefaultM0_Array` shaders of P0 and P1's own), riverwater `Default_L` and normalmapped `Default` (ten shader
+variants, rigid and skinned, the same in both passes) — in each, every pass computes the position with the same
+instructions (terrain and riverwater: `mad t0, v0.xyzx, K.xxxy, K.yyyx` then four `dp4` with c0-c3, only the register
+of the local constant (1, 0) differing — folded exactly: x * 1 + 0 = x, x * 0 + 1 = 1), the translator emits the same
+GLSL statements in the same order for them, and every generated vertex shader (Direct3D 9, Direct3D 8, fixed function)
+declares `invariant gl_Position`. Nothing to make canonical in the translator; whether ANGLE's D3D11 back end and the driver keep that invariance across two programs
+whose other code differs could only be checked on the owner's GPU (the flicker probe's `alt` samples and their blocks
+would show it).
