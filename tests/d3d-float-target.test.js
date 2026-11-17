@@ -1,7 +1,8 @@
 // Floating-point render targets (Direct3D 9 R32F, R16F...): a game that keeps depth in an R32F texture for its shadow
 // map (SAGE: Age of the Ring, Rise of the Witch-king) must get one — offered by CheckDeviceFormat and stored as floats.
 // Before, R32F was not offered: the shadow maps were never created, and an 8-bit storage would have shown as shadow acne
-// crawling with the camera. A channel the format lacks reads 1, as in Direct3D: it is cleared to 1 and never written.
+// crawling with the camera. Stored with its own channels (R32F: a quarter of RGBA32F's bytes); a channel the format lacks
+// reads 1, as in Direct3D: supplied by the programs that sample it, set in the destination of a blit from it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { d3dEnv } from './d3d-random.js';
@@ -37,7 +38,7 @@ function setup(recorded) {
 }
 
 for (const recorded of [false, true]) {
-  test(`an R32F render-target texture is offered, stored as floats and drawn with its red channel only${recorded ? ' (render worker)' : ''}`, () => {
+  test(`an R32F render-target texture is offered, stored as one float channel, drawn into and sampled as (r, 1, 1, 1)${recorded ? ' (render worker)' : ''}`, () => {
     const { gl, calls, mem, ctx, com, d3d, d3dPtr, call, out, verts, flush } = setup(recorded);
     assert.equal(d3d.CheckDeviceFormat(ctx([d3dPtr, 0, 1, X8R8G8B8, RT, TEXTURE, R32F])), 0, 'R32F render-target textures offered');
     // (what the QUERY bits ask is answered as Orthros renders it: 32-bit floats neither filtered nor blended on every
@@ -48,23 +49,29 @@ for (const recorded of [false, true]) {
     assert.equal(q(0x100000, R32F), NOTAVAILABLE, 'no vertex texture');
     assert.equal(q(0x20000, R16F), 0, 'R16F filtered');
     assert.equal(q(RT | 0x80000, A16B16G16R16F), 0, 'A16B16G16R16F blended');
+    assert.equal(call('GetRenderTarget', 0, out), 0);
+    const back = mem.read32(out);
     assert.equal(call('CreateTexture', 64, 64, 1, RT, R32F, 0, out, 0), 0);
     const tex = mem.read32(out);
     assert.equal(com.implAt(tex).GetSurfaceLevel(ctx([tex, 0, out])), 0);
     assert.equal(call('SetRenderTarget', 0, mem.read32(out)), 0);
+    const sources = []; gl.shaderSource = (sh, src) => { sources.push(src); };
     calls.length = 0;
     call('Clear', 0, 0, 1, 0xff808080, 0x3f800000, 0);
     call('SetFVF', 0x102);
     call('DrawPrimitiveUP', 4, 1, verts, 20);
+    // (then sampled: a fixed-function stage modulating it)
+    call('SetRenderTarget', 0, back); call('SetTexture', 0, tex);
+    call('DrawPrimitiveUP', 4, 1, verts, 20);
     flush();
-    // (the render worker replays the device's creation too: what follows the target's own initialization)
-    const alloc = calls.findIndex((c) => c[0] === 'texImage2D' && c[4] === 64), init = calls.findIndex((c) => c[0] === 'clearBufferfv');
+    // (the render worker replays the device's creation too: what follows the target's own allocation)
+    const alloc = calls.findIndex((c) => c[0] === 'texImage2D' && c[4] === 64), drawn = calls.findIndex((c) => c[0] === 'drawArrays');
     assert.ok(alloc >= 0, 'the target level allocated');
-    assert.equal(calls[alloc][3], gl.RGBA32F, '32-bit float storage');
-    assert.ok(init > alloc, 'its missing channels initialized (to 1)');
-    const after = calls.slice(init + 1), masks = after.filter((c) => c[0] === 'colorMask').map((c) => c.slice(1, 5).join());
+    assert.deepEqual([calls[alloc][3], calls[alloc][7]], [gl.R32F, gl.RED], 'one 32-bit float channel stored');
+    const into = calls.slice(alloc + 1, drawn + 1), masks = into.filter((c) => c[0] === 'colorMask').map((c) => c.slice(1, 5).join());
     assert.deepEqual(new Set(masks), new Set(['true,false,false,false']), 'clears and draws write red only');
-    assert.ok(after.some((c) => c[0] === 'clear') && after.some((c) => c[0] === 'drawArrays'), 'cleared and drawn');
+    assert.ok(into.some((c) => c[0] === 'clear') && !into.some((c) => c[0] === 'clearBufferfv'), 'cleared, no channel to set to 1');
+    assert.ok(sources.some((src) => src.includes('vec4((texture(u_tex0, v_tex0.xy)).r, 1.0, 1.0, 1.0)')), 'sampled as (r, 1, 1, 1)');
   });
 }
 
@@ -83,15 +90,14 @@ for (const recorded of [false, true]) {
     assert.equal(call('StretchRect', fixed, 0, rt, 0, 2), 0, 'fixed-point to float');
     assert.equal(call('StretchRect', rt, 0, fixed, 0, 2), 0, 'float to fixed-point');
     flush();
-    const upload = calls.findIndex((c) => c[0] === 'texImage2D' && c[4] === 16 && c[3] === gl.RGBA32F && String(c[9]).startsWith('data'));
-    assert.ok(upload >= 0, 'the texels uploaded');
-    // (every clear of a float target's missing channels masks its own channel: red is never cleared)
+    const upload = calls.findIndex((c) => c[0] === 'texImage2D' && c[4] === 16 && c[3] === gl.R32F && String(c[9]).startsWith('data1024:'));
+    assert.ok(upload >= 0, 'the texels uploaded, one float each');
+    // (the only channels set to 1: green and blue of the fixed-point copy of the one-channel float — red never)
     let mask = null; const ones = [];
     calls.slice(upload).forEach((c, i) => { if (c[0] === 'colorMask') mask = c.slice(1, 5).join(); if (c[0] === 'clearBufferfv') ones.push([upload + i, mask]); });
-    assert.ok(ones.every(([, m]) => m === 'false,true,true,true'), `missing channels only (${ones.map(([, m]) => m)})`);
     const blits = calls.map((c, i) => [c, i]).filter(([c]) => c[0] === 'blitFramebuffer' && c[3] === 16);
     assert.equal(blits.length, 2, 'both copies made on the GPU');
-    assert.ok(ones.some(([i]) => i > blits[0][1] && i < blits[1][1]), 'the float target\'s missing channels set to 1 again after the blit into it');
+    assert.ok(ones.length > 0 && ones.every(([i, m]) => m === 'false,true,true,false' && i > blits[1][1]), `green and blue set to 1 after the blit out of the float target (${ones.map(([, m]) => m)})`);
   });
 }
 

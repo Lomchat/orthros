@@ -4,7 +4,7 @@
 // maps render states, texture stage / sampler states, blending, depth/stencil, fog, scissor and
 // viewport onto GL. DX8 and DX9 devices share the state model; DX9 adds vertex declarations,
 // sampler states, shader objects (SM 1.x–2.x), stream offsets, base vertices, MRT/scissor.
-import { FMT, FLOAT_FORMATS, surfacePitch, surfaceBytes, readFloatTexels, writeFloatTexels, floatsToRgba8 } from '../win32/d3d8.js';
+import { FMT, FLOAT_FORMATS, surfacePitch, surfaceBytes, readFloatTexels, writeFloatTexels, floatsToRgba8, texKindOf, texChannels } from '../win32/d3d8.js';
 import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, ffProgramFromKey, flatVaryings, translateVertexShader, translatePixelShader, leanShaders, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
 import { translateVertexShader9, translatePixelShader9, semName, disasmShader9, OPN } from './d3d9-shaders.js';
 import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION } from './program-id.js';
@@ -254,22 +254,60 @@ export class WebGLDevice {
     gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
   }
   /**
-   * Floating-point formats (Direct3D 9's R16F ... A32B32G32R32F: FLOAT_FORMATS) are stored as RGBA16F / RGBA32F: a
-   * channel the format lacks reads 1, as in Direct3D — set to 1 when the storage is made (floatOnes) and written by
+   * Floating-point formats (Direct3D 9's R16F ... A32B32G32R32F: FLOAT_FORMATS) are stored with their own channels:
+   * R16F / RG16F / RGBA16F, R32F / RG32F / RGBA32F (`n`, the channels stored, = `ch`). A channel the format lacks reads
+   * 1 in Direct3D (an R32F texel is (r, 1, 1, 1)): the programs that sample such a texture supply it (texelOf, the
+   * channel count in their key: texKindOf), a blit from one sets it in the destination (onesAfterBlit). An R32F shadow
+   * map (the SAGE games' at High: 1024x1024) thus weighs 4 MB, not 16, and every write and tap of it moves a quarter of
+   * the bytes — 128-bit texels are also fetched at a fraction of the 32-bit rate on GPUs (docs/render-worker.md
+   * section 12). ORTHROS_FLOAT_RGBA=1 (measurement, switchable within a session: switchFloatStorage): stored
+   * as RGBA16F / RGBA32F as before, the missing channels set to 1 when the storage is made (floatOnes) and written by
    * neither draws nor clears nor StretchRect (the target's write mask `cm`). Rendering into them needs
    * EXT_color_buffer_float (without it such a target is stored as RGBA8, 8 bits per channel); linear filtering of the
    * 32-bit ones OES_texture_float_linear (without it they are point-sampled), blending into them EXT_float_blend (without
    * it a draw into one does not blend — WebGL would refuse the draw — and CheckDeviceFormat never offers it: d3d9.js
    * floatQueryOk).
    */
-  floatExts() { const gl = this.gl; this.cbf = gl.getExtension('EXT_color_buffer_float'); this.f32lin = gl.getExtension('OES_texture_float_linear'); this.f32blend = gl.getExtension('EXT_float_blend'); this.floatStores = new Map(); this.onesFbo = null; }
-  /** the GL storage of a float format ({ internal, type, tag, half, ch }); null for the other formats (RGBA8) and for a render target GL cannot draw into */
+  floatExts() { const gl = this.gl; this.cbf = gl.getExtension('EXT_color_buffer_float'); this.f32lin = gl.getExtension('OES_texture_float_linear'); this.f32blend = gl.getExtension('EXT_float_blend'); this.floatStores = new Map(); this.onesFbo = null; this.floatRgba = !!globalThis.ORTHROS_FLOAT_RGBA; }
+  /** the GL storage of a float format ({ internal, format, type, tag, half, ch, n }); null for the other formats (RGBA8) and for a render target GL cannot draw into */
   floatStore(fmt, rt) {
     const fs = FLOAT_FORMATS.get(fmt); if (!fs || (rt && !this.cbf)) return null;
     let st = this.floatStores.get(fmt);
-    // (texels sent as 32-bit floats whatever the storage: RGBA16F takes them too, converted by GL)
-    if (!st) { const gl = this.gl, half = fs.bits === 16; st = { internal: half ? gl.RGBA16F : gl.RGBA32F, type: gl.FLOAT, tag: half ? 'rgba16f' : 'rgba32f', half, ch: fs.ch }; this.floatStores.set(fmt, st); }
+    // (texels sent as 32-bit floats whatever the storage: the 16-bit ones take them too, converted by GL)
+    if (!st) {
+      const gl = this.gl, half = fs.bits === 16, n = this.floatRgba ? 4 : fs.ch;
+      const internal = n === 1 ? (half ? gl.R16F : gl.R32F) : n === 2 ? (half ? gl.RG16F : gl.RG32F) : half ? gl.RGBA16F : gl.RGBA32F;
+      st = { internal, format: n === 1 ? gl.RED : n === 2 ? gl.RG : gl.RGBA, type: gl.FLOAT, tag: `${['r', 'rg', '', 'rgba'][n - 1]}${half ? 16 : 32}f`, half, ch: fs.ch, n };
+      this.floatStores.set(fmt, st);
+    }
     return st;
+  }
+  /**
+   * ORTHROS_FLOAT_RGBA changed (at a present): the float formats' GL textures and targets are dropped, made again in the
+   * other storage at their next use (levels with contents in guest memory uploaded again; what was drawn into a target
+   * is lost, as at a lost device: games redraw their shadow maps every frame).
+   */
+  switchFloatStorage(rgba) {
+    const gl = this.gl;
+    this.floatRgba = rgba; this.floatStores.clear();
+    let n = 0;
+    for (const [id, g] of this.textures) if (g.res && FLOAT_FORMATS.has(g.res.fmt)) { gl.deleteTexture(g.tex); this.textures.delete(id); g.res.glOwner = null; g.res.levelsClean = false; n++; }
+    for (const [id, f] of this.fbos) if (f.fl) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); this.fbos.delete(id); }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); this.invalidateGlState(); this.smpCache = null;
+    this.log(`d3d-webgl: float formats stored ${rgba ? 'as RGBA (ORTHROS_FLOAT_RGBA)' : 'with their own channels'} from frame ${this.frame} (${n} textures made again)`);
+  }
+  /**
+   * After a blit from a float target of `n` < 3 channels (stored with just those): GL gave the destination's green
+   * (n = 1) and blue 0 there, Direct3D reads them as 1 — set to 1 in the destination rectangle (GL window
+   * coordinates, the destination framebuffer bound), whatever its format (a fixed-point one takes 1 as 255).
+   */
+  onesAfterBlit(n, x0, y0, x1, y1) {
+    const gl = this.gl, gs = this.gs;
+    gl.enable(gl.SCISSOR_TEST); gl.scissor(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    gl.colorMask(false, n < 2, true, false);
+    gl.clearBufferfv(gl.COLOR, 0, FLOAT_INIT);
+    gl.disable(gl.SCISSOR_TEST); gs.en[gl.SCISSOR_TEST] = false; gs.scx = undefined;
+    const cw = gs.cw; if (cw !== undefined) gl.colorMask((cw & 1) !== 0, (cw & 2) !== 0, (cw & 4) !== 0, (cw & 8) !== 0);
   }
   /**
    * The channels a float format lacks (`cm`: the ones it has, bits R 1, G 2, B 4, A 8) set to 1 in the float color
@@ -292,6 +330,7 @@ export class WebGLDevice {
    */
   floatLevelOnes(target, tex, level, w, h, st) {
     const gl = this.gl;
+    if (st.n === st.ch) return; // (stored with its own channels: none missing)
     if (!this.cbf) { const px = new Float32Array(w * h * 4); for (let i = 1; i < px.length; i += 4) { px[i] = 1; px[i + 1] = 1; px[i + 2] = 1; } gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); gl.texSubImage2D(target, level, 0, 0, w, h, gl.RGBA, gl.FLOAT, px); return; }
     const fb = this.onesFbo ??= gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, target, tex, level);
@@ -334,11 +373,14 @@ export class WebGLDevice {
   }
   destroyResource(r) {
     const gl = this.gl;
-    const t = this.textures.get(r.id); if (t) { gl.deleteTexture(t.tex); this.textures.delete(r.id); }
+    // (GL unbinds a deleted texture from every unit and a deleted framebuffer from its binding: the GL state cache too —
+    // a clear no longer drops the whole cache, so such entries would otherwise stay until the next drop)
+    const gs = this.gs;
+    const t = this.textures.get(r.id); if (t) { gl.deleteTexture(t.tex); this.textures.delete(r.id); for (let i = 0; i < gs.tex.length; i++) if (gs.tex[i] === t.tex) gs.tex[i] = null; }
     if (r.glOwner === this) r.glOwner = null; // (glTexture's record on the resource)
     const b = this.buffers.get(r.id); if (b) { this.dropVaos(r.id); gl.deleteBuffer(b.buf); this.buffers.delete(r.id); }
     const levels = r.levels ?? (r.faces ? r.faces.flat() : r.type === 1 ? [r] : []);
-    for (const l of levels) { const f = this.fbos.get(l.id); if (f) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); this.fbos.delete(l.id); } }
+    for (const l of levels) { const f = this.fbos.get(l.id); if (f) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); this.fbos.delete(l.id); if (gs.fbo === f.fbo) gs.fbo = null; } }
   }
   /** GL texture for a texture resource, uploading dirty levels. */
   glTexture(t) {
@@ -485,16 +527,17 @@ export class WebGLDevice {
     const gl = this.gl, alloc = g.alloc;
     if (!s.mem) {
       if (alloc[slot] === st.tag) return;
-      gl.texImage2D(target, level, st.internal, s.width, s.height, 0, gl.RGBA, st.type, null); alloc[slot] = st.tag;
-      if (st.ch < 4) this.floatLevelOnes(target, g.tex, level, s.width, s.height, st);
+      gl.texImage2D(target, level, st.internal, s.width, s.height, 0, st.format, st.type, null); alloc[slot] = st.tag;
+      if (st.ch < st.n) this.floatLevelOnes(target, g.tex, level, s.width, s.height, st);
       return;
     }
     const d = alloc[slot] === st.tag ? s.dirtyRect : null; // (a level already specified in that storage: the rectangle locked since)
     const x0 = d ? d[0] : 0, y0 = d ? d[1] : 0, w = (d ? d[2] : s.width) - x0, h = (d ? d[3] : s.height) - y0;
-    const px = readFloatTexels(this.mem.u8, s.mem + y0 * s.pitch + x0 * surfacePitch(s.fmt, 1), w, h, s.pitch, s.fmt);
+    let px = readFloatTexels(this.mem.u8, s.mem + y0 * s.pitch + x0 * surfacePitch(s.fmt, 1), w, h, s.pitch, s.fmt);
+    if (st.n < 4) { const n = st.n, q = new Float32Array(w * h * n); for (let i = 0, j = 0; j < q.length; i += 4, j += n) { q[j] = px[i]; if (n === 2) q[j + 1] = px[i + 1]; } px = q; } // (the stored channels only)
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    if (d) gl.texSubImage2D(target, level, x0, y0, w, h, gl.RGBA, st.type, px);
-    else gl.texImage2D(target, level, st.internal, s.width, s.height, 0, gl.RGBA, st.type, px);
+    if (d) gl.texSubImage2D(target, level, x0, y0, w, h, st.format, st.type, px);
+    else gl.texImage2D(target, level, st.internal, s.width, s.height, 0, st.format, st.type, px);
     alloc[slot] = st.tag;
   }
   /** Diagnostic: flag textures that look like an engine's "missing texture" placeholder (mostly magenta). */
@@ -559,7 +602,7 @@ export class WebGLDevice {
       if (this.glValidate || globalThis.ORTHROS_FBO_CHECK) { const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`); }
       if (this.fbos.size < 4 || (fl && !this.floatTargetLogged)) { this.log(`d3d-webgl: render target ${rt.width}x${rt.height}${f.scaled ? ` (stored ${f.w}x${f.h})` : ''} fmt ${rt.fmt}${fl ? ` (${fl.tag})` : ''} ${back ? 'back buffer' : rt.owner ? 'texture level ' + rt.level : 'surface'}`); if (fl) this.floatTargetLogged = true; }
       this.fbos.set(rt.id, f);
-      if (f.color && fl && fl.ch < 4) this.floatOnes(f.cm & 15); // (a texture level's were set when it was specified: uploadFloatLevel)
+      if (f.color && fl && fl.ch < fl.n) this.floatOnes(f.cm & 15); // (stored as RGBA: ORTHROS_FLOAT_RGBA. A texture level's were set when it was specified: uploadFloatLevel)
     } else if (this.gs.fbo !== f.fbo) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo; } // cached: every draw asks for its target
     return f; // (w, h, flip: read by every draw — the record itself, no object per call)
   }
@@ -742,7 +785,8 @@ export class WebGLDevice {
     // rectangle in its surface's GL storage (scaled targets: render-scale.js), filtered when the two scales differ
     const filt = (filter === 2 || fs.kx !== fd.kx || fs.ky !== fd.ky) && (!fs.fl || fs.fl.half || this.f32lin) ? gl.LINEAR : gl.NEAREST;
     this.blit(fs.fbo, fd.fbo, glEdgeX(fs, sl), glEdgeY(fs, st), glEdgeX(fs, srr), glEdgeY(fs, sb), glEdgeX(fd, dl), glEdgeY(fd, dt), glEdgeX(fd, drr), glEdgeY(fd, db), filt);
-    if (fd.fl && fd.fl.ch < 4) this.floatOnes(fd.cm & 15); // (dst bound by blit)
+    if (fs.fl && fs.fl.n < 3) this.onesAfterBlit(fs.fl.n, glEdgeX(fd, dl), glEdgeY(fd, dt), glEdgeX(fd, drr), glEdgeY(fd, db)); // (dst bound by blit)
+    if (fd.fl && fd.fl.ch < fd.fl.n) this.floatOnes(fd.cm & 15);
     this.stats.blits = (this.stats.blits ?? 0) + 1;
     return 0;
   }
@@ -781,6 +825,7 @@ export class WebGLDevice {
       if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
     }
     gl.flush(); this.sinceFlush = 0; this.frame++;
+    if (!!globalThis.ORTHROS_FLOAT_RGBA !== this.floatRgba) this.switchFloatStorage(!!globalThis.ORTHROS_FLOAT_RGBA); // (measurement: floatStore)
     // (the GL call counter keeps away from the probes that wrap or replace GL methods themselves)
     if (this.probe) this.probe.busy = !!(globalThis.ORTHROS_GL_TIME || this.glTime || this.glNull || globalThis.ORTHROS_GL_NULL || this.capturing || this.countLeft || this.captureAt > this.frame || this.glCallCounts);
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
@@ -917,18 +962,22 @@ export class WebGLDevice {
     const gl = this.gl, dev = this.dev;
     if (this.capturing) this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} stencil ${stencil} target ${dev.backBuffers.includes(dev.renderTarget) ? 'screen' : 'FBO'}`);
     const f = this.bindTarget(), r = this.tmpRect;
-    const v = dev.viewport;
-    this.invalidateGlState(); // masks/scissor are set directly below
+    const v = dev.viewport, gs = this.gs;
+    // (the masks and the scissor are set directly below and the GL state cache told what they are now — not dropped: a
+    // dropped cache made the next draw bind its program, textures, samplers, vertex array and every capability again,
+    // 8 clears per frame in Age of the Ring's play; the raster states are compared again at the next draw)
     gl.enable(gl.SCISSOR_TEST);
     glRect(v.x, v.y, v.x + v.w, v.y + v.h, f.dh, f.flip, f.kx, f.ky, r); gl.scissor(r[0], r[1], r[2], r[3]);
     let mask = 0;
-    if (flags & 1) { const c = colorToVec(color, this.tmp.v4), cm = f.cm; gl.colorMask((cm & 1) !== 0, (cm & 2) !== 0, (cm & 4) !== 0, (cm & 8) !== 0); gl.clearColor(c[0], c[1], c[2], c[3]); mask |= gl.COLOR_BUFFER_BIT; }
-    if (flags & 2) { gl.depthMask(true); gl.clearDepth(z); mask |= gl.DEPTH_BUFFER_BIT; }
-    if (flags & 4) { gl.stencilMask(0xff); gl.clearStencil(stencil); mask |= gl.STENCIL_BUFFER_BIT; }
+    if (flags & 1) { const c = colorToVec(color, this.tmp.v4), cm = f.cm; gl.colorMask((cm & 1) !== 0, (cm & 2) !== 0, (cm & 4) !== 0, (cm & 8) !== 0); gl.clearColor(c[0], c[1], c[2], c[3]); mask |= gl.COLOR_BUFFER_BIT; gs.cw = cm & 15; }
+    if (flags & 2) { gl.depthMask(true); gl.clearDepth(z); mask |= gl.DEPTH_BUFFER_BIT; gs.depthMask = true; }
+    if (flags & 4) { gl.stencilMask(0xff); gl.clearStencil(stencil); mask |= gl.STENCIL_BUFFER_BIT; gs.swmask = 0xff; }
     // (rectangles in guest memory, or their values copied by a render worker's recorder: 4 per rectangle)
-    if (n && rects) { const mem = this.mem, copied = typeof rects !== 'number'; for (let i = 0; i < n; i++) { const r = rects + 16 * i; const l = copied ? rects[4 * i] : mem.readS32(r), t = copied ? rects[4 * i + 1] : mem.readS32(r + 4), rr = copied ? rects[4 * i + 2] : mem.readS32(r + 8), b = copied ? rects[4 * i + 3] : mem.readS32(r + 12); const q = glRect(l, t, rr, b, f.dh, f.flip, f.kx, f.ky, this.tmpRect); gl.scissor(q[0], q[1], q[2], q[3]); gl.clear(mask); } }
+    if (n && rects) { const mem = this.mem, copied = typeof rects !== 'number'; for (let i = 0; i < n; i++) { const p = rects + 16 * i; const l = copied ? rects[4 * i] : mem.readS32(p), t = copied ? rects[4 * i + 1] : mem.readS32(p + 4), rr = copied ? rects[4 * i + 2] : mem.readS32(p + 8), b = copied ? rects[4 * i + 3] : mem.readS32(p + 12); glRect(l, t, rr, b, f.dh, f.flip, f.kx, f.ky, r); gl.scissor(r[0], r[1], r[2], r[3]); gl.clear(mask); } }
     else gl.clear(mask);
     gl.disable(gl.SCISSOR_TEST);
+    gs.en[gl.SCISSOR_TEST] = false; gs.scx = r[0]; gs.scy = r[1]; gs.scw = r[2]; gs.sch = r[3];
+    if (this.rasterCache) this.rasterCache.gs = null; // (depth / color / stencil masks: applyRaster compares them with the cache again)
   }
   setTransform() {} setViewport() {} setMaterial() {} setLight() {} lightEnable() {} setClipPlane() {} setRenderState() {} setTexture() {} setTextureStageState() {} setSamplerState() {}
   createVertexShader() {} setVertexShader() {} setVertexShaderConstant() {} setStreamSource() {} setIndices() {} createPixelShader() {} setPixelShader() {} setPixelShaderConstant() {}
@@ -1011,7 +1060,8 @@ export class WebGLDevice {
   stageInfo(i) {
     const dev = this.dev, texPtr = dev.textures[i];
     const tex = texPtr ? this.comImpl(texPtr) : null;
-    return { tex, cube: !!tex?.faces, volume: !!tex?.depth, bound: !!tex, tci: this.tss(i, TSS.TEXCOORDINDEX, i), ttff: this.tss(i, TSS.TEXTURETRANSFORMFLAGS, 0) };
+    // (ch: the channels of a 1- or 2-channel float format, else 4 — its program samples it through a swizzle, see floatStore)
+    return { tex, cube: !!tex?.faces, volume: !!tex?.depth, bound: !!tex, ch: tex ? texChannels(tex.fmt) : 4, tci: this.tss(i, TSS.TEXCOORDINDEX, i), ttff: this.tss(i, TSS.TEXTURETRANSFORMFLAGS, 0) };
   }
 
   // ---------------------------------------------------------------- programs
@@ -1059,14 +1109,14 @@ export class WebGLDevice {
       // program (programUncached: the pixel shader key), not the fixed-function operations nor the lights
       for (let i = 0; i < 16; i++) {
         const texPtr = dev.textures[i], tex = texPtr ? this.comImpl(texPtr) : null;
-        sig[n++] = (tex ? (tex.faces ? 2 : tex.depth ? 3 : 1) : 0) | (i < MAX_STAGES && (this.tss(i, TSS.TEXTURETRANSFORMFLAGS, 0) & 0x100) ? 4 : 0);
+        sig[n++] = texKindOf(tex) | (i < MAX_STAGES && (this.tss(i, TSS.TEXTURETRANSFORMFLAGS, 0) & 0x100) ? 0x100 : 0);
       }
       return n;
     }
     const nStages = ps && dev.api9 ? 16 : MAX_STAGES;
     for (let i = 0; i < nStages; i++) {
       const texPtr = dev.textures[i], tex = texPtr ? this.comImpl(texPtr) : null;
-      sig[n++] = tex ? (tex.faces ? 2 : tex.depth ? 3 : 1) : 0;
+      sig[n++] = texKindOf(tex);
       const colorOp = i < MAX_STAGES ? this.tss(i, TSS.COLOROP, i === 0 ? TOP.MODULATE : TOP.DISABLE) : TOP.DISABLE;
       sig[n++] = colorOp;
       sig[n++] = this.tss(i, TSS.ALPHAOP, i === 0 ? TOP.SELECTARG1 : TOP.DISABLE);
@@ -1116,7 +1166,7 @@ export class WebGLDevice {
     for (let i = 0; i < nStages; i++) {
       const info = this.stageInfo(i);
       const colorOp = i < MAX_STAGES ? this.tss(i, TSS.COLOROP, i === 0 ? TOP.MODULATE : TOP.DISABLE) : TOP.DISABLE;
-      stages.push({ colorOp, colorArg1: this.tss(i, TSS.COLORARG1, 2), colorArg2: this.tss(i, TSS.COLORARG2, 1), colorArg0: this.tss(i, TSS.COLORARG0, 1), alphaOp: this.tss(i, TSS.ALPHAOP, i === 0 ? TOP.SELECTARG1 : TOP.DISABLE), alphaArg1: this.tss(i, TSS.ALPHAARG1, 2), alphaArg2: this.tss(i, TSS.ALPHAARG2, 1), alphaArg0: this.tss(i, TSS.ALPHAARG0, 1), resultTemp: this.tss(i, TSS.RESULTARG, 1) === 5, cube: info.cube, volume: info.volume, projected: (info.ttff & 0x100) !== 0, bound: info.bound, tex: info.tex, tci: info.tci, ttff: info.ttff });
+      stages.push({ colorOp, colorArg1: this.tss(i, TSS.COLORARG1, 2), colorArg2: this.tss(i, TSS.COLORARG2, 1), colorArg0: this.tss(i, TSS.COLORARG0, 1), alphaOp: this.tss(i, TSS.ALPHAOP, i === 0 ? TOP.SELECTARG1 : TOP.DISABLE), alphaArg1: this.tss(i, TSS.ALPHAARG1, 2), alphaArg2: this.tss(i, TSS.ALPHAARG2, 1), alphaArg0: this.tss(i, TSS.ALPHAARG0, 1), resultTemp: this.tss(i, TSS.RESULTARG, 1) === 5, cube: info.cube, volume: info.volume, projected: (info.ttff & 0x100) !== 0, bound: info.bound, ch: info.ch, tex: info.tex, tci: info.tci, ttff: info.ttff });
       if (!ps && colorOp === TOP.DISABLE) break;
     }
     const lightTypes = [];
@@ -1125,7 +1175,8 @@ export class WebGLDevice {
     const layoutKey = L.layout.dx9 ? 'd' + [...L.layout.streams.entries()].map(([n, s]) => n + ':' + s.attrs.map((a) => a.name + '@' + a.offset + a.type + a.comps).join(',')).join('|') : (L.shader ? 'h' : 'f') + (dev.api9 ? dev.fvf : dev.vertexShader);
     const vsKey = L.code ? `vs${L.dx9 ? 9 : 8}:${L.shader.handle}:${layoutKey}` : `ff:${layoutKey}:${lighting ? 1 : 0}:${lightTypes.join(',')}:${this.rs(RS.COLORVERTEX, 1)}:${this.rs(RS.DIFFUSEMATERIALSOURCE, 1)}:${this.rs(RS.SPECULARMATERIALSOURCE, 2)}:${this.rs(RS.AMBIENTMATERIALSOURCE, 0)}:${this.rs(RS.EMISSIVEMATERIALSOURCE, 0)}:${this.rs(RS.SPECULARENABLE, 0)}:${this.rs(RS.LOCALVIEWER, 1)}:${this.rs(RS.NORMALIZENORMALS, 0)}:${fog === -1 ? vertexMode : 0}:${this.rs(RS.RANGEFOGENABLE, 0)}:${stages.map((s) => `${s.tci}/${s.ttff}`).join(',')}:${this.rs(RS.VERTEXBLEND, 0)}`;
     const alphaTest = this.rs(RS.ALPHATESTENABLE, 0) ? this.rs(RS.ALPHAFUNC, 8) : 0; // applies after pixel shaders too
-    const fsKey = ps ? `ps${dev.api9 ? 9 : 8}:${ps.handle}:${stages.map((s) => (s.cube ? 'c' : s.volume ? 'v' : s.projected ? 'p' : 't')).join('')}:${fog}:${alphaTest}` : `ff:${stages.map((s) => `${s.colorOp},${s.colorArg1},${s.colorArg2},${s.colorArg0},${s.alphaOp},${s.alphaArg1},${s.alphaArg2},${s.alphaArg0},${s.resultTemp ? 1 : 0},${s.cube ? 1 : 0},${s.projected ? 1 : 0},${s.bound ? 1 : 0}`).join(';')}:${alphaTest}:${this.rs(RS.SPECULARENABLE, 0)}:${fog}`;
+    // (a stage's texture of 1 or 2 channels: their number after its kind letter, a 13th field of a fixed-function stage)
+    const fsKey = ps ? `ps${dev.api9 ? 9 : 8}:${ps.handle}:${stages.map((s) => (s.cube ? 'c' : s.volume ? 'v' : s.projected ? 'p' : 't') + (s.ch < 4 ? s.ch : '')).join('')}:${fog}:${alphaTest}` : `ff:${stages.map((s) => `${s.colorOp},${s.colorArg1},${s.colorArg2},${s.colorArg0},${s.alphaOp},${s.alphaArg1},${s.alphaArg2},${s.alphaArg0},${s.resultTemp ? 1 : 0},${s.cube ? 1 : 0},${s.projected ? 1 : 0},${s.bound ? 1 : 0}${s.ch < 4 ? ',' + s.ch : ''}`).join(';')}:${alphaTest}:${this.rs(RS.SPECULARENABLE, 0)}:${fog}`;
     // D3DSHADE_FLAT: the colors of a triangle's first vertex (flat varyings; the first-vertex convention is set once)
     const flat = this.rs(RS.SHADEMODE, 2) === 1;
     const key = vsKey + '|' + fsKey + (flat ? '|flat' : '');
@@ -1147,7 +1198,7 @@ export class WebGLDevice {
       vsSrc = ffVertexShader({ layout: L.layout, lighting, lights: lightTypes, colorVertex: this.rs(RS.COLORVERTEX, 1) !== 0, diffuseSrc: this.rs(RS.DIFFUSEMATERIALSOURCE, 1), specularSrc: this.rs(RS.SPECULARMATERIALSOURCE, 2), ambientSrc: this.rs(RS.AMBIENTMATERIALSOURCE, 0), emissiveSrc: this.rs(RS.EMISSIVEMATERIALSOURCE, 0), specularEnable: this.rs(RS.SPECULARENABLE, 0) !== 0, localViewer: this.rs(RS.LOCALVIEWER, 1) !== 0, normalize: this.rs(RS.NORMALIZENORMALS, 0) !== 0, fogVertex: fog === -1 && !rhw ? vertexMode : 0, rangeFog: this.rs(RS.RANGEFOGENABLE, 0) !== 0, stages, rhw, blend: this.rs(RS.VERTEXBLEND, 0) ? (L.layout.blend || 1) + 1 : 0, pointSize: true });
       attrNames = L.layout.attrs.map((a) => 'a_' + a.name);
     }
-    const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), fog, alphaTest };
+    const env = { cube: stages.map((s) => s.cube), volume: stages.map((s) => s.volume), projected: stages.map((s) => s.projected), ch: stages.map((s) => s.ch), fog, alphaTest };
     let fsSrc = ff ? ff.fs : ps ? (dev.api9 ? translatePixelShader9(ps.code, env).glsl : translatePixelShader(ps.code, env)) : ffFragmentShader({ stages, alphaTest, specular: this.rs(RS.SPECULARENABLE, 0) !== 0, fog });
     if (flat && !ff) ({ vs: vsSrc, fs: fsSrc } = flatVaryings(vsSrc, fsSrc)); // (ffProgramFromKey: done)
     if (L.code || ps) this.noteUnsupported(vsSrc, fsSrc, dev.api9 ? 9 : 8);
@@ -1659,7 +1710,7 @@ export class WebGLDevice {
   /** the bound framebuffer's pixels as RGBA8 (captures): a float target's read as floats, clamped */
   readRgba8(w, h, fl) {
     const gl = this.gl;
-    if (fl) { const px = new Float32Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, px); return floatsToRgba8(px); }
+    if (fl) { const px = new Float32Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, px); if (fl.n < 3) for (let i = fl.n; i < px.length; i += 4) { px[i] = 1; px[i + 2 - fl.n] = 1; } return floatsToRgba8(px); } // (a compact one's missing green / blue as Direct3D reads them)
     const rgba = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba); return rgba;
   }
   dumpTarget(what) {
@@ -2086,7 +2137,11 @@ function prewarmPrograms(gl, pc, built) {
 
 /** Host-side factory: `host.gfx = createWebGLBackend(canvas, log)`. */
 export function createWebGLBackend(canvas, log, dump) {
-  const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: true, preserveDrawingBuffer: false, premultipliedAlpha: false, powerPreference: 'high-performance' });
+  // (no depth or stencil buffer on the canvas: every draw goes to a framebuffer object with its own, the canvas only
+  // receives finished frames — present's blit or gamma pass, neither depth- nor stencil-tested. One at the canvas's size
+  // would be allocated for nothing and cleared by the browser at every frame it hands over: 14.7 MB per frame at
+  // 2560x1440, docs/render-worker.md section 12)
+  const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false, premultipliedAlpha: false, powerPreference: 'high-performance' });
   if (!gl) return null;
   // benchmark mode (--gl-discard): every GL call is still issued but nothing is rasterized, so a software GPU
   // (headless SwiftShader) no longer bounds the frame rate and CPU-side changes become measurable

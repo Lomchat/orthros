@@ -257,7 +257,15 @@ export function fragmentTail(k) {
 }
 
 /**
- * @param {{ stages: Array<{ colorOp: number, colorArg1: number, colorArg2: number, colorArg0: number, alphaOp: number, alphaArg1: number, alphaArg2: number, alphaArg0: number, resultTemp: boolean, cube: boolean, projected: boolean, bound: boolean }>, alphaTest: number|0, specular: boolean, fog: number (table mode 0 none / 1 exp / 2 exp2 / 3 linear) | -1 for vertex fog, texEnabled: boolean }} k
+ * A texture fetch `e` of a texture with `ch` channels (texChannels: 1 or 2 for the float formats R16F / R32F, G16R16F /
+ * G32R32F, stored with just those): the channels it lacks read 1, as Direct3D samples them (GL would give 0 for green
+ * and blue). 4: `e` as it is.
+ */
+export const texelOf = (ch, e) => (ch === 1 ? `vec4((${e}).r, 1.0, 1.0, 1.0)` : ch === 2 ? `vec4((${e}).rg, 1.0, 1.0)` : e);
+
+/**
+ * @param {{ stages: Array<{ colorOp: number, colorArg1: number, colorArg2: number, colorArg0: number, alphaOp: number, alphaArg1: number, alphaArg2: number, alphaArg0: number, resultTemp: boolean, cube: boolean, projected: boolean, bound: boolean, ch?: number }>, alphaTest: number|0, specular: boolean, fog: number (table mode 0 none / 1 exp / 2 exp2 / 3 linear) | -1 for vertex fog, texEnabled: boolean }} k
+ * (a stage's `ch`: its texture's channels, texelOf)
  */
 export function ffFragmentShader(k, lean = leanShaders()) {
   const lines = ['#version 300 es', 'precision highp float; precision highp sampler2D; precision highp samplerCube;'];
@@ -313,9 +321,10 @@ export function ffFragmentShader(k, lean = leanShaders()) {
     let coord = `v_tex${i}`;
     if (i > 0 && (k.stages[i - 1].colorOp === TOP.BUMPENVMAP || k.stages[i - 1].colorOp === TOP.BUMPENVMAPLUMINANCE)) coord = `(v_tex${i} + vec4(dot(u_bumpEnv[${i - 1}].xy, bump${i - 1}.xy), dot(u_bumpEnv[${i - 1}].zw, bump${i - 1}.xy), 0.0, 0.0))`;
     if (st.bound) {
-      if (st.cube) lines.push(`  tex = texture(u_cube${i}, ${coord}.xyz);`);
-      else if (st.projected) lines.push(`  tex = textureProj(u_tex${i}, ${coord});`);
-      else lines.push(`  tex = texture(u_tex${i}, ${coord}.xy);`);
+      const ch = st.ch ?? 4;
+      if (st.cube) lines.push(`  tex = ${texelOf(ch, `texture(u_cube${i}, ${coord}.xyz)`)};`);
+      else if (st.projected) lines.push(`  tex = ${texelOf(ch, `textureProj(u_tex${i}, ${coord})`)};`);
+      else lines.push(`  tex = ${texelOf(ch, `texture(u_tex${i}, ${coord}.xy)`)};`);
     } else lines.push('  tex = vec4(0.0, 0.0, 0.0, 1.0);');
     if (st.colorOp === TOP.BUMPENVMAP || st.colorOp === TOP.BUMPENVMAPLUMINANCE) { lines.push(`  vec2 bump${i} = tex.xy * 2.0 - 1.0;`); continue; }
     const dst = st.resultTemp ? 'temp' : 'current';
@@ -359,8 +368,9 @@ export function ffProgramFromKey(key) {
   const stages = [];
   for (let i = 0; i < tcs.length; i++) {
     const t = tcs[i].split('/'), x = fst[i].split(',').map(num);
-    if (t.length !== 2 || x.length !== 12) return null;
-    stages.push({ colorOp: x[0], colorArg1: x[1], colorArg2: x[2], colorArg0: x[3], alphaOp: x[4], alphaArg1: x[5], alphaArg2: x[6], alphaArg0: x[7], resultTemp: x[8] === 1, cube: x[9] === 1, projected: x[10] === 1, bound: x[11] === 1, tci: num(t[0]), ttff: num(t[1]) });
+    // (a 13th field: the channels of the stage's texture when fewer than 4 — keys of a 1- or 2-channel float texture)
+    if (t.length !== 2 || (x.length !== 12 && !(x.length === 13 && (x[12] === 1 || x[12] === 2)))) return null;
+    stages.push({ colorOp: x[0], colorArg1: x[1], colorArg2: x[2], colorArg0: x[3], alphaOp: x[4], alphaArg1: x[5], alphaArg2: x[6], alphaArg0: x[7], resultTemp: x[8] === 1, cube: x[9] === 1, projected: x[10] === 1, bound: x[11] === 1, ch: x[12] ?? 4, tci: num(t[0]), ttff: num(t[1]) });
   }
   const lighting = v[2] === '1', lights = v[3] ? v[3].split(',').map(num) : [], specularEnable = num(v[9]) !== 0;
   let vs = ffVertexShader({ layout, lighting, lights, colorVertex: num(v[4]) !== 0, diffuseSrc: num(v[5]), specularSrc: num(v[6]), ambientSrc: num(v[7]), emissiveSrc: num(v[8]), specularEnable, localViewer: num(v[10]) !== 0, normalize: num(v[11]) !== 0, fogVertex: rhw ? 0 : num(v[12]), rangeFog: num(v[13]) !== 0, stages, rhw, blend: num(v[15]) ? (layout.blend || 1) + 1 : 0, pointSize: true });

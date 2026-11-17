@@ -2,7 +2,7 @@
 // shader models 1.x–2.x (DX9 conventions: dcl-declared inputs/samplers, semantic-named
 // attributes `a_s<usage>_<index>`, 256/32 float constants, integer/bool constants, static flow
 // control) to GLSL ES 3.00. Public documentation of the token format only.
-import { MAX_STAGES, D3D_TO_GL_POSITION, VS_INVARIANT, fragmentTail, leanShaders, usedRegs } from './d3d8-shaders.js';
+import { MAX_STAGES, D3D_TO_GL_POSITION, VS_INVARIANT, fragmentTail, leanShaders, usedRegs, texelOf } from './d3d8-shaders.js';
 
 export const DECLTYPE = { FLOAT1: 0, FLOAT2: 1, FLOAT3: 2, FLOAT4: 3, D3DCOLOR: 4, UBYTE4: 5, SHORT2: 6, SHORT4: 7, UBYTE4N: 8, SHORT2N: 9, SHORT4N: 10, USHORT2N: 11, USHORT4N: 12, UDEC3: 13, DEC3N: 14, FLOAT16_2: 15, FLOAT16_4: 16, UNUSED: 17 };
 export const USAGE = { POSITION: 0, BLENDWEIGHT: 1, BLENDINDICES: 2, NORMAL: 3, PSIZE: 4, TEXCOORD: 5, TANGENT: 6, BINORMAL: 7, TESSFACTOR: 8, POSITIONT: 9, COLOR: 10, FOG: 11, DEPTH: 12, SAMPLE: 13 };
@@ -195,7 +195,8 @@ export function translateVertexShader9(code, bgra = null, lean = leanShaders()) 
 
 /**
  * Translate a DX9 pixel shader (ps_1_x or ps_2_x) to GLSL.
- * @param {{ cube: boolean[], volume?: boolean[], fog: number, projected: boolean[] }} env
+ * @param {{ cube: boolean[], volume?: boolean[], fog: number, projected: boolean[], ch?: number[] }} env `ch`: per sampler, the
+ * channels of its texture when fewer than 4 (a 1- or 2-channel float format, texChannels: the others read 1, supplied here)
  */
 export function translatePixelShader9(code, env, lean = leanShaders()) {
   const version = code[0] & 0xffff, major = version >> 8, minor = version & 0xff;
@@ -216,13 +217,14 @@ export function translatePixelShader9(code, env, lean = leanShaders()) {
   const tAt = body.length;
   if (!lean) for (let i = 0; i < MAX_STAGES; i++) body.push(`  vec4 t${i} = v_tex${i};`);
   const consts = new Map(), defis = new Set(); // (def / defi registers: local constants)
+  const channels = (n, e) => texelOf(env.ch?.[n] ?? 4, e);
   const sample = (n, coordExpr, proj = false, bias = false) => {
     const kind = samplerKind.get(n) ?? (env.cube[n] ? 'cube' : '2d');
-    if (kind === 'cube') return `texture(u_cube${n}, (${coordExpr}).xyz)`;
+    if (kind === 'cube') return channels(n, `texture(u_cube${n}, (${coordExpr}).xyz)`);
     if (kind === 'volume') return `texture(u_vol${n}, (${coordExpr}).xyz)`;
-    if (proj || (!sm2 && env.projected[n])) return `textureProj(u_tex${n}, ${coordExpr})`;
-    if (bias) return `texture(u_tex${n}, (${coordExpr}).xy, (${coordExpr}).w)`;
-    return `texture(u_tex${n}, (${coordExpr}).xy)`;
+    if (proj || (!sm2 && env.projected[n])) return channels(n, `textureProj(u_tex${n}, ${coordExpr})`);
+    if (bias) return channels(n, `texture(u_tex${n}, (${coordExpr}).xy, (${coordExpr}).w)`);
+    return channels(n, `texture(u_tex${n}, (${coordExpr}).xy)`);
   };
   // ps 1.x constants hold values in [-1, 1] (what the hardware reads after SetPixelShaderConstant / def)
   const constRef = (n) => { const c = consts.has(n) ? `c${n}` : `u_pc[${n & 31}]`; return sm2 ? c : `clamp(${c}, -1.0, 1.0)`; };
@@ -324,8 +326,8 @@ export function translatePixelShader9(code, env, lean = leanShaders()) {
         else body.push(`  t${dn} = ${sample(dn, `v_tex${dn}`)};`);
         break;
       }
-      case 95: { const sn = args[2] & 0xf; body.push(assign(d, `textureLod(u_tex${sn}, (${S[0]}).xy, (${S[0]}).w)`)); break; } // texldl
-      case 93: { const sn = args[2] & 0xf; body.push(assign(d, `textureGrad(u_tex${sn}, (${S[0]}).xy, (${S[2] ?? 'vec4(0.0)'}).xy, (${S[3] ?? 'vec4(0.0)'}).xy)`)); break; } // texldd
+      case 95: { const sn = args[2] & 0xf; body.push(assign(d, channels(sn, `textureLod(u_tex${sn}, (${S[0]}).xy, (${S[0]}).w)`))); break; } // texldl
+      case 93: { const sn = args[2] & 0xf; body.push(assign(d, channels(sn, `textureGrad(u_tex${sn}, (${S[0]}).xy, (${S[2] ?? 'vec4(0.0)'}).xy, (${S[3] ?? 'vec4(0.0)'}).xy)`))); break; } // texldd
       case 67: case 68: body.push(`  t${dn} = ${sample(dn, `v_tex${dn} + vec4(dot(u_bumpEnv[${dn - 1}].xy, (${S[0]}).xy), dot(u_bumpEnv[${dn - 1}].zw, (${S[0]}).xy), 0.0, 0.0)`)};`); if (op === 68) body.push(`  t${dn}.rgb *= clamp((${S[0]}).z * u_bumpEnv[${dn - 1}].x + u_bumpEnv[${dn - 1}].y, 0.0, 1.0);`); break;
       case 69: body.push(`  t${dn} = ${sample(dn, `vec4((${S[0]}).a, (${S[0]}).r, 0.0, 1.0)`)};`); break;
       case 70: body.push(`  t${dn} = ${sample(dn, `vec4((${S[0]}).g, (${S[0]}).b, 0.0, 1.0)`)};`); break;
