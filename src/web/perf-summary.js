@@ -22,6 +22,7 @@ function counters(m) {
     glState: gc?.state ?? null, glFrames: gc?.frames, glCalls: gc?.calls, glDraws: gc?.draws,
     rwWaitMs: g?.gpuWaitMs, rwFenceMs: g?.fenceMs, rwFrameMs: g?.frameMs, rwReplayMs: g?.replayMs, rwReadbackMs: g?.readbackMs,
     hw: m?.hostWait ?? null, // (core/host-wait.js totals: the worker's host waits, how late they ended, the spins)
+    flk: gpu?.flk ? { ...gpu.flk } : null, // (gfx/flicker-probe.js counters)
   };
 }
 
@@ -95,6 +96,11 @@ export class PerfWindow {
         out.gpu[k] = { n, mean: r2(grow(a?.ms, z.ms) / n), p50: hq(hh, 0.5, Infinity), p99: hq(hh, 0.99, Infinity) };
       }
     } else out.gpu = { state: l.gpuState ?? 'none' }; // ('unavailable': no timer query extension; 'none': no Direct3D device)
+    // flicker: sampled frame triples whose pixels went A-B-A (gfx/flicker-probe.js), as percentages; WebGL errors seen
+    if (l.flk) {
+      const a = b.flk, z = l.flk, n = grow(a?.n, z.n);
+      out.flicker = { n, aba: n > 0 ? r2(grow(a?.aba, z.aba) / n / 100) : null, chg: n > 0 ? r2(grow(a?.chg, z.chg) / n / 100) : null, max: z.max > (a?.max ?? 0) ? r2(z.max / 100) : null, over1: grow(a?.over1, z.over1), glErrors: grow(a?.glErrors, z.glErrors), glError: z.glError || null };
+    }
     // WebGL calls per frame (sampled windows)
     if (l.glState === 'on') { const f = grow(b.glFrames, l.glFrames); out.glCalls = f > 0 ? { frames: f, perFrame: r1(grow(b.glCalls, l.glCalls) / f), drawsPerFrame: r1(grow(b.glDraws, l.glDraws) / f) } : { frames: 0 }; }
     else out.glCalls = { state: l.glState ?? 'none' };

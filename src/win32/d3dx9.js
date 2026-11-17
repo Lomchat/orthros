@@ -2,7 +2,7 @@
 // texture loading from image files in memory, shader helpers, buffers and the effect framework (d3dx9-effect.js).
 // One implementation answers to every numbered DLL name (the export sets differ only by additions).
 import { snapClass } from '../core/snapshot.js';
-import { FMT, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
+import { FMT, FLOAT_FORMATS, surfaceBytes, surfacePitch, readShaderTokens } from './d3d8.js';
 import { fvfLayout } from '../gfx/d3d8-shaders.js';
 import { defineD3DXMath } from './d3dx9-math.js';
 import { parseImage, parseImageInfo, toRgba, fromRgba, resizeRgba, applyColorKey, isDxt, isDdsFile } from './d3dx9-image.js';
@@ -98,9 +98,14 @@ export function registerD3DX9(api, vm) {
   };
   X.D3DXGetImageInfoFromFileInMemory = [3, (c) => { const im = imageAt(c, c.arg(0), c.arg(1), true); if (!im) return D3DXERR_INVALIDDATA; writeInfo(c.arg(2), im); return D3D_OK; }];
   const TEXTURE_OK = new Set([FMT.A8R8G8B8, FMT.X8R8G8B8, FMT.R5G6B5, FMT.X1R5G5B5, FMT.A1R5G5B5, FMT.A4R4G4B4, FMT.A8, FMT.L8, FMT.A8L8, FMT.DXT1, FMT.DXT2, FMT.DXT3, FMT.DXT4, FMT.DXT5, FMT.V8U8, FMT.Q8W8V8U8]);
-  /** the texture format D3DX picks for a requested one and the file's: a format the device takes (R8G8B8 -> X8R8G8B8...) */
-  const pickFormat = (req, file) => {
+  /**
+   * the texture format D3DX picks for a requested one and the file's: a format the device takes (R8G8B8 -> X8R8G8B8...);
+   * `empty`: a texture created without contents (D3DXCreateTexture, the requirement checks) may also be a floating-point
+   * one the device offers — D3DX's image paths only write the integer formats
+   */
+  const pickFormat = (req, file, empty = false) => {
     let f = req === 0 || req === D3DX_FROM_FILE ? file : req;
+    if (empty && FLOAT_FORMATS.has(f)) return f;
     if (!TEXTURE_OK.has(f)) f = f === FMT.R8G8B8 || f === 33 || f === FMT.P8 ? FMT.X8R8G8B8 : f === FMT.A8B8G8R8 || f === FMT.A2B10G10R10 ? FMT.A8R8G8B8 : f === FMT.X4R4G4B4 ? FMT.A4R4G4B4 : TEXTURE_OK.has(file) ? file : FMT.A8R8G8B8;
     return f;
   };
@@ -259,7 +264,7 @@ export function registerD3DX9(api, vm) {
     if (w === 0 || w === D3DX_DEFAULT) w = 256; if (h === 0 || h === D3DX_DEFAULT) h = w; if (d === 0 || d === D3DX_DEFAULT) d = 1;
     const max = fullChain(w, h, d);
     let l = pl ? mem.read32(pl) : 0; l = l === 0 || l === D3DX_DEFAULT ? max : Math.min(l, max);
-    let f = pf ? mem.read32(pf) : FMT.A8R8G8B8; f = pickFormat(f === 0 || f === D3DX_DEFAULT ? FMT.A8R8G8B8 : f, FMT.A8R8G8B8);
+    let f = pf ? mem.read32(pf) : FMT.A8R8G8B8; f = pickFormat(f === 0 || f === D3DX_DEFAULT ? FMT.A8R8G8B8 : f, FMT.A8R8G8B8, kind !== 'volume');
     if (pw) mem.write32(pw, w); if (ph) mem.write32(ph, h); if (pd) mem.write32(pd, d); if (pl) mem.write32(pl, l); if (pf) mem.write32(pf, f);
     return { w, h, d, l, f };
   };
@@ -267,8 +272,8 @@ export function registerD3DX9(api, vm) {
   X.D3DXCheckCubeTextureRequirements = [6, (c) => { checkReq(c, 'cube'); return D3D_OK; }];
   X.D3DXCheckVolumeTextureRequirements = [8, (c) => { checkReq(c, 'volume'); return D3D_OK; }];
   const norm = (v, dflt) => (v === 0 || v === D3DX_DEFAULT ? dflt : v);
-  X.D3DXCreateTexture = [8, (c) => { const a = (i) => c.arg(i), w = norm(a(1), 256), h = norm(a(2), w), l = a(3) === D3DX_DEFAULT ? 0 : a(3); const r = callMethod(c, a(0), 'CreateTexture', [w, h, l, a(4), pickFormat(norm(a(5), FMT.A8R8G8B8), FMT.A8R8G8B8), a(6), a(7), 0]); return r; }];
-  X.D3DXCreateCubeTexture = [7, (c) => { const a = (i) => c.arg(i), l = a(2) === D3DX_DEFAULT ? 0 : a(2); return callMethod(c, a(0), 'CreateCubeTexture', [norm(a(1), 256), l, a(3), pickFormat(norm(a(4), FMT.A8R8G8B8), FMT.A8R8G8B8), a(5), a(6), 0]); }];
+  X.D3DXCreateTexture = [8, (c) => { const a = (i) => c.arg(i), w = norm(a(1), 256), h = norm(a(2), w), l = a(3) === D3DX_DEFAULT ? 0 : a(3); const r = callMethod(c, a(0), 'CreateTexture', [w, h, l, a(4), pickFormat(norm(a(5), FMT.A8R8G8B8), FMT.A8R8G8B8, true), a(6), a(7), 0]); return r; }];
+  X.D3DXCreateCubeTexture = [7, (c) => { const a = (i) => c.arg(i), l = a(2) === D3DX_DEFAULT ? 0 : a(2); return callMethod(c, a(0), 'CreateCubeTexture', [norm(a(1), 256), l, a(3), pickFormat(norm(a(4), FMT.A8R8G8B8), FMT.A8R8G8B8, true), a(5), a(6), 0]); }];
   X.D3DXCreateVolumeTexture = [9, (c) => { const a = (i) => c.arg(i), l = a(4) === D3DX_DEFAULT ? 0 : a(4); return callMethod(c, a(0), 'CreateVolumeTexture', [norm(a(1), 256), norm(a(2), 256), norm(a(3), 1), l, a(5), pickFormat(norm(a(6), FMT.A8R8G8B8), FMT.A8R8G8B8), a(7), a(8), 0]); }];
 
   // surfaces / volumes: loading into existing resources

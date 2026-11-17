@@ -101,3 +101,32 @@ a click in Node; the pause menu's RESTART loop (aotr-endurance.txt) restarted th
 menu runs at 1-3 fps in Node, and a click that comes while it slides in is lost or lands on the next button). The
 next step for a 60-minute check is a player who defends (build orders through the command bar), or a browser run on a
 machine fast enough to play it.
+
+## Shadows at StaticGameLOD High: R32F shadow maps (2026-11-17)
+
+The owner plays at `StaticGameLOD = High` (his Options.ini: Resolution 800 600, IdealStaticGameLOD VeryLow), whose
+entry in Age of the Ring's GameLOD.ini turns `UseShadowMapping` on (Medium, the scenarios' profile build/saves/aotr-10:
+off; shadow volumes and decals are off at High). The engine (game.dat, RotWK's) keeps depth in a color render target:
+it asks D3DXCreateTexture for R32F render-target textures (game.dat 0x47d419, 1024x1024 here; a second one under a
+flag at 0x47d47e), with a D24S8 depth surface; its creation helper (0x51dac0) gives no texture when the format was refused by
+the CheckDeviceFormat survey of every format at start-up. The pass writes z/w as color (`_CreateShadowMap`: `mov oC0,
+t0.x`), shadow.fxo dilates it (`_ShadowMapPostProcess`, max of 5 taps), and the receivers compare 4 taps against z - 0.002
+(terrain.fxo): it needs float precision — 8 bits per channel would show as acne crawling with the camera.
+
+Orthros did not offer R32F (nor D3DX create it): no shadow map was ever made and High rendered without any shadow
+(SwiftShader frames of 2026-11-17: no shadow under the tower, the trees, the units). The Direct3D 9 layer now offers the
+floating-point formats (R16F, G16R16F, A16B16G16R16F, R32F, G32R32F, A32B32G32R32F) as 2D and cube textures and render
+targets, D3DX creates them when asked without image data, and the WebGL backend stores them as RGBA16F / RGBA32F
+(EXT_color_buffer_float to render into them; missing channels read 1 as in Direct3D, kept by a write mask; uploads,
+readbacks and captures convert). With it the game creates its 1024x1024 R32F map and renders shadows (tower, trees,
+units), stable: on the frames grabbed every frame (ORTHROS_FRAME_GRAB) after a device loss and Reset, a static camera
+changes 0.00-0.06 % of the pixels between frames and 0.000-0.001 % flicker (A-B-A), a scroll gives the same A-B-A share
+(1.8-1.9 %: perspective motion of textures) as without shadows. Cost: draws per frame in play ~880-950 → ~1 060-1 190
+(the shadow casters drawn again into the map, SwiftShader runs, same start position).
+
+The owner's flicker itself (2026-11-17, RTX 4050, ANGLE D3D11, build of 11-13) was not reproduced on SwiftShader with his
+settings — static camera, scroll, mouse moves over the map, deactivation / Reset / reactivation: no frame alternates
+(the probe's metric on those frames: 0 % static, 0.11-0.14 % while scrolling, with or without the shadows) — and in
+that build no shadow map existed at all. Not reached by the scripted runs: placing a building (the dwarf selected at the
+start is no builder; its command bar has Stop and Extinguish Fire only). The frames' flicker and WebGL errors are now
+measured on players' GPUs (src/gfx/flicker-probe.js, docs/real-machine-bench.md "Flicker").

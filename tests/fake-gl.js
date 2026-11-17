@@ -23,7 +23,7 @@ export function fakeGl(width = 800, height = 600, opts = {}) {
     canvas, get drawingBufferWidth() { return canvas.width; }, get drawingBufferHeight() { return canvas.height; },
     createTexture: obj, createBuffer: obj, createFramebuffer: obj, createRenderbuffer: obj, createVertexArray: obj, createSampler: obj, createProgram: obj, createShader: obj, fenceSync: obj,
     getParameter: (p) => (p === E('MAX_COMBINED_TEXTURE_IMAGE_UNITS') ? 32 : p === E('MAX_TEXTURE_SIZE') ? 4096 : p === E('RENDERER') ? 'fake' : 0),
-    getExtension: () => null,
+    getExtension: (n) => (opts.extensions?.includes(n) ? { name: n } : null), // (opts.extensions: the WebGL extensions the context offers)
     getProgramParameter: (p, q) => (q === E('ACTIVE_UNIFORMS') || q === E('ACTIVE_ATTRIBUTES') ? 0 : true),
     getShaderParameter: () => true, getProgramInfoLog: () => '', getShaderInfoLog: () => '',
     getUniformLocation: (p, n) => ({ n }), getActiveUniform: () => ({ name: '' }),
