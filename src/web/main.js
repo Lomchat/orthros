@@ -697,7 +697,7 @@ function renderHud() {
   const bar = shell.bar, fpsEl = bar.querySelector('.fps'), sub = bar.querySelector('.sub'), panel = $('perfPanel');
   const clock = new Date().toLocaleTimeString(lang);
   const still = s.frames > 0 && state.lastNewFrameAt ? (Date.now() - state.lastNewFrameAt) / 1000 : 0;
-  const busy = $('busy'), paused = !document.hasFocus(), showBusy = state.status === 'running' && shell.loader.classList.contains('hidden') && (still >= 3 || (paused && s.frames > 0));
+  const busy = $('busy'), paused = !state.bgActive && !document.hasFocus(), showBusy = state.status === 'running' && shell.loader.classList.contains('hidden') && (still >= 3 || (paused && s.frames > 0));
   busy.classList.toggle('hidden', !showBusy);
   const nw = showBusy && !paused && netWaiting(s) ? netWaitText({ ...s.net, waiting: true }, lang) : null;
   if (showBusy) busy.innerHTML = paused ? TEXT.paused(esc(state.title))
@@ -841,6 +841,9 @@ function typeText(text) {
 window.orthrosInput = { push, EV, typeText, get pointer() { return pointer; } }; // (pointer: the harness's captured-mouse moves, pointer.js)
 
 /** The page's mouse → the input ring (pointer.js): captured relative motion, or the free pointer's position. */
+// background play: the game stays active when the page loses the focus (default; ?bg=pause or localStorage orthros.bg=pause: deactivated as before)
+state.bgActive = params.get('bg') ? params.get('bg') !== 'pause' : (() => { try { return localStorage.getItem('orthros.bg') !== 'pause'; } catch { return true; } })();
+state.heldInput = { keys: new Map(), buttons: new Set() };
 const pointer = new PointerInput((type, a, b, c) => push(type, a, b, c), () => state.mode);
 state.pointer = pointer;
 /** A mouse event's position in the game's screen pixels (unclamped: the page's margins are outside the screen). */
@@ -898,17 +901,29 @@ function setupInput() {
   document.documentElement.addEventListener('mouseleave', () => pointer.left()); // (the pointer left the window)
   c.addEventListener('mousedown', (e) => {
     if (!live()) return;
-    pointer.button(true, winButton(e.button), state.pointerLocked, ...screenPos(e)); e.preventDefault();
+    pointer.button(true, winButton(e.button), state.pointerLocked, ...screenPos(e)); state.heldInput.buttons.add(winButton(e.button)); e.preventDefault();
     // a click in the game captures the mouse (it stays in the game, which gets all of its motion; escape.js: Escape)
     if (!state.pointerLocked) capturePointer();
   });
-  c.addEventListener('mouseup', (e) => { if (!live()) return; pointer.button(false, winButton(e.button), state.pointerLocked, ...screenPos(e)); e.preventDefault(); });
+  c.addEventListener('mouseup', (e) => { if (!live()) return; pointer.button(false, winButton(e.button), state.pointerLocked, ...screenPos(e)); state.heldInput.buttons.delete(winButton(e.button)); e.preventDefault(); });
   c.addEventListener('contextmenu', (e) => e.preventDefault());
   c.addEventListener('wheel', (e) => { if (!live()) return; const [x, y] = state.pointerLocked ? [pointer.vx, pointer.vy] : screenPos(e).map(Math.round); push(EV.WHEEL, e.deltaY < 0 ? 120 : -120, pointer.clampX(x), pointer.clampY(y)); e.preventDefault(); }, { passive: false });
-  addEventListener('keydown', (e) => { if ((e.code === 'F12' && !e.shiftKey) || state.benchActive) return; const s = SCAN[e.code] ?? 0; push(EV.KEYDOWN, vkOfCode(e.code), s, e.repeat ? 1 : 0); if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) push(EV.CHAR, e.key.charCodeAt(0), 0, 0); if (!(e.ctrlKey && (e.code === 'KeyR' || e.code === 'KeyL'))) e.preventDefault(); });
-  addEventListener('keyup', (e) => { if (state.benchActive) return; push(EV.KEYUP, vkOfCode(e.code), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
-  addEventListener('blur', () => { pointer.left(); if (!state.benchActive) push(EV.FOCUS, 0, 0, 0); });
-  addEventListener('focus', () => { if (!state.benchActive) push(EV.FOCUS, 1, 0, 0); });
+  addEventListener('keydown', (e) => { if ((e.code === 'F12' && !e.shiftKey) || state.benchActive) return; const s = SCAN[e.code] ?? 0; state.heldInput.keys.set(e.code, vkOfCode(e.code)); push(EV.KEYDOWN, vkOfCode(e.code), s, e.repeat ? 1 : 0); if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) push(EV.CHAR, e.key.charCodeAt(0), 0, 0); if (!(e.ctrlKey && (e.code === 'KeyR' || e.code === 'KeyL'))) e.preventDefault(); });
+  addEventListener('keyup', (e) => { if (state.benchActive) return; state.heldInput.keys.delete(e.code); push(EV.KEYUP, vkOfCode(e.code), SCAN[e.code] ?? 0, 0); e.preventDefault(); });
+  // Background play (default): the page losing the focus or being hidden does not deactivate the game (no WM_ACTIVATEAPP 0,
+  // no lost device); only the input is released cleanly. ?bg=pause or localStorage orthros.bg=pause: the old behaviour.
+  const held = state.heldInput;
+  addEventListener('blur', () => {
+    pointer.left();
+    if (state.benchActive) return;
+    if (state.bgActive) {
+      for (const [code, vk] of held.keys) push(EV.KEYUP, vk, SCAN[code] ?? 0, 0);
+      held.keys.clear();
+      for (const b of held.buttons) pointer.button(false, b, state.pointerLocked, pointer.vx, pointer.vy);
+      held.buttons.clear();
+    } else push(EV.FOCUS, 0, 0, 0);
+  });
+  addEventListener('focus', () => { if (!state.benchActive && !state.bgActive) push(EV.FOCUS, 1, 0, 0); });
   document.addEventListener('pointerlockchange', () => {
     const was = state.pointerLocked;
     state.pointerLocked = document.pointerLockElement === c;
