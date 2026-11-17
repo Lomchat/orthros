@@ -22,6 +22,11 @@ export class RealClock {
   at(t) { return this.scale === 1 ? t - this.origin : (t - this.origin) * this.scale; }
   /** real milliseconds for `ms` guest milliseconds */
   real(ms) { return ms / this.scale; }
+  /**
+   * A new scale from now on (debugging, ?dbg=ORTHROS_TIME_SCALE=<s> while the game runs: a software rasterizer's 2 fps
+   * seen by the game as 30), the guest's time continuing from where it is.
+   */
+  setScale(scale) { const p = performance.now(), g = this.at(p); this.scale = scale; this.origin = p - g / scale; }
   /** wall clock ms since epoch */
   wall() { return Date.now(); }
   sleep(ms) {

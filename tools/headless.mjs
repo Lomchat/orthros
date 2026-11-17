@@ -50,6 +50,10 @@ const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10))
 // dbg:ORTHROS_CAPTURE_PROBE=x,y[/x,y...] then capture: those back-buffer pixels after every draw of the captured frame,
 // logged as [probe] when they change (which draw paints a pixel, or that none does); --log sync names the named kernel
 // objects created / opened; --log d3dx describes the first D3DXLoadSurfaceFromMemory calls.
+// Frames compared (flicker): dbg:ORTHROS_CAPTURE_FRAMES=<n> then capture: n consecutive frames captured ([cap] lines name
+// each draw's and clear's target and depth surface — the latter with --glworker 0 only —, blits, the GL error a draw left); dbg:ORTHROS_CAPTURE_NO_TEX=1: no
+// texture dumps with them; dbg:ORTHROS_TIME_SCALE=<s>: the guest's clock from now on at s guest ms per real ms (0.05:
+// the 1.5 fps of a software rasterizer seen by the game as 30, as on a player's GPU).
 let afterWait = false;
 let pagePointer = null, benchDone = false; // (the pointer position of the pageclick / pagemove steps)
 const control = opt('control') ? { file: opt('control'), pos: 0, rest: '', quit: false } : null;
@@ -95,7 +99,14 @@ const port = server ? server.address().port : Number(opt('server-port'));
 const pageOrigin = opt('page-origin') ?? `http://127.0.0.1:${port}`;
 // ORTHROS_CHROME_ARGS: extra browser switches, space-separated (e.g. --js-flags=--trace-gc with DEBUG=pw:browser to see them;
 // a V8 log's files go to the scratch, tools/dev/v8-logs.mjs)
-const chromeArgs = v8LogArgs([...(process.env.ORTHROS_CHROME_ARGS ?? '').split(' ').filter(Boolean), ...(opt('page-origin')?.startsWith('https:') ? ['--ignore-certificate-errors'] : []), '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-angle=swiftshader', '--enable-webgl', '--enable-features=SharedArrayBuffer', '--autoplay-policy=no-user-gesture-required']);
+// --gl <swiftshader | vulkan | gl-egl>: the WebGL implementation (this server has no GPU): SwiftShader (default), ANGLE on
+// Vulkan with Mesa's lavapipe, or ANGLE on OpenGL ES with Mesa's llvmpipe — another rasterizer's undefined and
+// implementation-dependent results than SwiftShader's (docs/aotr-play.md "Other GL implementations")
+const glImpl = opt('gl', 'swiftshader');
+const GL_SWITCHES = { swiftshader: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'], vulkan: ['--use-gl=angle', '--use-angle=vulkan'], 'gl-egl': ['--use-gl=angle', '--use-angle=gl-egl'] };
+if (!GL_SWITCHES[glImpl]) { console.error(`--gl: one of ${Object.keys(GL_SWITCHES).join(', ')}`); process.exit(2); }
+if (glImpl === 'vulkan') process.env.VK_ICD_FILENAMES ??= '/usr/share/vulkan/icd.d/lvp_icd.json'; // (the browser inherits it)
+const chromeArgs = v8LogArgs([...(process.env.ORTHROS_CHROME_ARGS ?? '').split(' ').filter(Boolean), ...(opt('page-origin')?.startsWith('https:') ? ['--ignore-certificate-errors'] : []), ...GL_SWITCHES[glImpl], '--ignore-gpu-blocklist', '--enable-webgl', `--enable-features=SharedArrayBuffer${glImpl === 'vulkan' ? ',Vulkan,VulkanFromANGLE' : ''}`, '--autoplay-policy=no-user-gesture-required']);
 // --opfs <user-data-dir>: persistent browser profile so the worker's OPFS mirror of the game profile (saves,
 // Options.ini) survives across runs, exactly as in a real page (the default fresh context has no persistence).
 const opfsDir = opt('opfs');
@@ -240,6 +251,7 @@ if (opt('drop')) {
   q.set('manifest', st.id);
 }
 await page.goto(`${pageOrigin}/?${q}`);
+if (glImpl !== 'swiftshader') console.log(`[gl] ${await page.evaluate(() => { const gl = document.createElement('canvas').getContext('webgl2'), d = gl?.getExtension('WEBGL_debug_renderer_info'); return gl ? String(gl.getParameter(d ? d.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : 'no WebGL2'; }).catch((e) => e.message)}`);
 if (bench && args.includes('--ui')) { await page.locator('#benchStart').click({ timeout: 30000 }).then(() => console.log('[bench] started'), (e) => console.log(`[bench] no start button: ${e.message.split('\n')[0]}`)); }
 const t0 = Date.now();
 /** The server's transport totals: compressed ranges, the game's own reads (demand) and the background downloads apart. */

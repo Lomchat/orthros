@@ -228,6 +228,7 @@ export class WebGLDevice {
     this.noStateCacheOpt = !!opts.noStateCache;
     this.glValidate = !!globalThis.ORTHROS_GL_VALIDATE; // (debugging: cached GL state checked against GL, see validateGlState)
     if (this.glValidate) this.log('d3d-webgl: GL state cache validation on (first 3000 draws, then every 97th)');
+    this.frameSig = 0; this.sigSeq = 0; // (the frame's command signature: sigMix)
     this.captureAt = opts.captureFrame ?? 0; this.frame = 0; this.capturing = false; // one-frame draw dump (like a mini PIX)
     this.dump = opts.dump ?? null; this.captureDraws = !!opts.captureDraws; this.dumpedTex = new Set(); // capture images: bound textures, target after each draw
     // adaptive internal render resolution (render-scale.js): the scale of the back buffers and of the render targets of
@@ -244,8 +245,7 @@ export class WebGLDevice {
     this.dev = dev;
     const c = gl.canvas;
     if (c.width !== dev.pp.width || c.height !== dev.pp.height) { c.width = dev.pp.width; c.height = dev.pp.height; }
-    for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); }
-    this.fbos.clear();
+    this.dropTargets();
     this.invalidateGlState();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.disable(gl.SCISSOR_TEST);
@@ -292,7 +292,7 @@ export class WebGLDevice {
     this.floatRgba = rgba; this.floatStores.clear();
     let n = 0;
     for (const [id, g] of this.textures) if (g.res && FLOAT_FORMATS.has(g.res.fmt)) { gl.deleteTexture(g.tex); this.textures.delete(id); g.res.glOwner = null; g.res.levelsClean = false; n++; }
-    for (const [id, f] of this.fbos) if (f.fl) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); this.fbos.delete(id); }
+    for (const [id, f] of this.fbos) if (f.fl) { this.deleteTarget(f); this.fbos.delete(id); }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); this.invalidateGlState(); this.smpCache = null;
     this.log(`d3d-webgl: float formats stored ${rgba ? 'as RGBA (ORTHROS_FLOAT_RGBA)' : 'with their own channels'} from frame ${this.frame} (${n} textures made again)`);
   }
@@ -354,14 +354,14 @@ export class WebGLDevice {
     this.floatExts();
     this.firstVertexConvention();
     this.programs.clear(); this.programsBySrc.clear(); this.progBySig?.clear(); this.lastProgram = null; if (this.pc) { this.pc.ready.clear(); this.pc.pending = 0; }
-    this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null; this.fullTmp = null; this.nullTex = null; this.rsc.reset();
+    this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.backDepth = null; this.samplerPool.clear(); this.smpCache = null; this.fullTmp = null; this.nullTex = null; this.rsc.reset();
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
     this.invalidateGlState(); gl.bindVertexArray(this.vao);
     this.reset(this.dev);
     this.log('d3d-webgl: context restored, resources recreated on use');
   }
-  destroy() { this.pc?.devices?.delete(this); const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const n of this.nullTex ?? []) if (n) gl.deleteTexture(n.tex); if (this.onesFbo) gl.deleteFramebuffer(this.onesFbo); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); } for (const p of this.programsBySrc.values()) gl.deleteProgram(p.prog); }
+  destroy() { this.pc?.devices?.delete(this); const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const n of this.nullTex ?? []) if (n) gl.deleteTexture(n.tex); if (this.onesFbo) gl.deleteFramebuffer(this.onesFbo); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); this.dropTargets(); for (const p of this.programsBySrc.values()) gl.deleteProgram(p.prog); }
 
   // ---------------------------------------------------------------- resources
   createTexture() {} createBuffer() {} createSurface() {} surfaceUpdated() {} volumeUpdated() {}
@@ -380,7 +380,7 @@ export class WebGLDevice {
     if (r.glOwner === this) r.glOwner = null; // (glTexture's record on the resource)
     const b = this.buffers.get(r.id); if (b) { this.dropVaos(r.id); gl.deleteBuffer(b.buf); this.buffers.delete(r.id); }
     const levels = r.levels ?? (r.faces ? r.faces.flat() : r.type === 1 ? [r] : []);
-    for (const l of levels) { const f = this.fbos.get(l.id); if (f) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); this.fbos.delete(l.id); if (gs.fbo === f.fbo) gs.fbo = null; } }
+    for (const l of levels) { const f = this.fbos.get(l.id); if (f) { this.deleteTarget(f); this.fbos.delete(l.id); if (gs.fbo === f.fbo) gs.fbo = null; } }
   }
   /** GL texture for a texture resource, uploading dirty levels. */
   glTexture(t) {
@@ -595,8 +595,7 @@ export class WebGLDevice {
         f.color = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.color); gl.renderbufferStorage(gl.RENDERBUFFER, fl ? fl.internal : gl.RGBA8, f.w, f.h);
         gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, f.color);
       }
-      f.depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, f.w, f.h);
-      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, f.depth);
+      this.attachDepth(f);
       // (checkFramebufferStatus is a round trip to the GPU process that waits for every command queued before it —
       // up to seconds behind a GPU backlog, for a status only logged: --gl-validate or ?dbg=ORTHROS_FBO_CHECK=1)
       if (this.glValidate || globalThis.ORTHROS_FBO_CHECK) { const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`); }
@@ -684,10 +683,40 @@ export class WebGLDevice {
   /** new depth-stencil storage of the target's GL size, cleared, attached to its framebuffer (bound) */
   newDepth(f) {
     const gl = this.gl;
-    if (f.depth) gl.deleteRenderbuffer(f.depth);
-    f.depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, f.w, f.h);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, f.depth);
+    if (f.depth && !f.back) gl.deleteRenderbuffer(f.depth);
+    this.attachDepth(f);
     gl.depthMask(true); gl.stencilMask(0xff); gl.clearDepth(1); gl.clearStencil(0); gl.clear(gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+  }
+  /**
+   * The depth-stencil storage of a target record (its framebuffer bound): its own for a texture level or a render-target
+   * surface; for the back buffers, ONE shared by all of them (`backDepth`, of their GL size). In Direct3D 9 the depth
+   * surface is not part of the swap chain: a flipping chain (D3DSWAPEFFECT_FLIP, two or more back buffers — present()
+   * rotates the back buffers' framebuffers) rotates the color buffers only, the depth and stencil drawn in a frame are
+   * still there in the next (unless D3DPRESENTFLAG_DISCARD_DEPTHSTENCIL makes them undefined). With a depth-stencil per
+   * back buffer, the frame after a present tested against the depth and stencil of the frame before the previous one.
+   */
+  attachDepth(f) {
+    const gl = this.gl;
+    let rb;
+    if (f.back) {
+      const d = this.backDepth;
+      if (d && d.w === f.w && d.h === f.h) rb = d.rb;
+      else {
+        if (d) gl.deleteRenderbuffer(d.rb); // (a new size: every back buffer gets the new one — applyRenderScale, a Reset)
+        rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, f.w, f.h);
+        this.backDepth = { rb, w: f.w, h: f.h };
+      }
+    } else { rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, f.w, f.h); }
+    f.depth = rb;
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, rb);
+  }
+  /** a target record's GL objects deleted (the back buffers' shared depth-stencil kept: dropTargets deletes it) */
+  deleteTarget(f) { const gl = this.gl; gl.deleteFramebuffer(f.fbo); if (f.depth && !f.back) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); }
+  /** every target record's GL objects deleted, the back buffers' depth-stencil with them; the records forgotten */
+  dropTargets() {
+    for (const f of this.fbos.values()) this.deleteTarget(f);
+    this.fbos.clear();
+    if (this.backDepth) { this.gl.deleteRenderbuffer(this.backDepth.rb); this.backDepth = null; }
   }
   /** a renderbuffer target (back buffer, render-target surface) at its new scale */
   rescaleTarget(f) {
@@ -773,6 +802,8 @@ export class WebGLDevice {
    */
   stretchRect(src, sr, dst, dr, filter) {
     const gl = this.gl, dev = this.dev, mem = this.mem;
+    this.sigMix(src.id, dst.id, filter, -1);
+    if (this.capturing) this.log(`d3d-webgl: [cap] stretchRect ${src.owner ? `tex#${src.owner.id}.${src.level ?? 0}` : `surf#${src.id}`}:${src.width}x${src.height} -> ${dst.owner ? `tex#${dst.owner.id}.${dst.level ?? 0}` : `surf#${dst.id}`}:${dst.width}x${dst.height} filter ${filter}${this.fbos.has(src.id) ? '' : ' (source never drawn to: CPU copy)'}`);
     if (!this.fbos.has(src.id) || (dst.usage & 2)) return null; // (a depth-stencil destination: not a color blit)
     const prev = dev.renderTarget;
     dev.renderTarget = src; const fs = this.bindTarget();
@@ -803,6 +834,18 @@ export class WebGLDevice {
     if (++this.sinceFlush >= globalThis.ORTHROS_GL_FLUSH) { this.sinceFlush = 0; this.gl.flush(); this.stats.earlyFlushes = (this.stats.earlyFlushes ?? 0) + 1; }
   }
   beginScene() { this.frameDraws = 0; }
+  /**
+   * The frame's command signature (32 bits, reset at each present): every draw (program, the target the game set, its
+   * primitive count and start), clear (flags, color, target, rectangles), blit and the frame's upload counts mixed in
+   * order. The flicker probe compares it over its three frames: a picture that alternates while the commands are the
+   * same is the GPU's doing (undefined or implementation-dependent results), one whose commands alternate is the
+   * game's (docs/aotr-play.md "Other GL implementations"). Uploaded bytes are counted, not hashed: data that alternates
+   * in buffers of the same size shows as "same commands".
+   */
+  sigMix(a, b, c, d) {
+    let h = Math.imul(this.frameSig ^ a, 0x9e3779b1); h = Math.imul((h ^ (h >>> 15)) ^ b, 0x85ebca6b);
+    h = Math.imul((h ^ (h >>> 13)) ^ c, 0xc2b2ae35); this.frameSig = Math.imul((h ^ (h >>> 16)) ^ d, 0x27d4eb2f);
+  }
   endScene() {}
   present() {
     const gl = this.gl, dev = this.dev;
@@ -812,7 +855,10 @@ export class WebGLDevice {
     dev.renderTarget = prev;
     gl.disable(gl.SCISSOR_TEST); this.gs.en[gl.SCISSOR_TEST] = false;
     if (globalThis.ORTHROS_FRAME_GRAB > 0 && this.dump) this.grabFrame(bf);
-    if (this.probe?.flicker && !this.glNull && this.probe.flicker.present(bf.fbo, bf.w, bf.h, this)) this.invalidateGlState(); // (telemetry: flicker-probe.js — its sample's draw set GL state directly)
+    const st = this.stats, up = this.sigUp ??= { n: 0, buf: 0, tex: 0 }; // (the uploads of the frame: counts and bytes)
+    this.sigMix(st.uploads - up.n, (st.bufBytes ?? 0) - up.buf, (st.uploadBytes ?? 0) - up.tex, -2); up.n = st.uploads; up.buf = st.bufBytes ?? 0; up.tex = st.uploadBytes ?? 0;
+    const sig = this.frameSig >>> 0; this.frameSig = 0;
+    if (this.probe?.flicker && !this.glNull && this.probe.flicker.present(bf.fbo, bf.w, bf.h, this, sig)) this.invalidateGlState(); // (telemetry: flicker-probe.js — its sample's draw set GL state directly)
     if (this.gammaLut) this.presentGamma(w, h);
     else {
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
@@ -831,11 +877,12 @@ export class WebGLDevice {
     this.fakeFlicker = globalThis.ORTHROS_FAKE_FLICKER > 0 ? globalThis.ORTHROS_FAKE_FLICKER | 0 : 0; this.fakeN = 0;
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
     if (this.pc?.queue.length) this.prewarmStep();
-    if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); }
+    // (ORTHROS_CAPTURE_FRAMES=<n>: that many consecutive frames captured — a frame's work compared with the next one's)
+    if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); if (--this.captureLeft > 0) this.captureAt = this.frame; }
     if (this.countLeft && --this.countLeft === 0) this.log(`d3d-webgl: GL calls per frame over ${this.countFrames} frames: ${this.stopGlCount(this.countFrames)}`);
     if (this.captureAt && this.frame === this.captureAt) {
       if (this.countFrames) { this.countLeft = this.countFrames; this.startGlCount(); } // (count only: no dump, no per-draw log)
-      else { this.capturing = true; this.startGlCount(); this.log(`d3d-webgl: capture frame ${this.frame}`); }
+      else { if (!(this.captureLeft > 0)) this.captureLeft = Number(globalThis.ORTHROS_CAPTURE_FRAMES) || 1; this.capturing = true; this.startGlCount(); this.log(`d3d-webgl: capture frame ${this.frame}`); }
     }
     this.probe?.frame();
     // (adaptive render resolution: the frame measured, the scale of the next ones — render-scale.js)
@@ -956,9 +1003,9 @@ export class WebGLDevice {
       this.dropVaos();
       for (const t of this.textures.values()) gl.deleteTexture(t.tex);
       for (const b of this.buffers.values()) gl.deleteBuffer(b.buf);
-      for (const f of this.fbos.values()) { gl.deleteFramebuffer(f.fbo); if (f.depth) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); }
+      this.dropTargets();
       for (const smp of this.samplerPool.values()) gl.deleteSampler(smp);
-      this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.samplerPool.clear(); this.smpCache = null; this.gamma = null; this.gammaDirty = true;
+      this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.samplerPool.clear(); this.smpCache = null; this.gamma = null; this.gammaDirty = true;
       const recs = [...this.programsBySrc.values(), ...(this.pc ? [...this.pc.ready.values()].map((e) => e.rec).filter(Boolean) : [])];
       for (const r of recs) { r.v = undefined; r.cs = null; gl.useProgram(r.prog); setSamplerUnits(gl, r.u); }
       this.invalidateGlState(); this.curVao = null; this.lastProgram = null;
@@ -1010,7 +1057,8 @@ export class WebGLDevice {
   }
   clear(n, rects, flags, color, z, stencil) {
     const gl = this.gl, dev = this.dev;
-    if (this.capturing) this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} stencil ${stencil} target ${dev.backBuffers.includes(dev.renderTarget) ? 'screen' : 'FBO'}`);
+    this.sigMix(flags, color, (dev.renderTarget ?? dev.backBuffers[0]).id, n);
+    if (this.capturing) { const rt = dev.renderTarget ?? dev.backBuffers[0], ds = dev.depthTarget; this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} stencil ${stencil} target ${dev.backBuffers.includes(rt) ? 'screen' : 'FBO'} rt=${rt.owner ? `tex#${rt.owner.id}.${rt.level ?? 0}` : `surf#${rt.id}`}:${rt.width}x${rt.height} ds=${ds ? `surf#${ds.id}:${ds.width}x${ds.height}` : 'depthTarget' in dev ? 'none' : '?'} vp=${dev.viewport.x},${dev.viewport.y},${dev.viewport.w},${dev.viewport.h}${n ? ` rects ${n}` : ''}`); }
     const f = this.bindTarget(), r = this.tmpRect;
     const v = dev.viewport, gs = this.gs;
     // (the masks and the scissor are set directly below and the GL state cache told what they are now — not dropped: a
@@ -1388,9 +1436,10 @@ export class WebGLDevice {
   }
 
   // ---------------------------------------------------------------- state application
-  applyState(P, info) {
+  applyState(P, info, a = 0, b = 0) {
     const gl = this.gl, dev = this.dev;
     const tgt = this.bindTarget(), { h, flip } = tgt;
+    this.sigMix(P.sid ??= ++this.sigSeq, (dev.renderTarget ?? dev.backBuffers[0]).id, a, b); // (the frame's signature: sigMix)
     const v = dev.viewport, gs = this.gs;
     // (a scaled target: the viewport and scissor rectangles in its GL storage — render-scale.js; the u_viewport uniform
     // stays in Direct3D pixels, so pre-transformed vertices land at the same place of the picture)
@@ -1701,7 +1750,7 @@ export class WebGLDevice {
     if (this.vao) { this.gl.bindVertexArray(this.vao); this.gs.vao = this.vao; } // the default VAO (cached ones keep their state)
   }
   captureDraw(P, info, v, flip) {
-    const gl = this.gl; void gl;
+    const gl = this.gl;
     // (programmable pipeline: the first constant registers, with the shader listing once per program)
     if (this.dev.api9 && (this.dev.vsObj || this.dev.psObj)) {
       // (every register that is not all zero: shaders read constants anywhere in the 256)
@@ -1711,9 +1760,13 @@ export class WebGLDevice {
     }
     const texStat = (t) => { const l = t.levels?.[0]; if (!l || !l.mem || l.width * l.height > 65536 || surfacePitch(t.fmt, 1) !== 4) return ''; let nz = 0, opaque = 0; const u8 = this.mem.u8; for (let y = 0; y < l.height; y++) for (let x = 0; x < l.width; x++) { const a = u8[l.mem + y * l.pitch + x * 4 + 3]; if (a) nz++; if (a === 255) opaque++; } return `,alpha>0:${nz}/opaque:${opaque}`; };
     for (let i = 0; i < info.stages.length; i++) info.stages[i].tex = this.comImpl(this.dev.textures[i]); // (capture: the textures bound now)
-    if (this.dump) for (const st of info.stages) if (st.bound && !this.dumpedTex.has(st.tex.id)) { this.dumpedTex.add(st.tex.id); this.dumpTexture(st.tex); }
+    if (this.dump && !globalThis.ORTHROS_CAPTURE_NO_TEX) for (const st of info.stages) if (st.bound && !this.dumpedTex.has(st.tex.id)) { this.dumpedTex.add(st.tex.id); this.dumpTexture(st.tex); }
     const texs = info.stages.map((st, i) => st.bound ? `${i}:#${st.tex.id}:${st.tex.fmt}/${st.tex.width}x${st.tex.height}${st.tex.usage & 1 ? 'RT' : ''}${st.tex.levels?.[0]?.mem ? '' : '(nomem)'}${texStat(st.tex)}[addr ${this.samp(i, SAMP.ADDRESSU, 1)}/${this.samp(i, SAMP.ADDRESSV, 1)} filt ${this.samp(i, SAMP.MINFILTER, 1)}/${this.samp(i, SAMP.MAGFILTER, 1)}/${this.samp(i, SAMP.MIPFILTER, 0)}${this.samp(i, SAMP.MAXMIPLEVEL, 0) ? ` maxmip ${this.samp(i, SAMP.MAXMIPLEVEL, 0)}` : ''}${this.samp(i, SAMP.MIPMAPLODBIAS, 0) ? ` bias ${this.samp(i, SAMP.MIPMAPLODBIAS, 0)}` : ''}]` : '').filter(Boolean).join(' ');
-    this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)}/${this.rs(RS.ZFUNC, 4)} zb=${this.dev.api9 ? this.rsF(RS9.DEPTHBIAS) + '/' + this.rsF(RS9.SLOPESCALEDEPTHBIAS) : this.rs(RS.ZBIAS, 0)} st=${this.rs(RS.STENCILENABLE, 0)}${this.rs(RS.STENCILENABLE, 0) ? `[f${this.rs(RS.STENCILFUNC, 8)} ref${this.rs(RS.STENCILREF, 0)} m${(this.rs(RS.STENCILMASK, 0xffffffff) >>> 0).toString(16)} wm${(this.rs(RS.STENCILWRITEMASK, 0xffffffff) >>> 0).toString(16)} ops${this.rs(RS.STENCILFAIL, 1)}/${this.rs(RS.STENCILZFAIL, 1)}/${this.rs(RS.STENCILPASS, 1)}${this.dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0) ? ` ccw:f${this.rs(RS9.CCW_STENCILFUNC, 8)} ops${this.rs(RS9.CCW_STENCILFAIL, 1)}/${this.rs(RS9.CCW_STENCILZFAIL, 1)}/${this.rs(RS9.CCW_STENCILPASS, 1)}` : ''}]` : ''} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
+    // (the target and depth surface the game set — a surface by id, a texture level by its texture — and the GL error the
+    // previous draw left: a draw WebGL refused, e.g. a feedback loop, shows on the next line)
+    const rt = this.dev.renderTarget ?? this.dev.backBuffers[0], ds = this.dev.depthTarget, glErr = gl.getError();
+    const rtName = `${rt.owner ? `tex#${rt.owner.id}.${rt.level ?? 0}` : `surf#${rt.id}`}:${rt.width}x${rt.height}`, dsName = ds ? `surf#${ds.id}:${ds.width}x${ds.height}` : 'depthTarget' in this.dev ? 'none' : '?'; // (?: a render worker's mirror does not know it)
+    this.log(`d3d-webgl: [cap] ${flip ? 'FBO' : 'back'} rt=${rtName} ds=${dsName}${glErr ? ` glerr-before=0x${glErr.toString(16)}` : ''} vp=${v.x},${v.y},${v.w},${v.h} prog=${P.key.slice(0, 90)} tex=[${texs}] blend=${this.rs(RS.ALPHABLENDENABLE, 0)}:${this.rs(RS.SRCBLEND, 2)}/${this.rs(RS.DESTBLEND, 1)} atest=${this.rs(RS.ALPHATESTENABLE, 0)}:${this.rs(RS.ALPHAFUNC, 8)}/${this.rs(RS.ALPHAREF, 0)} z=${this.rs(RS.ZENABLE, 1)}/${this.rs(RS.ZWRITEENABLE, 1)}/${this.rs(RS.ZFUNC, 4)} zb=${this.dev.api9 ? this.rsF(RS9.DEPTHBIAS) + '/' + this.rsF(RS9.SLOPESCALEDEPTHBIAS) : this.rs(RS.ZBIAS, 0)} st=${this.rs(RS.STENCILENABLE, 0)}${this.rs(RS.STENCILENABLE, 0) ? `[f${this.rs(RS.STENCILFUNC, 8)} ref${this.rs(RS.STENCILREF, 0)} m${(this.rs(RS.STENCILMASK, 0xffffffff) >>> 0).toString(16)} wm${(this.rs(RS.STENCILWRITEMASK, 0xffffffff) >>> 0).toString(16)} ops${this.rs(RS.STENCILFAIL, 1)}/${this.rs(RS.STENCILZFAIL, 1)}/${this.rs(RS.STENCILPASS, 1)}${this.dev.api9 && this.rs(RS9.TWOSIDEDSTENCILMODE, 0) ? ` ccw:f${this.rs(RS9.CCW_STENCILFUNC, 8)} ops${this.rs(RS9.CCW_STENCILFAIL, 1)}/${this.rs(RS9.CCW_STENCILZFAIL, 1)}/${this.rs(RS9.CCW_STENCILPASS, 1)}` : ''}]` : ''} cull=${this.rs(RS.CULLMODE, 3)} cw=${this.rs(RS.COLORWRITEENABLE, 0xf)} tf=${(this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0).toString(16)} fog=${info.fog} vs=${info.L.code ? 'yes' : 'ff'} ps=${info.ps ? 'yes' : 'ff'}`);
   }
   /** Frame capture: a texture's level 0 as a PNG (render-target textures are read back from their FBO). */
   dumpTexture(t) {
@@ -1939,7 +1992,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
-    this.applyState(P, info);
+    this.applyState(P, info, count, start);
     if (!this.bindAttributes(P, info.L)) return;
     if (this.capturing) {
       const st = this.dev.streams[0], vb = this.comImpl(st.vb);
@@ -1976,7 +2029,7 @@ export class WebGLDevice {
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const ib = this.comImpl(dev.indices.ib); if (!ib) return;
     const info = this.program(); const P = info.p;
-    this.applyState(P, info);
+    this.applyState(P, info, count, start ^ (baseVertex << 16));
     if (!this.bindAttributes(P, info.L, null, baseVertex | 0)) return;
     this.bindIndices(this.glBuffer(ib, 'ib').buf);
     const short = ib.fmt === FMT.INDEX16;
@@ -2008,7 +2061,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
-    this.applyState(P, info);
+    this.applyState(P, info, count, stride);
     const n = this.vertexCount(type, count);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);
     this.streamData(gl.ARRAY_BUFFER, data, n * stride);
@@ -2023,7 +2076,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
-    this.applyState(P, info);
+    this.applyState(P, info, count, numV);
     const n = this.vertexCount(type, count);
     const short = ifmt === FMT.INDEX16;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);
