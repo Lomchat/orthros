@@ -1,8 +1,9 @@
-// The settings a game language puts in the engine's ini files (the manifest's re3.languages.<code>.ini,
-// docs/browser-ports.md "re3 ports"): each key set in its section, everything else of the file kept byte for byte — its
-// other lines, their order, comments, spacing and line endings. A file is edited as its bytes, one character each
-// (latin1): the manifest's names and values are printable ASCII (src/server/ports/re3.js), so what did not change is written
-// back as it was read.
+// Settings put in a game's ini files — a re3 port's language settings and defaults (the manifest's re3.languages.<code>.ini
+// and re3.defaults, docs/browser-ports.md "re3 ports"), a Win32 game's settings for a new player's profile (newProfileIni,
+// src/vfs/profile-ini.js): each key set in its section, everything else of the file kept byte for byte — its other lines,
+// their order, comments, spacing and line endings. A file is edited as its bytes, one character each (latin1): the
+// manifests' names and values are printable ASCII, so what did not change is written back as it was read. The section
+// named '' is the top of the file, the keys before any section header (a file of no sections: "Key = Value" lines).
 
 const BOM = '\xef\xbb\xbf'; // (UTF-8's, read as latin1)
 const SECTION = /^\s*\[([^\]]*)\]/;
@@ -31,11 +32,13 @@ export function setIni(text, sections) {
   const eol = /\r\n/.test(body) ? '\r\n' : '\n';
   const wanted = new Map(Object.entries(sections).map(([name, keys]) => [name.toLowerCase(),
     { name, last: -1, keys: new Map(Object.entries(keys).map(([key, value]) => [key.toLowerCase(), { key, value: String(value).trim(), found: false }])) }]));
-  let current = null;
+  const top = wanted.get('') ?? null; // (the keys before any section header)
+  wanted.delete('');
+  let current = top;
   lines.forEach((line, i) => {
     const content = line.replace(/\r?\n$/, ''), end = line.slice(content.length);
     const s = SECTION.exec(content);
-    if (s) { current = wanted.get(s[1].trim().toLowerCase()) ?? null; if (current) current.last = i; return; }
+    if (s) { const name = s[1].trim().toLowerCase(); current = name ? wanted.get(name) ?? null : null; if (current) current.last = i; return; }
     if (!current) return;
     if (content.trim()) current.last = i; // (the section's last line that is not blank: added keys go after it)
     const k = KEY.exec(content), entry = k && current.keys.get(k[2].toLowerCase());
@@ -55,18 +58,29 @@ export function setIni(text, sections) {
     if (lines.length && !lines.at(-1).endsWith('\n')) lines[lines.length - 1] += eol;
     for (const w of missing) lines.push(...(lines.length && lines.at(-1).trim() ? [eol] : []), `[${w.name}]${eol}`, ...added(w.keys));
   }
+  // (the top's keys last: after its last line, or first in a file whose first line is a header or that is empty)
+  const more = top ? added(top.keys) : [];
+  if (more.length) {
+    if (top.last >= 0 && !lines[top.last].endsWith('\n')) lines[top.last] += eol;
+    lines.splice(top.last + 1, 0, ...more);
+  }
   const out = bom + lines.join('');
   return out === text ? text : out;
 }
 
-/** `text`'s keys: section (lowercase) → key (lowercase) → value, without the spaces around; a key's last line wins. */
+/**
+ * `text`'s keys: section (lowercase; '' the top of the file, when it has keys) → key (lowercase) → value, without the
+ * spaces around; a key's last line wins.
+ */
 export function readIni(text) {
-  const out = new Map(); let current = null;
+  const out = new Map(); let current = null, atTop = true;
   for (const line of text.replace(/^\xef\xbb\xbf/, '').split(/\r?\n/)) {
     const s = SECTION.exec(line);
-    if (s) { const name = s[1].trim().toLowerCase(); current = out.get(name) ?? new Map(); out.set(name, current); continue; }
-    const k = current && KEY.exec(line);
-    if (k) current.set(k[2].toLowerCase(), k[4].trim());
+    if (s) { const name = s[1].trim().toLowerCase(); current = out.get(name) ?? new Map(); out.set(name, current); atTop = false; continue; }
+    const k = KEY.exec(line);
+    if (!k) continue;
+    if (atTop && !current) { current = new Map(); out.set('', current); }
+    current?.set(k[2].toLowerCase(), k[4].trim());
   }
   return out;
 }

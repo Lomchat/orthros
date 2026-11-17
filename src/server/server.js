@@ -62,7 +62,7 @@ import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64, see
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { CodeShare, servedHeat, servedRegions } from './code-share.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
-import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY } from './snapshot-store.js';
+import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY, publishMode } from './snapshot-store.js';
 import { Warmer, LearnedScenarios, learnScenarios } from './warm-jobs.js';
 import { pipeline } from 'node:stream/promises';
 
@@ -2021,7 +2021,8 @@ export function createServer(opts = {}) {
         return send(res, 200, JSON.stringify(programsList(m[1], url.searchParams.has('v') ? Number(url.searchParams.get('v')) : null)), { 'Content-Type': 'application/json' });
       }
       // a new player's starting point (snapshot-store.js): the shared snapshot of this key, language and first-launch
-      // profile; none yet: a publishing session queued. Published by that session only (its token).
+      // profile; none yet: a publishing session queued — at the page's display mode when the version's new-player
+      // settings name it (publishMode). Published by that session only (its token).
       m = /^\/api\/snapshot\/([^/]+)$/.exec(p);
       if (m) {
         const man = getManifest(m[1]); if (!man) return send(res, 404, 'no such manifest');
@@ -2029,7 +2030,8 @@ export function createServer(opts = {}) {
         if (!snapshots || !SNAPSHOT_KEY.test(key) || lang === null || runtimeOf(man) !== 'win32') return send(res, 404, 'none');
         const seed = man.profileSeed === false ? null : (seedFor(m[1], lang).key ?? null);
         if (req.method === 'POST') {
-          if (!snapshotJobs?.job(url.searchParams.get('token') ?? '', m[1], lang, key)) return send(res, 403, 'not a publishing session of this server');
+          const job = snapshotJobs?.job(url.searchParams.get('token') ?? '', m[1], lang, key);
+          if (!job) return send(res, 403, 'not a publishing session of this server');
           fs.mkdirSync(snapshots.dir, { recursive: true });
           const tmp = path.join(snapshots.dir, `upload-${process.pid}-${Date.now()}.tmp`);
           let size = 0;
@@ -2038,7 +2040,7 @@ export function createServer(opts = {}) {
             const fd = fs.openSync(tmp, 'r'), head = Buffer.alloc(4); fs.readSync(fd, head, 0, 4, 0); fs.closeSync(fd);
             if (head.readUInt32BE(0) !== 0x4f534e50) { fs.rmSync(tmp, { force: true }); return send(res, 400, 'not a snapshot'); }
             const bootMs = Number(url.searchParams.get('bootMs')); // (the publishing session's start-up to the snapshot: the cost a slow link weighs, snapshot-fetch.js)
-            await snapshots.put(m[1], lang, key, tmp, { seed, ...(bootMs > 0 && bootMs < 36e5 ? { bootMs: Math.round(bootMs) } : {}) });
+            await snapshots.put(m[1], lang, key, tmp, { seed, ...(job.mode ? { mode: job.mode } : {}), ...(bootMs > 0 && bootMs < 36e5 ? { bootMs: Math.round(bootMs) } : {}) });
             send(res, 204, '');
           }).catch(() => { fs.rmSync(tmp, { force: true }); if (!res.headersSent) send(res, 500, 'not kept'); });
           return;
@@ -2046,7 +2048,11 @@ export function createServer(opts = {}) {
         // (?piece=i: piece i of the snapshot, compressed alone — snapshot-store.js pieces —, the page downloading it into
         // its store, resumable: snapshot-fetch.js; else the whole snapshot, as before)
         const piece = url.searchParams.get('piece'), accept = String(req.headers['accept-encoding'] ?? ''), f = snapshots.open(m[1], lang, key, accept);
-        if (!f || (f.meta.seed ?? null) !== seed) { snapshotJobs?.want(m[1], lang, key); return send(res, 404, 'none yet'); }
+        if (!f || (f.meta.seed ?? null) !== seed) {
+          const mode = publishMode(man, url.searchParams.get('mode')); // (null: a mode no publishing session can run at)
+          if (mode !== null) snapshotJobs?.want(m[1], lang, key, 'publish', { mode });
+          return send(res, 404, 'none yet');
+        }
         // (what the page weighs the snapshot against on a slow link: the launch set's wire bytes in this language — light
         // and whole, launch-set.js — and the machine's start-up time the publishing session saw, when known; the units'
         // index read first — a server just started: up to 10 s —, else the units count at WIRE_RATIO)

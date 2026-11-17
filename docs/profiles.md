@@ -26,6 +26,27 @@ Every runtime names its storage from the key through `src/vfs/profile-share.js` 
 A version's `profileKey` is in the worker's manifest too; the snapshot key leaves `profileSources` out (a version added
 to the game is not the machine's).
 
+## A new player's settings: `newProfileIni` (`src/vfs/profile-ini.js`)
+
+A manifest (a version or the folder's `defaults`) may give the settings a **new player** starts with: for a player with
+no settings of their own yet — the profile empty when the session starts: no browser copy, no account copy — keys set in
+the profile's ini files once the shared first-launch files are in place (src/shared/profile-seed.js) and the manifest's
+`profileMoves` applied, before the game sees them. Afterwards the files are the player's: never touched again.
+
+```json
+"newProfileIni": { "AppData/Roaming/Age of the Ring/Options.ini": { "": { "Resolution": "{modeWidth} {modeHeight}" } } }
+```
+
+`{ <profile path>: { <section; "" = the top of the file, before any header>: { <key>: <value> } } }`, edited through
+`src/shared/ini.js` (shared with the re3 ports): a key set in place, a missing one added, the rest of the file byte for
+byte. Only a file the profile has is edited: a SAGE game that finds its `Options.ini` skips its first-launch
+measurement (`IdealStaticGameLOD`, which also picks the resolution), and one holding a single key would be measured
+again. So the version needs a shared first-launch profile in each language (canonical sets, `tools/ops/profile-seed-make.mjs`;
+added on 2026-11-17 for Age of the Ring en/fr, BFME 2.22 fr and BFME II 1.06, which had none). A value may name
+`{modeWidth}` and `{modeHeight}`: the largest display mode the player's machine lists (docs/display-modes.md) — the
+highest resolution of their screen, the owner's choice for BFME, BFME II, RotWK and Age of the Ring (2026-11-17, D127).
+Such a version's snapshots are kept per mode (docs/snapshot.md "Per display mode").
+
 ## Merging copies: `src/vfs/profile-merge.js`
 
 The one merge, the same in the browser and on the server: several copies of a profile (`{ label, at, files }`) become

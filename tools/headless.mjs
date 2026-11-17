@@ -76,7 +76,9 @@ if (opt('learn')) fs.mkdirSync(opt('learn'), { recursive: true });
 // them to an empty profile (default 2; see src/shared/profile-seed.js); --profile-seed 0: none offered, none learned
 // --server-port <p>: use an Orthros server already running on 127.0.0.1:<p> (several harness runs on one server: its
 // virtual LAN links them) instead of starting one
-// --screen WxH: the screen size the page reports (default: the viewport's), which caps the display modes listed (docs/display-modes.md)
+// --screen WxH: the screen size the page reports (default: the viewport's), which caps the display modes listed (docs/display-modes.md);
+// also the page's ?screen=: a new player's settings that name the display mode (manifest newProfileIni) take its
+// largest one, as on a player's page — without --screen a headless page leaves them out (src/vfs/profile-ini.js)
 // --games-dir <dir>: the game catalog (folders with their manifest.json) served instead of data/games (a manifest under test)
 // --telemetry <dir>: the server keeps the page's telemetry there (as the live server does; the page sends it with --ui)
 // --bench <name>: the page's bench mode (?bench=<name>, tools/scenarios/bench, docs/real-machine-bench.md): the page
@@ -117,6 +119,7 @@ browser.on('disconnected', () => console.log('[pageerror] browser disconnected')
 const q = new URLSearchParams({ manifest: name, headless: '1' });
 if (args.includes('--ui')) q.delete('headless'); // the player's page (header, loading screen, overlays) instead of the bare frame
 if (opt('game-lang')) q.set('gameLang', opt('game-lang'));
+if (opt('screen')) q.set('screen', opt('screen'));
 const bench = opt('bench');
 if (bench) q.set('bench', bench); // (the manifest named first must be one of the bench's)
 if (opt('log')) q.set('log', opt('log'));

@@ -10,7 +10,7 @@ import { loadGameCatalog } from '../src/server/game-catalog.js';
 import { gameLayers } from '../src/server/game-files.js';
 import { re3Problem, re3Modes } from '../src/server/ports/re3.js';
 import { createServer } from '../src/server/server.js';
-import { setIni, setIniDefaults, readIni, bytesToText, textToBytes } from '../src/ports/re3/ini.js';
+import { setIni, setIniDefaults, readIni, bytesToText, textToBytes } from '../src/shared/ini.js';
 import { profileSnapshot, restoreProfile, setProfileIni, toCloud, findPath, casePath, languageIni, envPreRun } from '../src/ports/re3/profile.js';
 import { mountFiles } from '../src/vfs/emscripten-files.js';
 

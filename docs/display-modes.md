@@ -18,3 +18,19 @@ One list answers every API that enumerates display modes, `src/win32/display-mod
 - Without a known screen (Node harness), modes up to 1920x1200 are listed.
 
 A game may still filter the list it shows (the game's own logic, e.g. only some aspect ratios).
+
+## The largest mode: a new player's resolution (2026-11-17)
+
+`largestMode(display)` is the mode of that list with the most pixels (the wider one on a tie): the highest resolution
+a game's options offer the player. A manifest's `newProfileIni` (src/vfs/profile-ini.js, docs/profiles.md "A new
+player's settings") may name it as `{modeWidth}` / `{modeHeight}` — BFME, BFME II, RotWK and Age of the Ring set
+`Resolution` in `Options.ini` with it. The page computes it (`main.js`, from the manifest's display and the screen) and
+gives it to the worker as `opts.displayMode` and to the snapshot key (docs/snapshot.md "Per display mode"); `?screen=WxH`
+replaces the browser's screen (a publishing session's, the harness's `--screen`). A headless page without `?screen=`
+leaves such settings out: the harness's scenarios keep the resolution they were written for.
+
+The page keeps the game's frame at its mode's size (`#frame { flex: none }`) and scales it to the window (`fit`). Before
+2026-11-17 a mode wider than the window (CSS pixels: a 1920x1080 mode on a laptop at 125 % is 1536 CSS pixels wide) let
+the stage's flex layout shrink the frame's box: the scaled picture sat off-centre, shifted right by s·(w − W)/2 and its
+right edge cut (seen at 2560x1440 in a 1280-pixel window: the left half of the picture only). The pointer was right (it
+reads the canvas's own rectangle).

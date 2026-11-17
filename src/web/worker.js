@@ -38,6 +38,8 @@ import { compatSummary } from '../core/compat-stats.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../shared/profile-seed.js';
 import { localeTag } from '../win32/locale.js';
 import { applyProfileMoves } from '../vfs/profile-moves.js';
+import { applyNewProfileIni } from '../vfs/profile-ini.js';
+import { parseMode } from '../win32/display-modes.js';
 import { flushProfileOpfs, profileDumpOf } from '../vfs/profile-opfs.js';
 import { LearnedHeat } from '../cpu/jit/heat.js';
 import { captureVm, restoreVm, notQuiet, persistentChanged } from '../core/vm-snapshot.js';
@@ -377,7 +379,8 @@ async function start(m) {
   // (a profile still empty here: the game's first launch on this browser — the files a first session of this game
   // wrote, as the server learned them, are put in place: the game skips its first-launch work; else this session's are
   // learned. Manifest compat flag "profileSeed": false, ?profileseed=0: off)
-  if (m.opts.profileSeed && manifest.profileSeed !== false && profile.files.size === 0) await seedProfile(m.opts.gameLanguage ?? '', m.opts.session ?? '');
+  const profileWasNew = profile.files.size === 0;
+  if (m.opts.profileSeed && manifest.profileSeed !== false && profileWasNew) await seedProfile(m.opts.gameLanguage ?? '', m.opts.session ?? '');
   // (files the manifest says the game keeps elsewhere now — "profileMoves", profile-moves.js: the browser's copy, the
   // account's restored into it, a shared first-launch profile learned before — put at their new place before the game
   // sees them; the changes recorded, so the browser's copy follows at the first flush and the account's after it)
@@ -385,6 +388,13 @@ async function start(m) {
   if (manifest.profileMoves) {
     const { moved, kept } = applyProfileMoves(profile, manifest.profileMoves);
     if (moved.length || kept.length) log('file', `profile: ${moved.length} entr${moved.length === 1 ? 'y' : 'ies'} moved to the game's new place (manifest profileMoves)${kept.length ? `, ${kept.length} kept at the old one (the new place has its own): ${kept.slice(0, 4).join(', ')}` : ''}`);
+  }
+  // (a new player — nothing of their own in the profile when the session started —: the settings the manifest gives a
+  // new profile, set in the shared first-launch files — "newProfileIni", profile-ini.js: e.g. the highest resolution
+  // their screen offers. The mode is the page's choice — main.js, part of the snapshot's key: '' none, its keys left)
+  if (profileWasNew && manifest.newProfileIni) {
+    const mode = parseMode(m.opts.displayMode), changed = applyNewProfileIni(profile, manifest.newProfileIni, { mode });
+    if (changed.length) log('file', `profile: a new player's settings set (manifest newProfileIni${mode ? `, display mode ${mode.join('x')}` : ''}): ${changed.join(', ')}`);
   }
   // (the profile is the player's, kept across sessions: what the game sees of it from here is recorded — a snapshot
   // applies only to a profile as its machine saw it, docs/snapshot.md)

@@ -2,8 +2,10 @@
 // session took on this server — a headless browser started for it (tools/snapshot-publish.mjs, through the browser
 // slots), which published it here. Per game version, language and snapshot key (the page's: Orthros' state-owning
 // sources, the version's files, the options that change the machine), with the shared first-launch profile it started
-// from (a new player's profile: profile-seed.js) — another one since makes it stale. Stored compressed (gzip, and brotli
-// for the browsers that take it), the two most recent keys per game version and language; and in pieces (`.brp`:
+// from (a new player's profile: profile-seed.js) — another one since makes it stale — and, for a version whose new-player
+// settings name the display mode (src/vfs/profile-ini.js), the mode its session ran at (a key per mode: the page asks
+// with its mode, the publishing session is run at it). Stored compressed (gzip, and brotli for the browsers that take
+// it), the two most recent keys per game version, language and mode (MODES_KEPT modes at most); and in pieces (`.brp`:
 // PIECE bytes of the snapshot each compressed alone, brotli, their offsets in `.brp.json`) for the page that downloads
 // it piece by piece into its store, resumable (src/web/snapshot-fetch.js): each piece goes with Content-Encoding (the
 // browser decodes it), made at the publish, or once from the `.br` for a snapshot kept before them.
@@ -14,6 +16,8 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { learnCommand, learnTimeout } from './warm-jobs.js';
+import { profileIniUsesMode } from '../vfs/profile-ini.js';
+import { COMMON_MODES, parseMode } from '../win32/display-modes.js';
 import { pipeline } from 'node:stream/promises';
 
 const safe = (s) => s.replace(/[^A-Za-z0-9._-]/g, '_');
@@ -24,6 +28,20 @@ export const SNAPSHOT_PIECE = 4 << 20;
 const GZ_PIECES = 32;
 const PIECE_BR = { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_LGWIN]: 22 } };
 const brotli = (buf) => new Promise((res, rej) => zlib.brotliCompress(buf, PIECE_BR, (e, out) => (e ? rej(e) : res(out))));
+/** Display modes whose snapshots a game version and language keep (the most recent ones). */
+const MODES_KEPT = 4;
+
+/**
+ * The display mode a publishing session of version manifest `man` runs at for a page's `mode` ("WxH", snapshot-fetch.js):
+ * '' when the manifest's new-player settings do not name it (src/vfs/profile-ini.js); else that mode when a player's
+ * machine lists it (display-modes.js: a common mode, or the game's own display); else null — no session could make the
+ * page's key.
+ */
+export function publishMode(man, mode) {
+  if (!profileIniUsesMode(man?.newProfileIni)) return '';
+  const m = parseMode(mode), d = man.display ?? {};
+  return m && (COMMON_MODES.some(([w, h]) => w === m[0] && h === m[1]) || (m[0] === d.width && m[1] === d.height)) ? m.join('x') : null;
+}
 
 export class SnapshotStore {
   /** @param {string} dir where they are kept (created) */
@@ -49,7 +67,8 @@ export class SnapshotStore {
   }
   /**
    * Keep the snapshot in file `src` (moved away): compressed, its record written last (`extra`: what it applies to
-   * besides its key — the first-launch profile it started from). Older keys of the same game version and language go.
+   * besides its key — the first-launch profile it started from, the display mode). Older keys of the same game version,
+   * language and mode go.
    * The puts of one key run one after the other (a session posts a later snapshot while the first is still being
    * compressed: both wrote the same .tmp files, the second failed with HTTP 500 — 3 times on the live runner in 5 days —
    * after removing the record, which could leave the key with none).
@@ -118,12 +137,18 @@ export class SnapshotStore {
       for (const f of files) { const m = /^(.+)-([0-9a-f]{32})\.json$/.exec(f); if (m && !f.endsWith('.brp.json')) await this.pieces(name, m[1], m[2]).catch(() => null); }
     }
   }
-  /** Only the `keep` most recent keys of a game version and language. */
+  /** Only the `keep` most recent keys of a game version, language and display mode — of MODES_KEPT modes at most. */
   prune(name, lang) {
     const dir = path.join(this.dir, safe(name)), prefix = `${safe(lang || 'none')}-`;
     let recs; try { recs = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith('.json') && !f.endsWith('.brp.json')); } catch { return; }
-    const byAge = recs.map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs })).sort((a, b) => b.t - a.t);
-    for (const { f } of byAge.slice(this.keep)) for (const ext of ['.json', '.gz', '.br', '.brp', '.brp.json']) fs.rmSync(path.join(dir, f.slice(0, -5) + ext), { force: true });
+    const modeOf = (f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).mode ?? ''; } catch { return ''; } };
+    const byAge = recs.map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs, mode: modeOf(f) })).sort((a, b) => b.t - a.t);
+    const perMode = new Map();
+    for (const { f, mode } of byAge) {
+      const n = perMode.get(mode) ?? 0;
+      if (n < this.keep && (n > 0 || perMode.size < MODES_KEPT)) { perMode.set(mode, n + 1); continue; }
+      for (const ext of ['.json', '.gz', '.br', '.brp', '.brp.json']) fs.rmSync(path.join(dir, f.slice(0, -5) + ext), { force: true });
+    }
   }
   /** The file to send for an Accept-Encoding header: { file, encoding, size } (brotli when taken), or null. */
   open(name, lang, key, accept = '') {
@@ -144,11 +169,14 @@ export class SnapshotJobs {
     this.root = root; this.url = url; this.logDir = logDir; this.retryMs = retryMs; this.timeoutS = timeoutS;
     this.queue = []; this.running = null; this.tried = new Map(); this.tokens = new Map();
   }
-  /** Queue a session for (game version, language, key) unless one ran or is waiting. */
-  want(name, lang, key, kind = 'publish') {
+  /**
+   * Queue a session for (game version, language, key) unless one ran or is waiting; `mode`: the display mode it runs at
+   * ("WxH", publishMode: its page told the screen — the key's own).
+   */
+  want(name, lang, key, kind = 'publish', { mode = '' } = {}) {
     const id = `${kind === 'publish' ? '' : kind + '|'}${name}|${lang}|${key}`, t = this.tried.get(id);
     if ((t && Date.now() - t < this.retryMs) || this.running?.id === id || this.queue.some((j) => j.id === id)) return false;
-    this.queue.push({ id, name, lang, key, kind }); this.next();
+    this.queue.push({ id, name, lang, key, kind, mode }); this.next();
     return true;
   }
   /** The job a POST's token belongs to (it must name the same game version, language and key), or null. */
@@ -162,7 +190,7 @@ export class SnapshotJobs {
     fs.mkdirSync(this.logDir, { recursive: true });
     const log = fs.openSync(path.join(this.logDir, `publish-${safe(j.name)}-${safe(j.lang || 'none')}.log`), 'w');
     const url = this.url(), scratch = j.kind === 'learn' ? fs.mkdtempSync(path.join(fs.existsSync('/tmp/orthros-scratch') ? '/tmp/orthros-scratch' : os.tmpdir(), 'learn-')) : null;
-    const args = scratch ? learnCommand(j.name, url, token, scratch, j.lang) : ['node', 'tools/snapshot-publish.mjs', j.name, '--url', url, '--lang', j.lang, '--key', j.key, '--token', token];
+    const args = scratch ? learnCommand(j.name, url, token, scratch, j.lang) : ['node', 'tools/snapshot-publish.mjs', j.name, '--url', url, '--lang', j.lang, '--key', j.key, '--token', token, ...(j.mode ? ['--screen', j.mode] : [])];
     const timeoutS = scratch ? Math.max(this.timeoutS, learnTimeout(this.root, j.name)) : this.timeoutS;
     const child = spawn('timeout', [String(timeoutS), path.join(this.root, 'tools/with-browser-slot.sh'), ...args], { cwd: this.root, stdio: ['ignore', log, log] });
     let ended = false;
@@ -186,7 +214,7 @@ export class SnapshotQueue {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file + '.tmp', JSON.stringify({ v: 1, jobs: this.jobs })); fs.renameSync(this.file + '.tmp', this.file);
   }
-  want(name, lang, key, kind = 'publish') {
+  want(name, lang, key, kind = 'publish', { mode = '' } = {}) {
     const now = Date.now();
     // (a job past its ttl only keeps its key from being queued again within retryMs: one of the same version, language
     // and kind under another key is moot — a deploy changed the key — and goes; when full, the oldest past ttl go first:
@@ -200,7 +228,7 @@ export class SnapshotQueue {
       this.jobs = this.jobs.filter((j) => !drop.has(j));
       if (this.jobs.length >= this.max) return false;
     }
-    this.jobs.push({ name, lang, key, kind, token: crypto.randomBytes(16).toString('hex'), at: now });
+    this.jobs.push({ name, lang, key, kind, ...(mode ? { mode } : {}), token: crypto.randomBytes(16).toString('hex'), at: now });
     this.save();
     return true;
   }

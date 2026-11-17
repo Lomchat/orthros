@@ -17,6 +17,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { snapshotKey } from '../web/snapshot-key.js';
+import { profileIniUsesMode } from '../vfs/profile-ini.js';
+
+/**
+ * The display mode warm jobs publish at, for a version whose new-player settings name it (src/vfs/profile-ini.js): the
+ * most common player's screen. A player of another one asks for theirs, which queues it (server.js, publishMode).
+ */
+export const WARM_MODE = '1920x1080';
 
 /** The language a plain page starts a version in (main.js start): 'en' when declared, else the first, else none. */
 export const defaultLanguage = (man) => { const o = man.languages ?? []; return o.includes('en') ? 'en' : o[0] ?? null; };
@@ -37,9 +44,12 @@ export function warmLanguages(man, use = {}, prefer = []) {
   return out.length ? out : [defaultLanguage(man)?.toLowerCase() ?? null];
 }
 
-/** The key a plain page's session of `name` in `lang` gets (the options of main.js with no URL parameter). */
-export const plainKey = (sources, name, manifest, tree, lang) =>
-  snapshotKey(sources, name, manifest, tree, { gameLanguage: lang, timeScale: 1, interp: false, interpRange: '', dbg: '', jitOpts: '', noF32: false, f32Off: '' });
+/**
+ * The key a plain page's session of `name` in `lang` gets (the options of main.js with no URL parameter), on a screen
+ * whose largest display mode is `mode` ("WxH"; '' for a version whose new-player settings do not name it).
+ */
+export const plainKey = (sources, name, manifest, tree, lang, mode = '') =>
+  snapshotKey(sources, name, manifest, tree, { gameLanguage: lang, timeScale: 1, interp: false, interpRange: '', dbg: '', jitOpts: '', noF32: false, f32Off: '', displayMode: mode });
 
 /**
  * The sessions a learn job plays for `name`, in order: the version's learn scenarios (tools/scenarios/bench/index.json
@@ -137,18 +147,19 @@ export class Warmer {
   stop() { clearTimeout(this.timer); }
   /**
    * What each version still lacks, by rank of language then in catalog order: [{ kind: 'publish' | 'learn', name, lang,
-   * key }] — every version's first language (its snapshot, else its learn job, played in it) before any version's second
-   * language (its snapshot only).
+   * key, mode }] — every version's first language (its snapshot, else its learn job, played in it) before any version's
+   * second language (its snapshot only). A version whose new-player settings name the display mode: its snapshots at
+   * WARM_MODE.
    */
   async plan() {
     const ranks = [], src = this.sources();
     if (!src?.hash) return [];
     for (const { name, man } of this.versions()) {
       let v; try { v = await this.fetchVersion(name); } catch { continue; }
-      const langs = warmLanguages(man, this.langUse(name) ?? {}, this.prefer);
+      const langs = warmLanguages(man, this.langUse(name) ?? {}, this.prefer), mode = profileIniUsesMode(v.manifest?.newProfileIni) ? WARM_MODE : '';
       for (let r = 0; r < langs.length; r++) {
-        const l = langs[r] ?? '', key = await plainKey(src.hash, name, v.manifest, v.tree, langs[r]);
-        const job = !this.snapshotReady(name, l, key) ? { kind: 'publish', name, lang: l, key } : r === 0 && !this.learned(name) ? { kind: 'learn', name, lang: l, key } : null;
+        const l = langs[r] ?? '', key = await plainKey(src.hash, name, v.manifest, v.tree, langs[r], mode);
+        const job = !this.snapshotReady(name, l, key) ? { kind: 'publish', name, lang: l, key, mode } : r === 0 && !this.learned(name) ? { kind: 'learn', name, lang: l, key } : null;
         if (job) (ranks[r] ??= []).push(job);
       }
     }
@@ -166,7 +177,7 @@ export class Warmer {
       if (this.current && !this.met(this.current) && Date.now() - this.current.at < this.ttlMs) return null; // (the runner has not finished)
       this.current = null;
       for (const j of await this.plan()) {
-        if (this.jobs.want(j.name, j.lang, j.key, j.kind)) { this.current = { ...j, at: Date.now() }; this.log(`warm: queued ${j.kind} of ${j.name} (${j.lang || 'no language'}) ${j.key}`); return this.current; }
+        if (this.jobs.want(j.name, j.lang, j.key, j.kind, { mode: j.mode ?? '' })) { this.current = { ...j, at: Date.now() }; this.log(`warm: queued ${j.kind} of ${j.name} (${j.lang || 'no language'}) ${j.key}`); return this.current; }
       }
       return null;
     } finally { this.busy = false; }

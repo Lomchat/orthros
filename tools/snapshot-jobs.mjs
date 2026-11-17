@@ -22,7 +22,7 @@ const run = (j) => new Promise((resolve) => {
   // the reads — warm-jobs.js, tools/warm-learn.mjs)
   const scratch = j.kind === 'learn' ? fs.mkdtempSync(path.join(fs.existsSync('/tmp/orthros-scratch') ? '/tmp/orthros-scratch' : os.tmpdir(), 'warm-learn-')) : null;
   const a = scratch ? [String(learnTimeout(root, j.name)), path.join(root, 'tools/with-browser-slot.sh'), ...learnCommand(j.name, server, j.token, scratch, j.lang)]
-    : ['1500', path.join(root, 'tools/with-browser-slot.sh'), 'node', 'tools/snapshot-publish.mjs', j.name, '--url', server, '--lang', j.lang, '--key', j.key, '--token', j.token];
+    : ['1500', path.join(root, 'tools/with-browser-slot.sh'), 'node', 'tools/snapshot-publish.mjs', j.name, '--url', server, '--lang', j.lang, '--key', j.key, '--token', j.token, ...(j.mode ? ['--screen', j.mode] : [])];
   const p = spawn('timeout', a, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
   const out = (d) => { for (const l of d.toString().split('\n').filter((x) => x && !(scratch && x.startsWith('[t=')))) log(`${j.name} ${j.lang}: ${l.slice(0, 300)}`); };
   p.stdout.on('data', out); p.stderr.on('data', out);

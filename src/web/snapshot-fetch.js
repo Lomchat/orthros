@@ -55,14 +55,15 @@ export function chooseSnapshot({ left, bytes = 0, bw, launchWire = null, bootMs 
 
 /**
  * The shared snapshot of `o.name` for `o.key` and `o.lang`: its bytes (an ArrayBuffer, `.how` on it), or null — none on
- * the server, a cold start chosen, a failure. o: { name, key, lang, dir: () => Promise<FileSystemDirectoryHandle> (the
+ * the server, a cold start chosen, a failure. o: { name, key, lang, mode? ("WxH"), dir: () => Promise<FileSystemDirectoryHandle> (the
  * game's snapshot folder, created), log(msg), progress({ bytes, total, bw }) (wire bytes; every second at most),
  * chosen(how) (the choice, once: telemetry), fetch? }. `how`: { chosen ('snapshot' | 'cold'), bw, snapS, coldS,
  * resumed (wire bytes here from an earlier visit), ms }.
  */
 export async function fetchSharedSnapshot(o) {
   const t0 = performance.now(), doFetch = o.fetch ?? fetch;
-  const url = (i) => `/api/snapshot/${encodeURIComponent(o.name)}?key=${o.key}&lang=${encodeURIComponent(o.lang ?? '')}&piece=${i}`;
+  // (mode: the display mode a new player's settings take — main.js —, so that a publishing session can be run at it)
+  const url = (i) => `/api/snapshot/${encodeURIComponent(o.name)}?key=${o.key}&lang=${encodeURIComponent(o.lang ?? '')}${o.mode ? `&mode=${o.mode}` : ''}&piece=${i}`;
   let dir = null; try { dir = await (await o.dir()).getDirectoryHandle('shared', { create: true }); } catch { /* no store: in memory */ }
   const info = await readInfo(dir);
   const mine = !!info && info.key === o.key && info.lang === (o.lang ?? '');

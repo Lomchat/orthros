@@ -3,7 +3,7 @@
 // root, where the page mounted the game's files (../port-files.js). The profile is every regular file there that is
 // not a mounted game file: created by the engine, or a game file it replaced. It is kept as { path relative to the
 // root, data }, in IndexedDB and on the player's account, and put back before the engine starts.
-import { bytesToText, textToBytes, setIni } from './ini.js';
+import { bytesToText, textToBytes, setIni } from '../../shared/ini.js';
 
 /** A profile path: relative, '/'-separated, no empty, '.' or '..' part, no control character. */
 export const profilePathOk = (p) => typeof p === 'string' && p.length > 0 && p.length <= 1024 && !p.startsWith('/') && !p.includes('\\') && !/[\x00-\x1f]/.test(p) && p.split('/').every((x) => x && x !== '.' && x !== '..');

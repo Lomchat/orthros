@@ -9,7 +9,7 @@
     "name": { "type": "string", "minLength": 1 },
     "defaultVersion": { "$ref": "#/$defs/id" },
     "sharedBase": { "type": "boolean", "default": true, "description": "Un dossier de deux versions ou plus partage les fichiers de base/ que ses versions ne remplacent pas : le serveur les marque du propriétaire « <id>@base », le navigateur les garde une seule fois (magasin orthros-files-<id>@base, /gamez/<id>@base/), quelle que soit la version jouée (docs/slow-network.md « A game's shared base »). false : chaque version garde sa propre copie. Pas dans defaults." },
-    "defaults": { "type": "object", "description": "Champs communs aux versions : runtime, goldsrc, re3, mmo, mount, display, cover, coverFile, registry, cdrom, profileSeed, profileMoves, ownProfile, profileSettings, languageFileAliases, languageFiles, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
+    "defaults": { "type": "object", "description": "Champs communs aux versions : runtime, goldsrc, re3, mmo, mount, display, cover, coverFile, registry, cdrom, profileSeed, profileMoves, newProfileIni, ownProfile, profileSettings, languageFileAliases, languageFiles, glWorker (false ou 0 : rendu Direct3D dans le fil de l'émulateur au lieu du worker de rendu, docs/render-worker.md), etc." },
     "versions": {
       "type": "array",
       "minItems": 1,
@@ -239,6 +239,20 @@
             }
           },
           "profileSeed": { "type": "boolean", "description": "false : aucun profil de premier lancement partagé pour ce jeu (src/shared/profile-seed.js) — ni proposé à un profil vide, ni appris. Aussi dans defaults." },
+          "newProfileIni": {
+            "type": "object", "maxProperties": 8,
+            "description": "Réglages d'un nouveau joueur (win32 ; src/vfs/profile-ini.js) : pour un joueur sans réglages à lui (profil vide au démarrage : ni copie du navigateur, ni copie du compte), posés dans les fichiers ini de son profil une fois le profil de premier lancement partagé en place, avant que le jeu les voie ; ensuite les fichiers sont les siens. { <fichier du profil, séparé par /> : { <section ; \"\" = le haut du fichier, avant tout en-tête> : { <clé> : <valeur> } } }. Seul un fichier que le profil a est modifié (sinon le premier lancement du jeu écrit le sien) ; une clé posée en place, une clé absente ajoutée, le reste du fichier octet pour octet. Une valeur peut nommer {modeWidth} et {modeHeight} : le plus grand mode d'affichage que liste la machine du joueur (son écran, display-modes.js) — les instantanés d'une telle version sont alors gardés par mode (docs/snapshot.md). Exemple : la plus haute résolution. Aussi dans defaults.",
+            "propertyNames": { "maxLength": 240 },
+            "additionalProperties": {
+              "type": "object", "minProperties": 1, "maxProperties": 16,
+              "propertyNames": { "maxLength": 64, "pattern": "^(?:|[^\\s\\[\\]](?:[^\\[\\]]{0,62}[^\\s\\[\\]])?)$" },
+              "additionalProperties": {
+                "type": "object", "minProperties": 1, "maxProperties": 32,
+                "propertyNames": { "maxLength": 64, "pattern": "^[^\\s=;#\\[\\]](?:[^=\\[\\]]{0,62}[^\\s=\\[\\]])?$" },
+                "additionalProperties": { "type": "string", "maxLength": 128, "pattern": "^(?:[\\x21-\\x7e](?:[\\x20-\\x7e]*[\\x21-\\x7e])?)?$" }
+              }
+            }
+          },
           "cdrom": {
             "description": "Les fichiers du jeu servent aussi de lecteur de CD-ROM (jeux qui vérifient leur disque) : une lettre, ou { drive, label, serial }. Aussi dans defaults.",
             "oneOf": [

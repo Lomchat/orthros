@@ -241,6 +241,19 @@ A sandboxed server (the production service: a dynamic user, no home, its own /tm
 runs the sessions through the browser slot guard. `node tools/check/snapshot-shared-check.mjs <manifest> [--queue]`: the whole
 path on a private server — a first new player, the server's session, a second new player who must start from it.
 
+### Per display mode (2026-11-17)
+
+A version whose new-player settings name the display mode (`newProfileIni` with `{modeWidth}`/`{modeHeight}`,
+docs/profiles.md: the highest resolution of the player's screen) starts a new player's machine from a profile that
+differs by screen. The page puts that mode in the key (`snapshot-key.js` `machine.mode`, only for such a version: every
+other key is as before) and in its request (`/api/snapshot/<m>?key=&lang=&mode=WxH`); the server queues the publishing
+session at that mode (`publishMode`: a mode a player's machine can list — a common mode or the game's own display —,
+else none, as no session could make that key) and `tools/snapshot-publish.mjs --screen WxH` opens the page with
+`?screen=`, whose largest mode is that one (the publishing session's key is the player's). The store keeps the two
+most recent keys per version, language **and mode**, of 4 modes at most (`MODES_KEPT`). Warm jobs publish at
+`WARM_MODE` (1920x1080, the most common screen); a player with another screen asks for theirs, which queues it, and
+starts cold meanwhile (then from their own snapshot).
+
 ## Warm jobs: snapshots and learned lists made ahead (`src/server/warm-jobs.js`)
 
 Until now a shared snapshot was queued only by a new player's 404, so that player (the first one after every deploy that

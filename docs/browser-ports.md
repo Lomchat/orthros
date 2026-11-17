@@ -27,7 +27,7 @@ only its mod stack: `requires` puts the original game's version's files beneath 
 | --- | --- | --- |
 | `src/server/ports/goldsrc.js` | manifest checks, engine availability, multiplayer relay, linked game tree of the dedicated server | yes |
 | `src/ports/goldsrc/` | the port's page (`play.html`, `play.js`, `storage.js`, `style.css`), `bsp-reads.js` (a map's load announced, below "Map loads announced") | yes |
-| `src/server/ports/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `ini.js`, `style.css`) | yes |
+| `src/server/ports/re3.js`, `src/ports/re3/` | the re3 ports' manifest checks and engine availability; their page (`play.html`, `play.js`, `profile.js`, `style.css`; their ini files through `src/shared/ini.js`) | yes |
 | `tools/re3/` | `lock.json` (the engine's pinned sources — Orthros' fork —, image, Emscripten ports and digests), `build.sh` (the engine from source), `patches/` (a build's own patches), `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/goldsrc/` | `lock.json` (pinned upstream sources and artifacts, SHA-256), `install-engine.py`, `build-server.sh`, `build-modules.sh` with `patches/` (`hl-arsenal/`: the mod) and `cmake/` (game modules from source), `release-gamefiles.py` (a release's archives as loose game files), `bot-nav.mjs` (bots' navigation meshes), `server.mjs` (dedicated server), `orthros-goldsrc@.service`, `check.mjs` (browser check), `perf.mjs` (frame cost) | yes |
 | `tools/bench/port-perf.mjs` | the ports' shared frame measurement (below, "Measuring a port") | yes |
@@ -1292,7 +1292,7 @@ Every ini file a language names (in any of `re3.languages`) is set up in the pro
 player's language's settings, if it has any. The file used is the profile's own of that name, found whatever its case.
 Failing that, a copy of the game's own is made, even when it already has these settings: the engine writes its
 settings there. Failing that, a new file is created in the folders that are there, whatever their case.
-`src/ports/re3/ini.js` sets keys in place, adds missing ones to their section and missing sections at the end, and
+`src/shared/ini.js` sets keys in place, adds missing ones to their section and missing sections at the end, and
 keeps the rest byte for byte. The same settings set again change nothing.
 
 A version's `re3.defaults` (`{ <file>: { <section>: { <key>: <value> } } }`, the same rules) are settings a profile gets

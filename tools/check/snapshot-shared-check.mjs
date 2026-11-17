@@ -4,18 +4,23 @@
 // (tools/snapshot-publish.mjs) — then, once it published, a second new player (a fresh browser profile) must start
 // from it. This script opens no browser itself: each player and the server's session go through the browser slot guard.
 //   node tools/check/snapshot-shared-check.mjs <manifest> [--games-dir <dir>] [--lang <l>] [--wait <s>] [--after <s>] [--queue] [--keep]
-//   --queue: as a sandboxed server (--snapshot-queue), the session run by tools/snapshot-jobs.mjs
+//     [--screen WxH] [--canon <learn dir>]
+//   --queue: as a sandboxed server (--snapshot-queue), the session run by tools/snapshot-jobs.mjs; --screen: the players'
+//   screen (?screen=: a new player's display mode, for a manifest whose newProfileIni names it — its snapshot per mode);
+//   --canon: the version's canonical first-launch profile copied from that learn directory (src/shared/profile-seed.js)
 //   --wait: seconds at most for the publishing session (1800); --after: seconds each player plays (30); --keep: the
 //   scratch directory (server data, screenshots) kept
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createServer } from '../../src/server/server.js';
+import { seedCanonFile } from '../../src/shared/profile-seed.js';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const name = args[0], lang = opt('lang', 'en'), wait = Number(opt('wait', 1800)), after = opt('after', '30');
 const dir = `/tmp/orthros-scratch/snapshot-shared-${name}`;
 fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(path.join(dir, 'learn'), { recursive: true });
+if (opt('canon')) fs.copyFileSync(path.join(opt('canon'), seedCanonFile(name)), path.join(dir, 'learn', seedCanonFile(name)));
 const t0 = Date.now(), log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(0)}s]`, ...a);
 const queued = args.includes('--queue');
 const server = createServer({ gamesDir: opt('games-dir'), learnDir: path.join(dir, 'learn'), snapshotJobs: queued ? 'queue' : true });
@@ -23,7 +28,7 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const url = `http://127.0.0.1:${server.address().port}`;
 const root = new URL('../..', import.meta.url).pathname;
 const player = (tag, expect) => new Promise((resolve) => {
-  const a = ['node', 'tools/check/snapshot-browser-check.mjs', name, '--url', url, '--once', '--after', after, '--query', `gameLang=${lang}`, '--out', path.join(dir, tag), ...(expect ? ['--expect-restored'] : [])];
+  const a = ['node', 'tools/check/snapshot-browser-check.mjs', name, '--url', url, '--once', '--after', after, '--query', `gameLang=${lang}${opt('screen') ? `&screen=${opt('screen')}` : ''}`, '--out', path.join(dir, tag), ...(expect ? ['--expect-restored'] : [])];
   const p = spawn(path.join(root, 'tools/with-browser-slot.sh'), a, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
   p.stdout.on('data', (d) => process.stdout.write(d.toString().split('\n').filter(Boolean).map((l) => `  ${tag}: ${l}\n`).join('')));
   p.stderr.on('data', (d) => process.stderr.write(d));

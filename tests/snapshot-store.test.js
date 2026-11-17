@@ -19,7 +19,9 @@ test('shared snapshots: published by the server\'s session only, served compress
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-snapstore-'));
   fs.mkdirSync(path.join(dir, 'man')); fs.mkdirSync(path.join(dir, 'learn'));
   fs.writeFileSync(path.join(dir, 'man', 'g.json'), JSON.stringify({ name: 'g', folder: dir, exe: 'x.exe' }));
-  const wanted = [], jobs = { want: (...a) => { wanted.push(a.join('|')); return true; }, job: (t, name, lang, key) => (t === 'tok' && name === 'g' && lang === 'en' && [KEY, KEY2, KEY3].includes(key) ? {} : null) };
+  // (h: a new player's settings name the display mode — its snapshots per mode, the publishing session run at the page's)
+  fs.writeFileSync(path.join(dir, 'man', 'h.json'), JSON.stringify({ name: 'h', folder: dir, exe: 'x.exe', display: { width: 1024, height: 768 }, newProfileIni: { 'AppData/H/Options.ini': { '': { Resolution: '{modeWidth} {modeHeight}' } } } }));
+  const wanted = [], jobs = { want: (name, lang, key, kind, o) => { wanted.push([name, lang, key, ...(o?.mode ? [o.mode] : [])].join('|')); return true; }, job: (t, name, lang, key) => (t === 'tok' && name === 'g' && lang === 'en' && [KEY, KEY2, KEY3].includes(key) ? {} : null) };
   const s = createServer({ manifests: path.join(dir, 'man'), learnDir: path.join(dir, 'learn'), learnWriteMs: 10, profileSeedQuorum: 1, snapshotJobs: jobs });
   await new Promise((r) => s.listen(0, '127.0.0.1', r));
   const u = (p) => `http://127.0.0.1:${s.address().port}${p}`;
@@ -29,6 +31,10 @@ test('shared snapshots: published by the server\'s session only, served compress
     assert.equal((await fetch(u(`/api/snapshot/g?key=${KEY}&lang=en`))).status, 404);
     assert.deepEqual(wanted, [`g|en|${KEY}`]);
     assert.equal((await fetch(u('/api/snapshot/g?key=nothex&lang=en'))).status, 404);
+    // per display mode: the page's own queued; one no player's machine lists, none (no session could make its key)
+    assert.equal((await fetch(u(`/api/snapshot/h?key=${KEY}&lang=en&mode=2560x1440`))).status, 404);
+    assert.equal((await fetch(u(`/api/snapshot/h?key=${KEY2}&lang=en&mode=9999x9999`))).status, 404);
+    assert.deepEqual(wanted.splice(1), [`h|en|${KEY}|2560x1440`]);
     // published: with the job's token only, a snapshot only
     assert.equal((await post(KEY, snap(5000), 'other')).status, 403);
     assert.equal((await post(KEY, Buffer.from('not a snapshot'))).status, 400);
@@ -72,7 +78,7 @@ test('a sandboxed server only queues the publishing sessions (their tokens in a 
   } finally { s.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a later snapshot of the same key posted while the first is still compressed: both kept in turn, the last one stays', async () => {
+test('a later snapshot of the same key posted while the first is still compressed: both kept in turn, the last one stays; kept per display mode', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'snapstore-'));
   try {
     const store = new SnapshotStore(dir), src = (n) => { const f = path.join(dir, `up-${n}`); fs.writeFileSync(f, snap(n)); return f; };
@@ -80,6 +86,12 @@ test('a later snapshot of the same key posted while the first is still compresse
     assert.deepEqual(recs.map((r) => r.bytes), [300000, 1000]);
     assert.equal(store.meta('g', 'fr', KEY).bytes, 1000);
     assert.equal(zlib.gunzipSync(fs.readFileSync(store.base('g', 'fr', KEY) + '.gz')).length, 1000);
+    // (per display mode, the two most recent keys: another mode's players keep theirs)
+    const K4 = 'd'.repeat(32), wait = () => new Promise((r) => setTimeout(r, 20));
+    await store.put('g', 'fr', KEY2, src(900), { mode: '2560x1440' }); await wait();
+    await store.put('g', 'fr', KEY3, src(800), { mode: '2560x1440' }); await wait();
+    await store.put('g', 'fr', K4, src(700), { mode: '2560x1440' });
+    assert.deepEqual([KEY, KEY2, KEY3, K4].map((k) => !!store.meta('g', 'fr', k)), [true, false, true, true]);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

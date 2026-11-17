@@ -4,16 +4,17 @@
 // shared first-launch one if any), with ?snapshot=publish — each snapshot the session keeps is posted to the server
 // with the job's token. It goes on while the game's loading goes on (the later snapshots replace the first), then quits.
 //   tools/with-browser-slot.sh node tools/snapshot-publish.mjs <manifest> --url <server> --lang <l> --key <key>
-//     --token <token> [--at <s>] [--settle <s>]
-//   --key: the key the server was asked for (the session's must be the same, else it stops); --at: seconds at most
-//   (1200); --settle: done once no snapshot was kept for that long (240)
+//     --token <token> [--screen WxH] [--at <s>] [--settle <s>]
+//   --key: the key the server was asked for (the session's must be the same, else it stops); --screen: the player's
+//   screen the page takes (?screen=: the display modes listed, a new player's display mode — src/vfs/profile-ini.js);
+//   --at: seconds at most (1200); --settle: done once no snapshot was kept for that long (240)
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
-const name = args[0], url = opt('url'), lang = opt('lang', ''), key = opt('key'), token = opt('token');
+const name = args[0], url = opt('url'), lang = opt('lang', ''), key = opt('key'), token = opt('token'), screen = opt('screen');
 const at = Number(opt('at', 1200)), settle = Number(opt('settle', 240));
 if (!name || !url || !key || !token) { console.error('usage: snapshot-publish.mjs <manifest> --url <server> --lang <l> --key <key> --token <token>'); process.exit(2); }
 const scratch = fs.mkdtempSync(path.join(fs.existsSync('/tmp/orthros-scratch') ? '/tmp/orthros-scratch' : os.tmpdir(), `snapshot-publish-${name.replace(/[^\w.-]/g, '_')}-`));
@@ -24,7 +25,7 @@ try {
   browser = await chromium.launchPersistentContext(path.join(scratch, 'profile'), { args: chromeArgs, viewport: { width: 1280, height: 900 } });
   const page = browser.pages()[0] ?? await browser.newPage();
   page.on('pageerror', (e) => log('[pageerror]', e.message));
-  const q = new URLSearchParams({ manifest: name, gameLang: lang, headless: '1', opfs: '1', audio: '1', snapshot: 'publish', publishToken: token });
+  const q = new URLSearchParams({ manifest: name, gameLang: lang, headless: '1', opfs: '1', audio: '1', snapshot: 'publish', publishToken: token, ...(screen ? { screen } : {}) });
   await page.goto(`${url}/?${q}`);
   await page.waitForFunction(() => window.orthros?.status === 'running', null, { timeout: 180000 });
   const own = await page.evaluate(() => window.orthros.snapshotKey);

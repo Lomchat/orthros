@@ -17,3 +17,20 @@ export function displayModes(d) {
   for (const m of [d?.nominal, d && [d.width, d.height]]) if (m && m[0] > 0 && m[1] > 0 && !list.some(([w, h]) => w === m[0] && h === m[1])) list.push([m[0], m[1]]);
   return list.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 }
+
+/** A mode or a screen size written "WxH" (a page's ?screen=, a snapshot's mode) as [width, height], or null. */
+export function parseMode(s) {
+  const m = /^(\d{3,5})x(\d{3,5})$/.exec(String(s ?? ''));
+  return m && +m[1] > 0 && +m[2] > 0 ? [Number(m[1]), Number(m[2])] : null;
+}
+
+/**
+ * The largest of those modes (most pixels, then the wider): the highest resolution a game's options offer the player —
+ * a new player's default where a manifest asks for it (newProfileIni, src/vfs/profile-ini.js).
+ * @returns {number[]} [width, height]
+ */
+export function largestMode(d) {
+  let best = null;
+  for (const m of displayModes(d)) if (!best || m[0] * m[1] > best[0] * best[1] || (m[0] * m[1] === best[0] * best[1] && m[0] > best[0])) best = m;
+  return best;
+}

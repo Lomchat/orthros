@@ -31,10 +31,11 @@ const keyReplacer = function (k, v) {
 /**
  * The key of a snapshot of game `name` (a hex string, 32 digits): `sources` the state-owning sources' hash, `manifest`
  * and `tree` the version's (where their files are kept left out: keyReplacer), `opts` the worker's start options
- * (main.js) — those that change the machine only.
+ * (main.js) — those that change the machine only. `displayMode` ("WxH"), given only for a manifest whose new-player
+ * settings name it (src/vfs/profile-ini.js): a new player's profile, so the machine, differs by mode.
  */
 export async function snapshotKey(sources, name, manifest, tree, opts) {
-  const machine = { lang: opts.gameLanguage, timeScale: opts.timeScale, interp: opts.interp, interpRange: opts.interpRange, dbg: machineDbg(opts.dbg), jitOpts: opts.jitOpts, noF32: opts.noF32, f32Off: opts.f32Off };
+  const machine = { lang: opts.gameLanguage, timeScale: opts.timeScale, interp: opts.interp, interpRange: opts.interpRange, dbg: machineDbg(opts.dbg), jitOpts: opts.jitOpts, noF32: opts.noF32, f32Off: opts.f32Off, mode: opts.displayMode || undefined };
   const m = manifest && typeof manifest === 'object' ? Object.fromEntries(Object.entries(manifest).filter(([k]) => !KEY_SKIPS_MANIFEST.has(k))) : manifest;
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ sources, name, manifest: m, tree, machine }, keyReplacer)));
   return Array.from(new Uint8Array(d).subarray(0, 16), (b) => b.toString(16).padStart(2, '0')).join('');

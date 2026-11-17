@@ -24,7 +24,7 @@ import { cloudProfile } from '../../vfs/profile-share.js';
 import { treeFiles } from '../../vfs/game-tree.js';
 import { engineUrls, openPortData, mountPortFiles } from '../port-files.js';
 import { profileSnapshot, restoreProfile, setProfileIni, languageIni, envPreRun, toCloud } from './profile.js';
-import { setIniDefaults } from './ini.js';
+import { setIniDefaults } from '../../shared/ini.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../../shared/profile-seed.js';
 
 const STRINGS = {

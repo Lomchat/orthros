@@ -11,7 +11,7 @@
   html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
   #stage { position: absolute; left: 0; right: 0; bottom: 0; top: var(--bar); display: flex; align-items: center; justify-content: center; }
   html:fullscreen #stage, body.nobar #stage, body.nobar #loader { top: 0; }
-  #frame { position: relative; }
+  #frame { position: relative; flex: none; } /* (never shrunk to the stage: a game mode wider than the window would sit off-centre, its right part cut — main.js fit() scales it) */
   #frame canvas { position: absolute; left: 0; top: 0; }
   #gl, #vid { pointer-events: none; }
   #vid { z-index: 3; visibility: hidden; }

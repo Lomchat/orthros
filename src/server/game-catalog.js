@@ -10,6 +10,7 @@ import { openmwProblem } from './ports/openmw.js';
 import { re3Problem } from './ports/re3.js';
 import { mmoProblem } from './mmo.js';
 import { profileMovesProblem } from '../vfs/profile-moves.js';
+import { newProfileIniProblem } from '../vfs/profile-ini.js';
 import { profileSettingsProblem } from '../vfs/profile-merge.js';
 import { keyRemapProblem } from '../win32/vk-scan.js';
 
@@ -102,6 +103,8 @@ export function loadGameFolder(gameDir, { enginesDir = DEFAULT_ENGINES_DIR } = {
     { const problem = mmoProblem(manifest.mmo); if (problem) fail(file, `${id}: ${problem}`); }
     // (files of the player's profile the game keeps elsewhere now: moved at each start, src/vfs/profile-moves.js)
     { const problem = profileMovesProblem(manifest.profileMoves); if (problem) fail(file, `${id}: ${problem}`); }
+    // (settings put in a new player's profile — e.g. the highest resolution of their screen —: src/vfs/profile-ini.js)
+    { const problem = newProfileIniProblem(manifest.newProfileIni); if (problem) fail(file, `${id}: ${problem}`); }
     // (light copies of the textures for a slow link, src/server/light-copies.js: the browser ports — a Windows game reads
     // its files as they are —, unless the version says false)
     if (manifest.lightCopies !== undefined && typeof manifest.lightCopies !== 'boolean') fail(file, `${id}: lightCopies doit être un booléen`);

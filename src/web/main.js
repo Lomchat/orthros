@@ -18,6 +18,8 @@ import { linkRate } from '../vfs/data-client.js';
 import { dataWorkerWanted } from '../vfs/net-link.js';
 import { gpuInfo } from './gpu-class.js';
 import { vkOfCode } from '../win32/vk-scan.js';
+import { largestMode, parseMode as screenParam } from '../win32/display-modes.js';
+import { profileIniUsesMode } from '../vfs/profile-ini.js';
 import { PerfSession } from './perf-page.js';
 import { TimerHelper, browserVariants, createWaitProbe } from './timer-helper.js';
 import { pageStorage, withStorage } from './storage-persist.js';
@@ -287,6 +289,13 @@ async function start(name, language = null) {
   worker.onerror = (e) => { log('crash', `worker error: ${e.message}`); if (!state.workerAlive && !headless) staleCode(); };
   const opts = { headless, gameLanguage: language, profileDir: profileDir(state.profileKey), profileDates: profileDates(state.profileKey), dxtHelpers: params.has('dxthelpers') ? Number(params.get('dxthelpers')) : undefined, asyncReads: params.get('asyncreads') !== '0', timeScale: Number(params.get('timescale') || 1), interp: params.get('interp') === '1', log: params.get('log') ? params.get('log').split(',') : undefined, cacheBlocks: Number(params.get('cache') || 256), dumpShaders: params.get('dump') === '1', captureFrame: Number(params.get('capture') || 0), captureDraws: params.get('capturedraws') === '1', burstFromId: Number(params.get('burstfrom') || 0), noCull: params.get('nocull') === '1', jitProfile: params.get('jitprof') === '1', glDiscard: params.get('gldiscard') === '1', watchTex: params.get('watchtex') || '', noF32: params.get('nof32') === '1', f32Off: params.get('f32off') || '', glValidate: params.get('glvalidate') === '1', offline: params.get('offline') === '1' || $('offlineToggle').checked, interpRange: params.get('interprange') || '', profileFiles: window.__orthrosProfile, opfs: params.get('opfs') === '1', slowFrom: Number(params.get('slowfrom') || 0), encodedRanges: state.encodedRanges, prefetch: state.prefetch, programCache: state.programCache, regionCache: state.regionCache, profileSeed: state.profileSeed, codeCache: params.get('codecache') !== '0', bgTranslate: params.get('bgjit') !== '0', audioMix: params.get('audiomix') || 'worklet', apiTimes: params.get('apitimes') === '1', dbg: [params.get('dbg'), state.bench ? 'ORTHROS_GL_COUNT=1' : ''].filter(Boolean).join(','), jitOpts: params.get('jitopts') || '', memPrefetch: params.get('memprefetch') === '1', netLog: params.get('netlog') === '1', lan: params.get('lan') === '1', session: state.session, glWorker: params.get('glworker') ?? undefined, netBw: savedNetBw() };
   if (local) Object.assign(opts, { local: true, session: '', encodedRanges: false, prefetch: false, offline: false, programCache: false, regionCache: false, profileSeed: false, lan: false });
+  // (the player's screen in pixels — ?screen=WxH: another one, a publishing session's —: it caps the display modes the
+  // machine lists, win32/display-modes.js. A manifest whose new-player settings name the display mode (newProfileIni,
+  // profile-ini.js): the largest of those modes, part of the snapshot's key — on a headless page only when given a
+  // screen, the harness's runs keeping the resolution their scenarios were written for)
+  const screenPx = screenParam(params.get('screen')) ?? [Math.round(screen.width * (devicePixelRatio || 1)), Math.round(screen.height * (devicePixelRatio || 1))];
+  const { width: gw, height: gh } = manifest.display;
+  opts.displayMode = profileIniUsesMode(manifest.newProfileIni) && (!headless || params.has('screen')) ? largestMode({ width: gw, height: gh, nominal: [gw, gh], screenSize: screenPx }).join('x') : '';
   // (this browser's snapshot of the game, docs/snapshot.md: the machine goes on from it)
   let snapshot = null;
   const sources = await sourcesReq;
@@ -294,7 +303,7 @@ async function start(name, language = null) {
     state.snapshotKey = await snapshotKey(sources.hash, name, manifest, tree, opts);
     snapshot = await loadSnapshot(name, state.snapshotKey);
     if (snapshot) state.snapshotFrom = 'own';
-    else { snapshot = await sharedSnapshot(name, state.snapshotKey, language); if (snapshot) { state.sharedSnapshotCopy = snapshot.slice(0); state.snapshotFrom = 'shared'; } } // (kept as this player's once it applied)
+    else { snapshot = await sharedSnapshot(name, state.snapshotKey, language, opts.displayMode); if (snapshot) { state.sharedSnapshotCopy = snapshot.slice(0); state.snapshotFrom = 'shared'; } } // (kept as this player's once it applied)
     // (a first visit: the link's rate the shared snapshot's download measured — the game's reader starts from it: the data
     // worker on a thin link, net-link.js dataWorkerWanted)
     if (!opts.netBw && state.sharedSnapshotHow?.bw > 0) opts.netBw = state.sharedSnapshotHow.bw;
@@ -308,7 +317,7 @@ async function start(name, language = null) {
   if (dwFlag === 'auto' || (dwFlag === undefined && dw)) opts.dbg = [opts.dbg.replace(/(?:^|,)ORTHROS_DATA_WORKER=[^,]*/, ''), `ORTHROS_DATA_WORKER=${dw ? 1 : 0}`].filter(Boolean).join(',');
   if (dwFlag === 'auto' || (dwFlag === undefined && !headless)) log('loader', `game data ${dw ? 'through the data worker' : 'read on the emulator\'s thread'} (link ${opts.netBw ? `${Math.round(opts.netBw / 1024)} KB/s` : 'not measured yet'})`);
   if (snapshot) log('loader', `snapshot of ${(snapshot.byteLength / 1048576).toFixed(1)} MiB found: the game goes on from it`);
-  worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts, screen: [Math.round(screen.width * (devicePixelRatio || 1)), Math.round(screen.height * (devicePixelRatio || 1))], snapshot, snapshotShared: !!state.sharedSnapshotCopy }, snapshot ? [snapshot] : []);
+  worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts, screen: screenPx, snapshot, snapshotShared: !!state.sharedSnapshotCopy }, snapshot ? [snapshot] : []);
   setupInput();
   if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => { state.audioStats.noteError(e.message ?? String(e)); log('warn', `audio unavailable: ${e.message}`); });
   if (performance.measureUserAgentSpecificMemory) { const tick = async () => { try { const m = await performance.measureUserAgentSpecificMemory(); state.memoryMB = Math.round(m.bytes / 1048576); } catch { /* not available */ } setTimeout(tick, 5000); }; tick(); }
@@ -388,7 +397,7 @@ async function hasProfile(key) {
  * The server's shared snapshot of game `name` for `key` (stage 3), for a player with no profile of it: its bytes, or null
  * — none, or one that would come slower than the game starts (60 s at the connection's last measured rate).
  */
-async function sharedSnapshot(name, key, lang) {
+async function sharedSnapshot(name, key, lang, mode) {
   if (params.get('snapshot') === 'publish') return null;
   // (a profile here: no shared snapshot — and the pieces an earlier visit left go, a cold start having made the profile)
   if (await hasProfile(state.profileKey ?? name)) { dropPieces(() => snapshotDir(name)); return null; }
@@ -397,7 +406,7 @@ async function sharedSnapshot(name, key, lang) {
   // (piece by piece into the store, weighed against a cold start once the link is measured: snapshot-fetch.js; ?snapfetch=0:
   // the previous path below)
   if (params.get('snapfetch') !== '0') {
-    const bytes = await fetchSharedSnapshot({ name, key, lang, dir: params.get('snapstore') === '0' ? async () => { throw new Error('no store'); } : () => snapshotDir(name, true), log: (m) => log('loader', m),
+    const bytes = await fetchSharedSnapshot({ name, key, lang, mode, dir: params.get('snapstore') === '0' ? async () => { throw new Error('no store'); } : () => snapshotDir(name, true), log: (m) => log('loader', m),
       chosen: (how) => { state.sharedSnapshotHow = how; telemetryEvent({ event: 'snapshot-choice', game: name, ...how }); },
       progress: ({ bytes: got, total, bw }) => {
         const min = bw > 0 ? Math.ceil((total - got) / bw / 60) : 0;
@@ -408,7 +417,7 @@ async function sharedSnapshot(name, key, lang) {
   }
   const ctl = new AbortController();
   try {
-    const r = await fetch(`/api/snapshot/${encodeURIComponent(name)}?key=${key}&lang=${encodeURIComponent(lang ?? '')}`, { signal: ctl.signal });
+    const r = await fetch(`/api/snapshot/${encodeURIComponent(name)}?key=${key}&lang=${encodeURIComponent(lang ?? '')}${mode ? `&mode=${mode}` : ''}`, { signal: ctl.signal });
     if (!r.ok) return null;
     const size = Number(r.headers.get('Content-Length')) || 0, bw = savedNetBw();
     if (bw && size / bw > 60) { ctl.abort(); log('loader', `shared snapshot not used: ${(size / 1048576).toFixed(0)} MB at ${(bw / 1048576).toFixed(1)} MB/s`); return null; }
