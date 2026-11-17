@@ -134,7 +134,72 @@ Evidence (captures, the stretched quads' list, Wine's output for Albertus MT at 
   `IdealStaticGameLOD = VeryLow`, `Resolution = 800 600`) keep 800x600, the smallest text; new players get their
   screen's largest mode since D127 (`newProfileIni`).
 - **"Lothlórien".** Albertus MT has ó (glyph 216) and Orthros draws it like Wine; seen in game in the army drop-down
-  (fr and en, 1280x720 and 2560x1440).
+  (fr and en, 1280x720 and 2560x1440) — in headless Chromium on Linux. The owner's Chrome on Windows cut it: below,
+  "Accented letters cut on Windows".
+
+## Age of the Ring's army column widened, as game data (2026-11-17)
+
+The owner wants the army names readable. Since the cut is the game's layout (above), the fix is per-game data, never
+runtime code: AotR's own skirmish setup movie, read from a version-folder overlay (as the French files, D114/D128).
+
+- **Where the list's font and width come from** (`aotr/MpGameSetup.apt`, AotR's loose file overriding RotWK's
+  `apt/MpGameSetup.big`; APT read with its EditText, Sprite and PlaceObject records). The rows are one template sprite
+  (character 321, placed 8 times as `~0`..`~7`) placing native GameWindow gadgets (`_type ComboBox`, `_Init
+  MpGameSetup::InitGadgets`, `_Load Apt/ComboBox.wnd`): Player x -24.05 scale 1.432, Army (`PlayerTemplate`) x 196.55
+  scale 0.688, Captain (`Hero`) x 303.15 scale 1.439, Team, Color, Handicap — the combo box being 154.9 units wide,
+  Army 106.6 and Captain 222.8 at the 1024x768 stage. `ComboBox.wnd` (`rotwk/Window.big`) takes its font from
+  `HEADERTEMPLATE = "AptGadgets"`, i.e. `headertemplate.ini` of the language's `.big` (Albertus MT 14, scaled by
+  `adjustFontSize`, W / 1024), shared by every APT gadget of every screen: a smaller font there would change them all.
+  The column headers are EditTexts of sprite 294 (`Faction` x 215.40, `Hero` x 329.65, centred), shared by the two
+  tables of the movie; their grids are shapes 363 (the 8-player table the skirmish shows, `MpGameSetup_geometry/363.ru`
+  in `rotwk/apt/MpGameSetup.big`, the Army|Captain line at x = 285.05) and 286 (the smaller one, `286.ru`, x = 284.8).
+- **The change**: the Army column 64 units wider, taken from the Captain column (which shows "-" or a Create-a-Hero name):
+  `PlayerTemplate` scale 0.68835 → 1.10163 (170.6 units), `Hero` x 303.15 → 367.15 and scale 1.43874 → 1.02546
+  (158.8), the headers `Faction` 215.40 → 247.40 and `Hero` 329.65 → 361.65, the grids' line 285.05 → 349.05 (363)
+  and 284.8 → 348.8 (286), 10 coordinates each. The text box grows from 73 to about 137 px at 1024x768 for names of at
+  most 122 px ("Royaume des Forêts"; "Woodland Realm" 104, "Misty Mountains" 103 in English), and every mode keeps the
+  margin (the box follows `sx`, the font W / 1024). The drop-down list is the combo box's own width: it widens with it.
+  Same-size edits: five floats of the APT (234 316 bytes, 9 bytes differ), one coordinate value of each grid; no other
+  screen uses the row template or these grids.
+- **How the game finds a grid** (`--log file`, `game.dat+0xab23e` / `+0xaae88`): it lists `MpGameSetup_geometry\*.ru`,
+  then opens each geometry its archive lists, loose folders first (`C:\Game\aotr\mpgamesetup_geometry\363.ru`, then
+  `rotwk\lang\French\`, then `rotwk\`, then the archive), the id parsed from the name. So a loose file of the same name
+  replaces the archive's, while a loose file of an id the archive lacks is listed but never opened (tried: a new
+  `287.ru`, found by the listing, was not read). The first try moved 286 only — the smaller table's grid; the
+  skirmish's line stayed at 476 px.
+- **Files** (`tools/ops/sage-text/aotr-army-column.py <game folder> <out>`, from the installed files, refusing any other
+  release's): `versions/10.0.2/aotr/MpGameSetup.apt`, `versions/10.0.2/aotr/MpGameSetup_geometry/363.ru` and
+  `286.ru` of `data/games/age-of-the-ring`.
+
+## Accented letters cut on Windows: CFF seac glyphs (2026-11-17)
+
+The owner's screenshots (build a5a7614, Chrome 157 on Windows; `data/proof/aotr-owner-2026-11-17/accents-description.png`,
+`army-list-cut.png`): in the skirmish map description "où" reads "oì", "près" and "à" look clipped, é and ê look whole;
+the army list shows "Lothlćrien". Every glyph is cut on its right side, at the accent's right edge (in the ASCII profile of
+"Lothlórien" the visible part of the ó is 9 of the o's 14 columns and ends under the acute's last column).
+
+- **Not the day's GDI change, not the size.** `resolveChar` gives these characters themselves (Albertus MT maps à è é ê
+  ó ù...), so nothing about them changed with "Characters a font lacks"; and the same glyphs are whole in headless
+  Chromium 153 and 158 on Linux at 16, 53 and 127 px (ink boxes and coverage of the composed outline), at 1024x768 and
+  2560x1440 in game. The difference is the platform's glyph rasterizer.
+- **Albertus MT builds its accented letters with seac.** It is a CFF font converted from Type 1: 29 of its 298 glyphs
+  (the lowercase accented letters: á à â ä ã å é è ê ë í ì î ï ñ ó ò ô ö õ ú ù û ü ý ÿ š...; its capitals are plain
+  outlines) are the deprecated seac form of Type 2's `endchar`
+  (`adx ady bchar achar endchar`: StandardEncoding's `bchar` with `achar` placed at (adx, ady)). Clipping each at its
+  placed accent's right edge predicts what the owner sees: the visible share of the base letter is 69 % for ó (acute at
+  105 + 113..260 over the o's 26..514), 63 % for ù, 69 % for à, 62 % for è, but 73 % for é and 87 % for ê — the two that
+  "look fine". Omnia LT Std (TrueType) has plain outlines for its accented letters.
+- **The fix, generic** (`src/gfx/gdi/cff.js` `flattenSeac`, used by `TextEngine.loadFace`): the face handed to the
+  browser (`FontFace`) has every seac glyph rewritten as an ordinary outline — the base's contours, then the accent's at
+  (adx, ady), the width operand kept, without hints —; everything else in the file is unchanged, and every metric GDI
+  reports still comes from the original bytes. For Albertus MT: 24 712 → 42 856 bytes, 15 ms once per registration;
+  fontTools reads the same contours, bounds and widths for all 298 glyphs; Chromium 158 on Linux draws the same pixels as
+  with the original (15 characters at 16, 53 and 127 px, identical coverage). Any application registering a CFF font with
+  seac glyphs gets them whole on every platform.
+- **Not validated on Windows here** (no Windows machine): `tools/check/font-seac-check.html`, opened from the Orthros
+  server in a browser (`/tools/check/font-seac-check.html`, default: AotR's Albertus MT read from `rotwk/Data1.big`),
+  draws the font as the file has it and as Orthros gives it, glyph by glyph, and says whether that browser cuts seac
+  glyphs. Expected on the owner's Chrome: "coupés" for the original, the flattened one whole.
 
 ## Characters a font lacks (2026-11-17)
 

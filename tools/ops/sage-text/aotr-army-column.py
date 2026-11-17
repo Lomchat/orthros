@@ -5,7 +5,10 @@ The army names ("Royaume des Forêts", "Woodland Realm"...) do not fit EA's colu
 DELTA units of the 1024x768 APT stage (64 by default), taken from the Captain column on its right:
 - aotr/MpGameSetup.apt (AotR's own loose file): the row template's 'PlayerTemplate' (Army) scale, 'Hero' (Captain)
   position and scale, and the column headers 'Faction' and 'Hero' moved by DELTA / 2 — five floats, same file size;
-- aotr/MpGameSetup_geometry/286.ru (the table's grid, from rotwk/apt/MpGameSetup.big): the Army|Captain line.
+- the tables' grids with their Army|Captain line moved: aotr/MpGameSetup_geometry/363.ru (the 8-player table the
+  skirmish shows) and 286.ru (the smaller one), from rotwk/apt/MpGameSetup.big. The game opens each geometry its
+  archive lists from the loose folders first (C:\\Game\\aotr\\mpgamesetup_geometry\\<id>.ru, seen 2026-11-17), so a
+  same-named loose file replaces the archive's; a loose file of an id the archive lacks is never opened.
 Every value is checked against AotR 10.0.2's before it is changed (another release: nothing written).
 
     python3 -I tools/ops/sage-text/aotr-army-column.py <game folder> <output folder> [delta]
@@ -28,7 +31,8 @@ PLACEMENTS = {
     'army header': (0x2292c, 'Faction', 1.0, 215.40),
     'captain header': (0x229ac, 'Hero', 1.0, 329.65),
 }
-GRID_X = '284.8'  # the Army|Captain line of geometry 286
+# the grids' geometries: id -> (the Army|Captain line's x, how many coordinates have it)
+GRIDS = {363: ('285.05', 10), 286: ('284.8', 10)}
 
 
 def main():
@@ -61,22 +65,25 @@ def main():
         put(at[key] + 32, f32(at[key] + 32) + delta / 2)
 
     big = Big(os.path.join(game, 'base', 'rotwk', 'apt', 'MpGameSetup.big'))
-    ru = big.read('MpGameSetup_geometry/286.ru')
-    if ru is None:
-        sys.exit('MpGameSetup_geometry/286.ru missing from rotwk/apt/MpGameSetup.big: nothing written')
-    ru = ru.decode('latin1')
-    line = re.compile(r'(?<![\d.])' + re.escape(GRID_X) + r'(?![\d])')
-    if len(line.findall(ru)) != 10:
-        sys.exit(f'286.ru: {len(line.findall(ru))} coordinates {GRID_X}, not AotR 10.0.2\'s 10: nothing written')
-    ru = line.sub(('%.2f' % (float(GRID_X) + delta)).rstrip('0').rstrip('.'), ru)
+    grids = {}
+    for gid, (x, count) in GRIDS.items():
+        ru = big.read(f'MpGameSetup_geometry/{gid}.ru')
+        if ru is None:
+            sys.exit(f'MpGameSetup_geometry/{gid}.ru missing from rotwk/apt/MpGameSetup.big: nothing written')
+        ru = ru.decode('latin1')
+        line = re.compile(r'(?<![\d.])' + re.escape(x) + r'(?![\d])')
+        if len(line.findall(ru)) != count:
+            sys.exit(f'{gid}.ru: {len(line.findall(ru))} coordinates {x}, not AotR 10.0.2\'s {count}: nothing written')
+        grids[gid] = line.sub(('%.2f' % (float(x) + delta)).rstrip('0').rstrip('.'), ru)
 
     os.makedirs(os.path.join(out, 'aotr', 'MpGameSetup_geometry'), exist_ok=True)
     with open(os.path.join(out, 'aotr', 'MpGameSetup.apt'), 'wb') as f:
         f.write(bytes(d))
-    with open(os.path.join(out, 'aotr', 'MpGameSetup_geometry', '286.ru'), 'wb') as f:
-        f.write(ru.encode('latin1'))
+    for gid, ru in grids.items():
+        with open(os.path.join(out, 'aotr', 'MpGameSetup_geometry', f'{gid}.ru'), 'wb') as f:
+            f.write(ru.encode('latin1'))
     print(f'Army {w_army:.1f} -> {w_army + delta:.1f} units, Captain {w_captain:.1f} -> {w_captain - delta:.1f}: '
-          f'{out}/aotr/MpGameSetup.apt, {out}/aotr/MpGameSetup_geometry/286.ru')
+          f'{out}/aotr/MpGameSetup.apt, {out}/aotr/MpGameSetup_geometry/' + ', '.join(f'{g}.ru' for g in grids))
 
 
 if __name__ == '__main__':
