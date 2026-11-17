@@ -31,7 +31,7 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const seconds = Number(opt('seconds', 60)), shotEvery = Number(opt('shots', 10)), out = opt('out', 'build/shots');
 // scripted input: --input "180:click:400,300;185:key:Escape;190:move:10,20" (times in seconds; kinds move, click, rclick,
 // down/up (left button, for drags), key, text, shot (screenshot now), waitfps, waitpixel:x,y,r,g,b[,tol], waitframe:minDraws,maxDraws)
-// kinds: move x,y | click x,y | rclick x,y | wheel x,y[,notches] (default -1: one notch toward the player) | key vk[,scan] | keydown vk[,scan] / keyup vk[,scan] (a key held) | text <string> | look dx,dy[,n[,ms]] (a captured mouse moved: mouse-look) | blur | focus (window focus loss / return: the page releases the keys and buttons it holds; the game stays active — with --bg pause it is deactivated / reactivated, its fullscreen device lost then Reset; these steps push straight into the input ring, so they hold nothing the page tracks). Times are seconds from launch, or
+// kinds: move x,y | click x,y | rclick x,y | wheel x,y[,notches] (default -1: one notch toward the player) | key vk[,scan] | keydown vk[,scan] / keyup vk[,scan] (a key held) | text <string> | look dx,dy[,n[,ms]] (a captured mouse moved: mouse-look) | pagekeydown <code> / pagekeyup <code> (the browser's own key events, KeyboardEvent codes: the page tracks them) | blur | focus (window focus loss / return: the page releases the keys and buttons it holds; the game stays active — with --bg pause it is deactivated / reactivated, its fullscreen device lost then Reset; these steps push straight into the input ring, so they hold nothing the page tracks). Times are seconds from launch, or
 // "+N" = N seconds after the first Direct3D frame (the loading time varies from run to run).
 // waitfps F: the following events wait until the game presents more than F frames/s for 3 consecutive seconds
 // (e.g. a match started after its loading screen); their times then count from that moment ("anchor").
@@ -58,7 +58,7 @@ if (control) fs.writeFileSync(control.file, '');
 // --input-file <file>: the scenario from a file (new lines separate steps as ';' does, '#' lines are comments)
 // --account <name>:<password>: signed in to an Orthros account before the game (see below)
 const inputText = opt('input-file') ? fs.readFileSync(opt('input-file'), 'utf8').split('\n').filter((l) => !l.trim().startsWith('#')).map((l) => l.trim()).join(';') : opt('input', '') || '';
-const inputs = inputText.split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'uiclick' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
+const inputs = inputText.split(';').filter(Boolean).map((e) => { const [t, kind, ...rest] = e.split(':'); const args = rest.join(':'); const ev = { t: Number(t), rel: t.startsWith('+'), anchored: afterWait, kind, args: kind === 'text' || kind === 'uiclick' || kind === 'pagekeydown' || kind === 'pagekeyup' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [args] : args.split(',').map(Number), done: false }; if (kind === 'waitfps' || kind === 'waitpixel' || kind === 'waitframe') afterWait = true; return ev; });
 let anchorAt = null, fpsStreak = 0;
 let firstFrameAt = null;
 if (!name) { console.error('usage: node tools/headless.mjs <manifest | game-folder> [--seconds N] [--shots <every S seconds>] [--out dir] [--log kinds] [--interp]'); process.exit(2); }
@@ -559,7 +559,7 @@ for (;;) {
       for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
         if (line === 'quit') { control.quit = true; continue; }
         const [kind, ...rest] = line.split(':'); const a = rest.join(':');
-        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' || kind === 'uiclick' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [a] : a ? a.split(',').map(Number) : [], done: false });
+        inputs.push({ t: 0, rel: false, anchored: false, kind, args: kind === 'text' || kind === 'uiclick' || kind === 'pagekeydown' || kind === 'pagekeyup' || kind === 'find' || kind === 'mark' || kind === 'jitlist' || kind === 'dbg' ? [a] : a ? a.split(',').map(Number) : [], done: false });
       }
     }
     if (control.quit) { console.log('[end] quit by the control file'); await saveProfile(); break; }
@@ -660,6 +660,9 @@ for (;;) {
     // click): uiclick:<CSS selector> clicks a page element; pageclick:x,y clicks the game at screen pixel x,y;
     // pagemove:dx,dy[,n] moves the mouse n times by dx,dy CSS pixels; lockstate logs the capture, the drawn cursor and
     // the cursors the page shows over the game (the guest's system cursor shown or hidden, the CSS cursor, the soft cursor).
+    // pagekeydown:<code> / pagekeyup:<code> (a KeyboardEvent code, e.g. ArrowRight): the browser's own key down / up — the
+    // page's listeners see it as a person's, the keys it holds tracked (released when the page loses the focus)
+    if (ev.kind === 'pagekeydown' || ev.kind === 'pagekeyup') { const code = String(ev.args[0]); await (ev.kind === 'pagekeydown' ? page.keyboard.down(code) : page.keyboard.up(code)).then(() => console.log(`[ui] ${ev.kind} ${code}`), (e) => console.log(`[ui] ${ev.kind} ${code} failed: ${e.message.split('\n')[0]}`)); continue; }
     if (ev.kind === 'uiclick') { await page.locator(String(ev.args[0])).click({ timeout: 5000 }).then(() => console.log(`[ui] clicked ${ev.args[0]}`), (e) => console.log(`[ui] no ${ev.args[0]}: ${e.message.split('\n')[0]}`)); continue; }
     if (ev.kind === 'pageclick' || ev.kind === 'pagemove') {
       const box = await page.locator('#c2d').boundingBox(), sc = await page.evaluate(() => window.orthros.scale || 1);
