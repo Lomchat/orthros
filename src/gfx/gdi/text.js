@@ -8,6 +8,7 @@
 // system fonts standing in for the Windows ones), or the built-in bitmap font when no canvas exists
 // (Node: tests and the CLI), whose output is unchanged from the original GDI text path.
 import { parseFontFile, parseCmap } from './ttf.js';
+import { flattenSeac } from './cff.js';
 import { drawText as drawBitmapText, CELL_W, CELL_H } from './font.js';
 import { ansiChar } from '../../win32/strings.js';
 
@@ -151,8 +152,10 @@ export class TextEngine {
     if (!this.hasCanvas || !this.fontSet) return;
     try {
       const desc = { weight: String(info.weight), style: info.italic ? 'italic' : 'normal' };
-      // a collection face is its own sfnt starting at `offset`: the browser needs the single font
-      const data = info.offset ? extractFace(bytes, info.offset) : bytes;
+      // a collection face is its own sfnt starting at `offset`: the browser needs the single font; CFF accented letters
+      // built with seac are given as plain outlines (cff.js: some platforms' rasterizers cut them)
+      const sfnt = info.offset ? extractFace(bytes, info.offset) : bytes;
+      const data = flattenSeac(sfnt) ?? sfnt;
       const face = new FontFace(info.family, data.slice().buffer, desc);
       this.pending++;
       face.load().then(() => { this.fontSet.add(face); }, () => {}).finally(() => { this.pending--; this.version++; if (!this.pending) this.onReady?.(); });

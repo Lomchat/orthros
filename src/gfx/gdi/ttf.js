@@ -2,6 +2,7 @@
 // family and face names, weight/style, and the vertical metrics GDI derives a font's cell from
 // (head.unitsPerEm, OS/2 usWinAscent/usWinDescent, hhea line gap, xAvgCharWidth). Glyph outlines
 // are left to the rasterizer (the browser's font engine). Written from the public OpenType spec.
+import { readCff, glyphOutline } from './cff.js';
 
 /**
  * @typedef {{ family: string, subfamily: string, fullName: string, unitsPerEm: number, winAscent: number,
@@ -95,50 +96,11 @@ function parseNotdef(dv, dir, unitsPerEm) {
   return { advance, box: null };
 }
 
-/** CFF INDEX at `p`: [start, end) of each entry, and the offset past the INDEX. */
-function cffIndex(dv, p) {
-  const count = dv.getUint16(p);
-  if (!count) return { items: [], end: p + 2 };
-  const size = dv.getUint8(p + 2), offs = [];
-  for (let i = 0; i <= count; i++) { let v = 0; for (let k = 0; k < size; k++) v = v * 256 + dv.getUint8(p + 3 + i * size + k); offs.push(v); }
-  const data = p + 3 + (count + 1) * size - 1;
-  return { items: offs.slice(0, -1).map((o, i) => [data + o, data + offs[i + 1]]), end: data + offs[count] };
-}
-
-/** Does glyph `gid` of the CFF table at `cff` draw nothing (no moveto before its endchar)? */
+/** Does glyph `gid` of the CFF table at `cff` draw nothing (its charstring has no outline)? */
 function cffGlyphEmpty(dv, cff, gid) {
-  const names = cffIndex(dv, cff + dv.getUint8(cff + 2)), top = cffIndex(dv, names.end);
-  const [ts, te] = top.items[0];
-  // Top DICT: the CharStrings offset (operator 17)
-  let charStrings = -1; const args = [];
-  for (let p = ts; p < te;) {
-    const b = dv.getUint8(p);
-    if (b <= 21) { const op = b === 12 ? 1200 + dv.getUint8(p + 1) : b; p += b === 12 ? 2 : 1; if (op === 17) charStrings = args[0]; args.length = 0; }
-    else if (b === 28) { args.push(dv.getInt16(p + 1)); p += 3; }
-    else if (b === 29) { args.push(dv.getInt32(p + 1)); p += 5; }
-    else if (b === 30) { p++; while (p < te) { const n = dv.getUint8(p++); if ((n & 15) === 15 || n >> 4 === 15) break; } args.push(0); }
-    else if (b <= 246) { args.push(b - 139); p++; }
-    else if (b <= 250) { args.push((b - 247) * 256 + dv.getUint8(p + 1) + 108); p += 2; }
-    else if (b <= 254) { args.push(-(b - 251) * 256 - dv.getUint8(p + 1) - 108); p += 2; }
-    else p++;
-  }
-  if (charStrings < 0) return true;
-  const glyphs = cffIndex(dv, cff + charStrings);
-  if (gid >= glyphs.items.length) return true;
-  // Type 2 charstring: stems are counted for the hintmask bytes; a moveto starts an outline
-  const [s, e] = glyphs.items[gid];
-  let n = 0, stems = 0;
-  for (let p = s; p < e;) {
-    const b = dv.getUint8(p);
-    if (b === 28) { n++; p += 3; } else if (b === 255) { n++; p += 5; } else if (b >= 32) { n++; p += b <= 246 ? 1 : 2; }
-    else if (b === 21 || b === 22 || b === 4) return false; // rmoveto, hmoveto, vmoveto
-    else if (b === 14) return true; // endchar
-    else if (b === 1 || b === 3 || b === 18 || b === 23) { stems += n >> 1; n = 0; p++; }
-    else if (b === 19 || b === 20) { stems += n >> 1; n = 0; p += 1 + ((stems + 7) >> 3); }
-    else if (b === 10 || b === 29) return false; // subroutines: assume they draw
-    else { n = 0; p += b === 12 ? 2 : 1; }
-  }
-  return true;
+  const font = readCff(dv, cff);
+  if (!font || gid >= font.numGlyphs) return true;
+  try { return glyphOutline(dv, font, gid).path.length === 0; } catch { return false; } // (unreadable: assume it draws)
 }
 
 /**
