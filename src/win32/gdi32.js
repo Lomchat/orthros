@@ -648,12 +648,13 @@ export function registerGdi32(api, vm) {
   G.SetWorldTransform = [2, () => 1]; G.ModifyWorldTransform = [3, () => 1]; G.GetWorldTransform = [2, () => 1];
   G.GetCharABCWidthsI = [5, (c) => { const dc = dcOf(c, c.arg(0)); if (!dc) return 0; const r = realFont(c, dc); for (let i = 0; i < c.arg(2); i++) { const p = c.arg(4) + 12 * i; const g = c.arg(3) ? mem.read16(c.arg(3) + 2 * i) : c.arg(1) + i; const w = engine().abc(r, engine().charOfGlyph(r, g)); mem.write32(p, w.a); mem.write32(p + 4, w.b); mem.write32(p + 8, w.c); } return 1; }];
   /**
-   * GetGlyphIndices: each character's glyph in the selected font; a character the font lacks gets 0xFFFF with
-   * GGI_MARK_NONEXISTING_GLYPHS, else the default glyph 0 (applications switch to another font for those).
+   * GetGlyphIndices: each character's glyph in the selected font (gfx/gdi/text.js resolveChar: a C1 code point the font
+   * lacks takes its Windows-1252 character's); a character the font lacks gets 0xFFFF with GGI_MARK_NONEXISTING_GLYPHS,
+   * else the glyph of the font's default character (applications switch to another font for those).
    */
   const glyphIndices = (c, wide) => {
     const dc = dcOf(c, c.arg(0)); if (!dc) return 0xffffffff;
-    const r = realFont(c, dc), n = c.arg(2), missing = c.arg(4) & 1 ? 0xffff : 0;
+    const r = realFont(c, dc), n = c.arg(2), missing = c.arg(4) & 1 ? 0xffff : engine().defaultGlyph(r);
     for (let i = 0; i < n; i++) {
       const code = wide ? mem.read16(c.arg(1) + 2 * i) : ansiCode(mem.read8(c.arg(1) + i));
       const g = engine().glyphIndex(r, code);

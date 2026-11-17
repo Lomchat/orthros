@@ -2,10 +2,16 @@
 // few heights and prints what GDI reports — TEXTMETRIC, GetTextExtentPoint32W of a few strings (accented letters
 // included), ABC widths — and the coverage of one drawn string as ASCII art. Run on Windows/Wine and in Orthros to
 // compare their text engines.
-// Usage: fontmetrics.exe <font file> <face name> <lfHeight>... (face names with spaces: '_' stands for ' ')
+// Then, at weight 400, what GDI does with characters the font lacks ("missing" section): TEXTMETRICW's first, last,
+// default and break characters, per probe character (C1 controls U+0092 / U+0085 among them) GetGlyphIndicesW with and
+// without GGI_MARK_NONEXISTING_GLYPHS, GetTextExtentPoint32W, GetCharWidth32W and ABC widths, then "l<X>a" drawn with
+// ExtTextOutW for X = U+2019, U+0092, U+0085, U+2026 and glyph 0 drawn with ETO_GLYPH_INDEX, as ASCII art.
+// Usage: fontmetrics.exe <font file> <face name> <lfHeight>... (face names with spaces: '_' stands for ' ';
+// font file '-': no file registered, the face as the system maps it)
 #include "win.h"
 
 typedef struct { int abcA; UINT abcB; int abcC; } ABC;
+typedef struct { LONG tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading, tmAveCharWidth, tmMaxCharWidth, tmWeight, tmOverhang, tmDigitizedAspectX, tmDigitizedAspectY; unsigned short tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar; BYTE tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet; } TEXTMETRICW;
 DLLIMPORT int WINAPI AddFontResourceExA(const char*, DWORD, void*);
 DLLIMPORT HANDLE WINAPI CreateFontA(int, int, int, int, int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, const char*);
 DLLIMPORT BOOL WINAPI GetTextExtentPoint32W(HDC, const unsigned short*, int, POINT*);
@@ -13,6 +19,8 @@ DLLIMPORT BOOL WINAPI GetCharABCWidthsW(HDC, UINT, UINT, ABC*);
 DLLIMPORT BOOL WINAPI ExtTextOutW(HDC, int, int, UINT, const RECT*, const unsigned short*, UINT, const int*);
 DLLIMPORT int WINAPI GetTextFaceA(HDC, int, char*);
 DLLIMPORT DWORD WINAPI GetGlyphIndicesW(HDC, const unsigned short*, int, unsigned short*, DWORD);
+DLLIMPORT BOOL WINAPI GetTextMetricsW(HDC, TEXTMETRICW*);
+DLLIMPORT BOOL WINAPI GetCharWidth32W(HDC, UINT, UINT, int*);
 
 static int slen(const char* s) { int n = 0; while (s[n]) n++; return n; }
 static HANDLE out;
@@ -35,6 +43,48 @@ static char* next(char* p, char** tok) {
   return p;
 }
 static int atoi_(const char* s) { int n = 0, neg = 0; if (*s == '-') { neg = 1; s++; } while (*s >= '0' && *s <= '9') n = n * 10 + *s++ - '0'; return neg ? -n : n; }
+static void puthex(unsigned v) { char b[5]; for (int i = 3; i >= 0; i--) { b[i] = "0123456789ABCDEF"[v & 15]; v >>= 4; } b[4] = 0; put(b); }
+
+// Characters a font may lack: C1 controls as a Windows-1252 file zero-extended to UTF-16 gives them (U+0092 for ’,
+// U+0085 for …, U+008E for Ž), their real code points, a C0 control, DEL and a CJK ideograph.
+static const unsigned short PROBE[] = { ' ', '\'', 0x2019, 0x2026, 0x153, 0x92, 0x85, 0x8e, 0x09, 0x7f, 0x4e00, 0 };
+// "l<X>a" for X in { ’, U+0092, U+0085, … } drawn into a 512x96 DIB; glyph 0 drawn by index
+static const unsigned short DRAW[4][4] = { { 'l', 0x2019, 'a', 0 }, { 'l', 0x92, 'a', 0 }, { 'l', 0x85, 'a', 0 }, { 'l', 0x2026, 'a', 0 } };
+enum { DW = 512, DH = 96 };
+static void art(unsigned* px, const char* label) {
+  int maxx = 0, minx = DW, sum = 0;
+  for (int y = 0; y < DH; y++) for (int x = 0; x < DW; x++) if (px[y * DW + x] & 0xff) { if (x > maxx) maxx = x; if (x < minx) minx = x; }
+  put("  draw "); put(label); put("\n");
+  for (int y = 0; y < DH; y++) {
+    int any = 0; for (int x = 0; x <= maxx; x++) if (px[y * DW + x] & 0xff) any = 1;
+    if (!any) continue;
+    put("  |");
+    for (int x = 0; x <= maxx && x < 200; x++) { int v = px[y * DW + x] & 0xff; sum += v; char c[2] = { " .:-=+*#%@"[v * 10 / 256], 0 }; put(c); }
+    put("\n");
+  }
+  kv("ink_sum", sum); kv("ink_left", minx < DW ? minx : -1); kv("ink_right", maxx); put("\n");
+}
+static void missing(HDC dc, unsigned* px) {
+  TEXTMETRICW tm; GetTextMetricsW(dc, &tm);
+  put("  missing: tmFirstChar=U+"); puthex(tm.tmFirstChar); put(" tmLastChar=U+"); puthex(tm.tmLastChar);
+  put(" tmDefaultChar=U+"); puthex(tm.tmDefaultChar); put(" tmBreakChar=U+"); puthex(tm.tmBreakChar); kv("tmCharSet", tm.tmCharSet); put("\n");
+  for (int i = 0; PROBE[i]; i++) {
+    unsigned short ch = PROBE[i], g1 = 0, g0 = 0; POINT sz; int w = 0; ABC a;
+    GetGlyphIndicesW(dc, &ch, 1, &g1, 1 /* GGI_MARK_NONEXISTING_GLYPHS */);
+    GetGlyphIndicesW(dc, &ch, 1, &g0, 0);
+    GetTextExtentPoint32W(dc, &ch, 1, &sz);
+    GetCharWidth32W(dc, ch, ch, &w);
+    GetCharABCWidthsW(dc, ch, ch, &a);
+    put("  U+"); puthex(ch); kv("gi_mark", g1); kv("gi", g0); kv("cx", sz.x); kv("width", w);
+    put(" abc="); putnum(a.abcA); put(","); putnum(a.abcB); put(","); putnum(a.abcC); put("\n");
+  }
+  static const char* LBL[] = { "l_U+2019_a", "l_U+0092_a", "l_U+0085_a", "l_U+2026_a" };
+  for (int k = 0; k < 5; k++) {
+    for (int i = 0; i < DW * DH; i++) px[i] = 0;
+    if (k < 4) { POINT sz; GetTextExtentPoint32W(dc, DRAW[k], 3, &sz); ExtTextOutW(dc, 4, 4, 0, 0, DRAW[k], 3, 0); put("  extent "); put(LBL[k]); kv("cx", sz.x); put("\n"); art(px, LBL[k]); }
+    else { static const unsigned short g[] = { 0 }; ExtTextOutW(dc, 4, 4, 0x10 /* ETO_GLYPH_INDEX */, 0, g, 1, 0); art(px, "glyph_0"); }
+  }
+}
 
 void start(void) {
   out = GetStdHandle((DWORD)-11);
@@ -43,14 +93,18 @@ void start(void) {
   char* file; p = next(p, &file);
   char* face; p = next(p, &face);
   for (char* q = face; *q; q++) if (*q == '_') *q = ' ';
-  int n = AddFontResourceExA(file, 0x10 /* FR_PRIVATE */, 0);
+  int n = file[0] == '-' && !file[1] ? 0 : AddFontResourceExA(file, 0x10 /* FR_PRIVATE */, 0);
   put("add="); putnum(n); put("\n");
-  HDC dc = CreateCompatibleDC(0);
+  HDC dc = CreateCompatibleDC(0), dc2 = CreateCompatibleDC(0);
   put("logpixelsy="); putnum(GetDeviceCaps(dc, 90)); put("\n");
   BITMAPINFO bi = { { sizeof(BITMAPINFOHEADER), 256, -48, 1, 32, 0, 0, 0, 0, 0, 0 }, { 0 } };
   unsigned* bits = 0;
   HBITMAP bm = CreateDIBSection(dc, &bi, 0, (void**)&bits, 0, 0);
   SelectObject(dc, bm);
+  BITMAPINFO bi2 = { { sizeof(BITMAPINFOHEADER), DW, -DH, 1, 32, 0, 0, 0, 0, 0, 0 }, { 0 } };
+  unsigned* bits2 = 0;
+  SelectObject(dc2, CreateDIBSection(dc2, &bi2, 0, (void**)&bits2, 0, 0));
+  SetTextColor(dc2, 0xffffff); SetBkMode(dc2, 1);
   for (;;) {
     p = next(p, &tok);
     if (!*tok) break;
@@ -86,6 +140,9 @@ void start(void) {
           put("\n");
         }
         kv("ink_sum", sum); kv("ink_right", maxx); put("\n");
+        HANDLE old2 = SelectObject(dc2, f);
+        missing(dc2, bits2);
+        SelectObject(dc2, old2);
       }
       SelectObject(dc, old); DeleteObject(f);
     }

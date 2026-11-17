@@ -25,3 +25,5 @@ GetCharABCWidthsW@16
 ExtTextOutW@32
 GetTextFaceA@12
 GetGlyphIndicesW@20
+GetTextMetricsW@8
+GetCharWidth32W@16

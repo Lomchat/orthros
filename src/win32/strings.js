@@ -13,6 +13,9 @@ for (let i = 0; i < 32; i++) CP1252_REVERSE.set(CP1252_HIGH[i], 0x80 + i);
 
 export const CP_ACP = 0, CP_OEMCP = 1, CP_UTF8 = 65001;
 
+/** The ANSI code page's (Windows-1252) character for byte `b` (0x80-0x9F: € ‚ … ’ œ…; an undefined slot: itself). */
+export const ansiChar = (b) => (b >= 0x80 && b < 0xa0 ? CP1252_HIGH[b - 0x80] : b);
+
 /** The view itself, or a copy when it lies over shared memory (the guest memory can be shared between workers:
  * TextDecoder and ImageData refuse such views). */
 export const unshared = (v) => (typeof SharedArrayBuffer !== 'undefined' && v.buffer instanceof SharedArrayBuffer ? v.slice() : v);
