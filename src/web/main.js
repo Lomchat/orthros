@@ -305,7 +305,7 @@ async function start(name, language = null) {
     state.snapshotKey = await snapshotKey(sources.hash, name, manifest, tree, opts);
     snapshot = await loadSnapshot(name, state.snapshotKey);
     if (snapshot) state.snapshotFrom = 'own';
-    else { snapshot = await sharedSnapshot(name, state.snapshotKey, language, opts.displayMode); if (snapshot) { state.sharedSnapshotCopy = snapshot.slice(0); state.snapshotFrom = 'shared'; } } // (kept as this player's once it applied)
+    else { snapshot = await sharedSnapshot(name, state.snapshotKey, language, opts.displayMode); if (snapshot) { state.sharedSnapshotFile = snapshot; state.snapshotFrom = 'shared'; } } // (kept as this player's once it applied: written from its pieces)
     // (a first visit: the link's rate the shared snapshot's download measured — the game's reader starts from it: the data
     // worker on a thin link, net-link.js dataWorkerWanted)
     if (!opts.netBw && state.sharedSnapshotHow?.bw > 0) opts.netBw = state.sharedSnapshotHow.bw;
@@ -318,8 +318,10 @@ async function start(name, language = null) {
   const dw = dataWorkerWanted(dwFlag, opts.netBw, !headless);
   if (dwFlag === 'auto' || (dwFlag === undefined && dw)) opts.dbg = [opts.dbg.replace(/(?:^|,)ORTHROS_DATA_WORKER=[^,]*/, ''), `ORTHROS_DATA_WORKER=${dw ? 1 : 0}`].filter(Boolean).join(',');
   if (dwFlag === 'auto' || (dwFlag === undefined && !headless)) log('loader', `game data ${dw ? 'through the data worker' : 'read on the emulator\'s thread'} (link ${opts.netBw ? `${Math.round(opts.netBw / 1024)} KB/s` : 'not measured yet'})`);
-  if (snapshot) log('loader', `snapshot of ${(snapshot.byteLength / 1048576).toFixed(1)} MiB found: the game goes on from it`);
-  worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts, screen: screenPx, snapshot, snapshotShared: !!state.sharedSnapshotCopy }, snapshot ? [snapshot] : []);
+  if (snapshot) log('loader', `snapshot of ${(snapshot.size / 1048576).toFixed(1)} MiB found: the game goes on from it`);
+  // (the snapshot as a Blob — the stored file, or the shared one's stored pieces —: the worker reads it; its bytes are
+  // never in this page — docs/snapshot.md "Restoring without copies")
+  worker.postMessage({ type: 'start', name, manifest, tree, ctl: ctlSab, inputRing: inputSab, audioRing: audioSab, opts, screen: screenPx, snapshot, snapshotShared: !!state.sharedSnapshotFile });
   setupInput();
   if (!headless || params.get('audio') === '1') setupAudio(audioSab, ctlSab).catch((e) => { state.audioStats.noteError(e.message ?? String(e)); log('warn', `audio unavailable: ${e.message}`); });
   if (performance.measureUserAgentSpecificMemory) { const tick = async () => { try { const m = await performance.measureUserAgentSpecificMemory(); state.memoryMB = Math.round(m.bytes / 1048576); } catch { /* not available */ } setTimeout(tick, 5000); }; tick(); }
@@ -369,25 +371,32 @@ state.saveSnapshot = async () => {
   return { saved: true, bytes: r.bytes.byteLength, objects: r.objects, pages: r.pages, ms: r.ms, timing: r.timing };
 };
 const snapshotDir = async (name, create = false) => (await navigator.storage.getDirectory()).getDirectoryHandle(SNAPSHOT_PREFIX + name, { create });
-/** This browser's snapshot of game `name` when it was kept under `key`: its bytes, else null. */
+/** This browser's snapshot of game `name` when it was kept under `key`: its file (read by the worker), else null. */
 async function loadSnapshot(name, key) {
   try {
     const dir = await snapshotDir(name), info = JSON.parse(await (await (await dir.getFileHandle('machine.json')).getFile()).text());
     if (info.key !== key) return null;
-    const bytes = await (await (await dir.getFileHandle('machine.bin')).getFile()).arrayBuffer();
-    return bytes.byteLength === info.bytes ? bytes : null;
+    const file = await (await dir.getFileHandle('machine.bin')).getFile();
+    return file.size === info.bytes ? file : null;
   } catch { return null; }
 }
-/** Keep `bytes` as the snapshot of game `name` (its key written last: one half written is never used). */
+/**
+ * Keep `bytes` (an ArrayBuffer or a Uint8Array: a snapshot just taken; a Blob: the shared one's stored pieces) as the
+ * snapshot of game `name` (its key written last: one half written is never used).
+ */
 async function storeSnapshot(name, key, bytes) {
-  const dir = await snapshotDir(name, true);
+  const dir = await snapshotDir(name, true), size = bytes instanceof Blob ? bytes.size : bytes.byteLength;
   await dir.removeEntry('machine.json').catch(() => {});
-  // (in pieces: one write of the whole buffer copies it whole first — a few hundred MiB beside the 2 GB guest)
+  // (in pieces: one write of the whole buffer copies it whole first — a few hundred MiB beside the 2 GB guest; a Blob
+  // is written by the browser from its files, not through this page's memory)
   const file = await dir.getFileHandle('machine.bin', { create: true }), b = await file.createWritable();
-  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  for (let at = 0; at < u8.length; at += 16 << 20) await b.write(u8.subarray(at, Math.min(u8.length, at + (16 << 20))));
+  if (bytes instanceof Blob) await b.write(bytes);
+  else {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    for (let at = 0; at < u8.length; at += 16 << 20) await b.write(u8.subarray(at, Math.min(u8.length, at + (16 << 20))));
+  }
   await b.close();
-  const j = await (await dir.getFileHandle('machine.json', { create: true })).createWritable(); await j.write(JSON.stringify({ key, bytes: bytes.byteLength, at: new Date().toISOString() })); await j.close();
+  const j = await (await dir.getFileHandle('machine.json', { create: true })).createWritable(); await j.write(JSON.stringify({ key, bytes: size, at: new Date().toISOString() })); await j.close();
   return file;
 }
 /** Has this browser a profile under `key` (files a version of the game wrote: its profile is the game's)? */
@@ -396,8 +405,9 @@ async function hasProfile(key) {
   return false;
 }
 /**
- * The server's shared snapshot of game `name` for `key` (stage 3), for a player with no profile of it: its bytes, or null
- * — none, or one that would come slower than the game starts (60 s at the connection's last measured rate).
+ * The server's shared snapshot of game `name` for `key` (stage 3), for a player with no profile of it: a Blob of its bytes
+ * (its pieces in the store), or null — none, or one that would come slower than the game starts (60 s at the
+ * connection's last measured rate).
  */
 async function sharedSnapshot(name, key, lang, mode) {
   if (params.get('snapshot') === 'publish') return null;
@@ -424,9 +434,9 @@ async function sharedSnapshot(name, key, lang, mode) {
     const size = Number(r.headers.get('Content-Length')) || 0, bw = savedNetBw();
     if (bw && size / bw > 60) { ctl.abort(); log('loader', `shared snapshot not used: ${(size / 1048576).toFixed(0)} MB at ${(bw / 1048576).toFixed(1)} MB/s`); return null; }
     log('loader', `shared snapshot of this game: ${(size / 1048576).toFixed(1)} MB to download`);
-    const t0 = performance.now(), bytes = await r.arrayBuffer();
+    const t0 = performance.now(), bytes = await r.blob();
     log('loader', `shared snapshot: here in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
-    return new DataView(bytes).getUint32(0) === 0x4f534e50 ? bytes : null;
+    return bytes.size >= 8 && new DataView(await bytes.slice(0, 4).arrayBuffer()).getUint32(0) === 0x4f534e50 ? bytes : null;
   } catch { return null; }
 }
 async function dropSnapshot(name) { await (await navigator.storage.getDirectory()).removeEntry(SNAPSHOT_PREFIX + name, { recursive: true }).catch(() => {}); }
@@ -478,7 +488,7 @@ function onWorkerMessage(m) {
       }, (e) => log('warn', `snapshot not kept: ${e.message}`)).finally(() => { if (publish) state.snapshotPublishing--; });
       break;
     }
-    case 'snapshot-stale': state.sharedSnapshotCopy = null; dropSnapshot(state.manifest); break; // (the worker said why in its log; a new one is taken)
+    case 'snapshot-stale': state.sharedSnapshotFile = null; dropSnapshot(state.manifest); break; // (the worker said why in its log; a new one is taken)
     case 'snapshot-drop': state.snapshotPending = null; break; // (the profile changed after it: taken again later)
     case 'snapshot-failed': // (a restore that failed midway: started again without the snapshot)
       log('crash', `the snapshot could not be restored: ${m.error}`); state.snapshotFailed = m.error;
@@ -487,7 +497,7 @@ function onWorkerMessage(m) {
       break;
     case 'log': if (m.msg?.event === 'flicker-capture') sendFlickerCapture(m.msg); else if (m.msg?.event === 'display-report-bb') { if (state.reportWait?.id !== m.msg.id) break; if (m.msg.started) state.screenRec?.extendTo(m.msg.started); else state.reportWait.resolve(m.msg); } else log(m.kind, m.msg); break; // (the GL backend's flicker capture and its half of a display report ride its log channel: gfx/flicker-capture.js, gfx/frame-report.js)
     case 'stdout': log('stdout', m.text); break;
-    case 'started': if (state.sharedSnapshotCopy) { storeSnapshot(state.manifest, state.snapshotKey, state.sharedSnapshotCopy).catch(() => {}).then(() => dropPieces(() => snapshotDir(state.manifest))); state.sharedSnapshotCopy = null; } state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
+    case 'started': if (state.sharedSnapshotFile) { storeSnapshot(state.manifest, state.snapshotKey, state.sharedSnapshotFile).catch(() => {}).then(() => dropPieces(() => snapshotDir(state.manifest))); state.sharedSnapshotFile = null; } state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
     case 'dbg': if (/^ORTHROS_HOST_TIMER_HELPER_[A-Z]+$/.test(m.k)) { window[m.k] = m.v === undefined || m.v === '' ? undefined : m.v; state.timerHelper?.apply(); } break; // (harness dbg: steps for the page's own switches, forwarded by the worker)
     case 'netbeat': { // (the worker waits for a synchronous read on the network, its statistics stopped: the link's progress — data-link.js onWait)
       const s = state.stats; if (!s?.net) break;

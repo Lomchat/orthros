@@ -235,6 +235,35 @@ kept at 73 s, published at 99 s (318 MB raw, 107 MB gzip, 94 MB brotli), and a n
 610 ms. `tools/snapshot-publish.mjs` prints the session's snapshot lines as they come (a session that ends badly has
 said how far it got) and waits for a post in flight.
 
+### Restoring without copies (2026-11-18)
+
+A restore's bytes never pass through the page. The page hands the worker a **Blob**: its own snapshot's stored file
+(`machine.bin`, `getFile()`), or the shared one's stored pieces put together (`new Blob(pieces)`,
+`src/web/snapshot-fetch.js`; `?snapfetch=0`: the answer's `blob()`). The worker reads it (`arrayBuffer()`, started at
+the top of its start-up, beside the machine's set-up) and `decodeSnapshot` (`src/core/snapshot.js`) returns **views** on
+that buffer — the pages copied once, into the guest memory, the graph's buffers into objects of their own; only a page
+index not 4-byte aligned is copied (4 bytes a page). The buffer goes once restored (the worker keeps no reference to it:
+`m.snapshot` is cleared). A shared snapshot is kept as the player's own when the game started by writing that same
+Blob to `machine.bin` (the browser copies it from the piece files, not through the page), then its pieces go; a page
+that goes away before keeps the pieces, and the next visit puts them together again (resumable as before).
+
+Before, the page read the pieces into one buffer, kept a copy of it (`slice(0)`, to store it once started), and
+transferred the buffer to the worker, whose decoding copied every section again (`slice`): three full copies of the
+snapshot beside the guest memory it goes into, and the transferred buffer stayed reachable from the start message for
+the whole session. Measured on BFME1 1.08 fr 1920x1080 (305.5 MiB snapshot, a private harness server holding a copy of
+the live shared snapshot, `tools/headless.mjs --snapshot auto --screen 1920x1080 --opfs`, renderer RSS — page and its
+workers — sampled every 50 ms; one run each):
+
+| restore | renderer peak | all of Chrome peak | renderer after restore | restore time |
+|---|---|---|---|---|
+| shared, before | 1 765 MB | 2 383 MB | 1.6-1.7 GB for 25 s, then 1.2-1.4 | 652 ms |
+| shared, after | **1 259 MB** | **1 679 MB** | 1.0 GB | 690 ms (read 506 ms beside the set-up) |
+| own, before | 1 216 MB | 1 774 MB | 1.11 GB | 630 ms |
+| own, after | **941 MB** | **1 531 MB** | 0.78 GB | 578 ms (read 486 ms beside the set-up) |
+
+The second run of each pair restored the snapshot the first one kept from the shared pieces (the Blob written to
+`machine.bin`).
+
 A sandboxed server (the production service: a dynamic user, no home, its own /tmp) does not start browsers: with
 `--snapshot-queue` it only queues the request with its token (`<learn>/snapshots/queue.json`), and
 `tools/snapshot-jobs.mjs --queue <file> --server <url>`, run outside the sandbox (the `orthros-snapshot-jobs` service),
@@ -253,6 +282,27 @@ else none, as no session could make that key) and `tools/snapshot-publish.mjs --
 most recent keys per version, language **and mode**, of 4 modes at most (`MODES_KEPT`). Warm jobs publish at
 `WARM_MODE` (1920x1080, the most common screen); a player with another screen asks for theirs, which queues it, and
 starts cold meanwhile (then from their own snapshot).
+
+**The modes new players use (2026-11-18).** Every deploy changes every key, so the first new player of each mode but
+`WARM_MODE` started cold after each one — while the players' telemetry (perf records' `env.screen`, browsers other than
+the harness's, 2026-09-24 → 11-18) shows 2560x1440 in 23 sessions and 1920x1080 in 9. The server now counts the modes
+new players ask their shared snapshot at (`ModeUse`, `<learn>/snapshots/mode-use.json`: the first request of each page
+— the whole snapshot or its piece 0, a resumed download asks from a later one — at a mode `publishMode` accepts; per
+version, language and mode, the client networks that asked, as for the profile seeds: a player reloading counts once;
+a mode stays wanted 14 days after its last request, `MODE_DAYS`). The warm jobs make those modes too, at most
+`WARM_MODES_MORE` (2) per version and language besides `WARM_MODE`, most networks first — with `WARM_MODE` that is 3
+of the store's 4 modes, one left for a mode a player's 404 asks for — and each after every version's `WARM_MODE` job of
+that language: with `--warm-langs fr`, every version's French 1920x1080 snapshot (or its learn job), then the French
+modes asked for, then English. The plan is made again at each look from the current keys, so a deploy puts its
+`WARM_MODE` jobs first again: the extra modes use the time after the wave's first part, never before it.
+
+**Their cost.** One publishing session per version, language and mode asked for, as long as it is asked for: 5.6 to
+9.9 min each on the live runner (the 2026-11-12 wave, at 1920x1080: aotr-10 9.5, bfme-vanilla 6, bfme1-108 5.6,
+bfme2-106 9.9, bfme2 8.6, rotwk-201 7.5, rotwk-202 7.6), ~55 min for the 7 versions whose settings name the mode
+(Vice City's do not), likely more at 2560x1440 (1.8 times the pixels for the software GPU; not measured). A French
+2560x1440 asked for every version: ~16 sessions → ~23 per wave, ~140 → ~195 min. At most (2 extra modes, both
+languages, every version): 28 more sessions, ~3.6 h more per wave. `mode-use.json` starts empty: nothing more is made
+until new players ask.
 
 ## Warm jobs: snapshots and learned lists made ahead (`src/server/warm-jobs.js`)
 

@@ -14,8 +14,9 @@
 // - **Pieces in the store**: two in flight, each written whole to its own file (orthros-snapshot-<manifest>/shared/<i>,
 //   a piece is there or not), the download's record beside them (shared/info.json: key, language, the snapshot's id,
 //   piece size, count). A page that goes away resumes on its next visit from the pieces there (same key and id: else
-//   they go). Once all are here, put together (the snapshot's bytes), the pieces removed once the game started from it
-//   (dropPieces: it is then this player's own snapshot, main.js storeSnapshot).
+//   they go). Once all are here, put together as a Blob of the stored pieces (read by the emulator's worker, never
+//   copied into the page), the pieces removed once the game started from it and the browser wrote them as this
+//   player's own snapshot (dropPieces, main.js storeSnapshot).
 // - `?snapfetch=0`: the previous path (the whole snapshot in one answer, kept unless the saved rate says it would take
 //   more than 60 s).
 
@@ -54,7 +55,7 @@ export function chooseSnapshot({ left, bytes = 0, bw, launchWire = null, bootMs 
 }
 
 /**
- * The shared snapshot of `o.name` for `o.key` and `o.lang`: its bytes (an ArrayBuffer, `.how` on it), or null — none on
+ * The shared snapshot of `o.name` for `o.key` and `o.lang`: a Blob of its bytes (`.how` on it), or null — none on
  * the server, a cold start chosen, a failure. o: { name, key, lang, mode? ("WxH"), dir: () => Promise<FileSystemDirectoryHandle> (the
  * game's snapshot folder, created), log(msg), progress({ bytes, total, bw }) (wire bytes; every second at most),
  * chosen(how) (the choice, once: telemetry), fetch? }. `how`: { chosen ('snapshot' | 'cold'), bw, snapS, coldS,
@@ -171,16 +172,16 @@ export async function fetchSharedSnapshot(o) {
   if (!how.chosen) decide(got / Math.max(0.001, (performance.now() - (firstByteAt ?? t0)) / 1000), 'whole before measured');
   if (how.chosen !== 'snapshot') return null;
   o.progress?.({ bytes: size, total: size, bw: how.bw });
-  // put together from the pieces in order (a Blob of the stored files: read once, into the snapshot's buffer)
-  const tJoin = performance.now();
+  // put together from the pieces in order: a Blob of the stored files, read once by the emulator's worker (its bytes were
+  // read here into a buffer the page then copied to keep: two copies of 300-550 MiB in the page beside the worker's)
   try {
     const parts = []; for (let i = 0; i < count; i++) parts.push(have.get(i));
-    const ab = await new Blob(parts).arrayBuffer();
-    if (ab.byteLength !== bytes || new DataView(ab).getUint32(0) !== 0x4f534e50) throw new Error('not a snapshot');
+    const blob = new Blob(parts);
+    if (blob.size !== bytes || new DataView(await blob.slice(0, 4).arrayBuffer()).getUint32(0) !== 0x4f534e50) throw new Error('not a snapshot');
     how.ms = Math.round(performance.now() - t0);
-    o.log?.(`shared snapshot: here in ${(how.ms / 1000).toFixed(1)} s (put together in ${Math.round(performance.now() - tJoin)} ms)`);
-    ab.how = how;
-    return ab;
+    o.log?.(`shared snapshot: here in ${(how.ms / 1000).toFixed(1)} s`);
+    blob.how = how;
+    return blob;
   } catch (e) {
     o.log?.(`shared snapshot: not put together (${e.message ?? e}): its pieces dropped`);
     if (dir) await clearPieces(dir);

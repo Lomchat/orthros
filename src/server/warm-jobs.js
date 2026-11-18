@@ -12,7 +12,9 @@
 //     played in the version's first language (the players' own: what they read is what is learned).
 //     A publish session teaches the boot's lists too, so a version without snapshot gets only the publish job first.
 // The key is computed here as a plain page computes it (src/web/snapshot-key.js, same inputs: the sources' hash,
-// the version's manifest and tree exactly as /api/manifest and /api/tree send them, the default language).
+// the version's manifest and tree exactly as /api/manifest and /api/tree send them, the default language). A version
+// whose new-player settings name the display mode has a key per mode: its snapshots are made at WARM_MODE, then at the
+// modes its new players asked for (ModeUse), after every version's WARM_MODE one in the same language.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -24,6 +26,45 @@ import { profileIniUsesMode } from '../vfs/profile-ini.js';
  * most common player's screen. A player of another one asks for theirs, which queues it (server.js, publishMode).
  */
 export const WARM_MODE = '1920x1080';
+
+/**
+ * Display modes besides WARM_MODE the warm jobs make a version's snapshots at, per language: the store keeps 4 modes
+ * (snapshot-store.js MODES_KEPT) — one left for a mode a player's 404 asks for.
+ */
+export const WARM_MODES_MORE = 2;
+/** Days a display mode a version's new players asked for stays wanted (ModeUse). */
+export const MODE_DAYS = 14;
+
+/**
+ * The display modes a version's new players asked their shared snapshot at (`<learn>/snapshots/mode-use.json`:
+ * { [manifest]: { [lang]: { [mode "WxH"]: { [client network]: last time, ms } } } }), told by server.js at the first
+ * request of each page that asks (/api/snapshot ?mode=, the key's own mode — a page of a player with a profile asks
+ * for none). A mode stays wanted MODE_DAYS after its last request; its weight is the client networks that asked (a
+ * player reloading counts once).
+ */
+export class ModeUse {
+  constructor(file, { now = () => Date.now() } = {}) { this.file = file; this.now = now; }
+  read() { try { return JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch { return {}; } }
+  /** A page of `name` in `lang` asked at display mode `mode` from client network `who` (server.js seedReporter). */
+  add(name, lang, mode, who) {
+    const all = this.read(), now = this.now(), old = now - MODE_DAYS * 86400e3;
+    const byMode = ((all[name] ??= {})[lang ?? ''] ??= {}), nets = byMode[mode] ??= {};
+    nets[who] = now;
+    for (const [m, n] of Object.entries(byMode)) {
+      for (const [w, t] of Object.entries(n)) if (!(t > old)) delete n[w];
+      const ws = Object.keys(n); if (ws.length > 64) for (const w of ws.sort((a, b) => n[a] - n[b]).slice(0, ws.length - 64)) delete n[w];
+      if (!Object.keys(n).length) delete byMode[m];
+    }
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    fs.writeFileSync(this.file + '.tmp', JSON.stringify(all)); fs.renameSync(this.file + '.tmp', this.file);
+  }
+  /** The modes of `name` in `lang` asked within MODE_DAYS, most client networks first, then the most recent. */
+  used(name, lang) {
+    const old = this.now() - MODE_DAYS * 86400e3, byMode = this.read()[name]?.[lang ?? ''] ?? {};
+    return Object.entries(byMode).map(([mode, n]) => { const ts = Object.values(n).filter((t) => t > old); return { mode, nets: ts.length, last: Math.max(0, ...ts) }; })
+      .filter((m) => m.nets > 0).sort((a, b) => b.nets - a.nets || b.last - a.last).map((m) => m.mode);
+  }
+}
 
 /** The language a plain page starts a version in (main.js start): 'en' when declared, else the first, else none. */
 export const defaultLanguage = (man) => { const o = man.languages ?? []; return o.includes('en') ? 'en' : o[0] ?? null; };
@@ -131,12 +172,13 @@ export class Warmer {
    * @param {(name: string) => boolean} [o.scenariosLearned] every learn scenario of the version was played on this server
    * @param {(name: string) => Record<string, number>} [o.langUse] the sessions of each game language of the version (marks, seeds)
    * @param {string[]} [o.prefer] the languages made first (--warm-langs), where a version declares them
+   * @param {(name: string, lang: string) => string[]} [o.modesUsed] the display modes the version's new players asked for in that language (ModeUse.used), most wanted first
    * @param {{ want: Function }} o.jobs SnapshotQueue / SnapshotJobs
    * `everyMs`: between looks while nothing is due; `pollMs`: while a queued job runs (the next one queued as soon as it
    * is done, not at the next 10-minute look: a deploy's wave is as long as its jobs).
    */
-  constructor({ versions, fetchVersion, sources, snapshotReady, hasLearned, scenariosLearned = () => true, langUse = () => ({}), prefer = [], jobs, everyMs = 600e3, pollMs = 60e3, delayMs = 20e3, ttlMs = 2 * 3600e3, log = () => {} }) {
-    Object.assign(this, { versions, fetchVersion, sources, snapshotReady, hasLearned, scenariosLearned, langUse, prefer, jobs, everyMs, pollMs, delayMs, ttlMs, log });
+  constructor({ versions, fetchVersion, sources, snapshotReady, hasLearned, scenariosLearned = () => true, langUse = () => ({}), prefer = [], modesUsed = () => [], jobs, everyMs = 600e3, pollMs = 60e3, delayMs = 20e3, ttlMs = 2 * 3600e3, log = () => {} }) {
+    Object.assign(this, { versions, fetchVersion, sources, snapshotReady, hasLearned, scenariosLearned, langUse, prefer, modesUsed, jobs, everyMs, pollMs, delayMs, ttlMs, log });
     this.current = null; this.timer = null; this.busy = false;
   }
   start() {
@@ -149,21 +191,27 @@ export class Warmer {
    * What each version still lacks, by rank of language then in catalog order: [{ kind: 'publish' | 'learn', name, lang,
    * key, mode }] — every version's first language (its snapshot, else its learn job, played in it) before any version's
    * second language (its snapshot only). A version whose new-player settings name the display mode: its snapshots at
-   * WARM_MODE.
+   * WARM_MODE, then — once every version's WARM_MODE one of that language is planned — at the modes its new players
+   * asked for in it (modesUsed: WARM_MODES_MORE at most, most wanted first).
    */
   async plan() {
-    const ranks = [], src = this.sources();
+    const ranks = [], more = [], src = this.sources();
     if (!src?.hash) return [];
     for (const { name, man } of this.versions()) {
       let v; try { v = await this.fetchVersion(name); } catch { continue; }
-      const langs = warmLanguages(man, this.langUse(name) ?? {}, this.prefer), mode = profileIniUsesMode(v.manifest?.newProfileIni) ? WARM_MODE : '';
+      const langs = warmLanguages(man, this.langUse(name) ?? {}, this.prefer), byMode = profileIniUsesMode(v.manifest?.newProfileIni), mode = byMode ? WARM_MODE : '';
       for (let r = 0; r < langs.length; r++) {
         const l = langs[r] ?? '', key = await plainKey(src.hash, name, v.manifest, v.tree, langs[r], mode);
         const job = !this.snapshotReady(name, l, key) ? { kind: 'publish', name, lang: l, key, mode } : r === 0 && !this.learned(name) ? { kind: 'learn', name, lang: l, key } : null;
         if (job) (ranks[r] ??= []).push(job);
+        if (!byMode) continue;
+        for (const m of (this.modesUsed(name, l) ?? []).filter((x) => x !== WARM_MODE).slice(0, WARM_MODES_MORE)) {
+          const k = await plainKey(src.hash, name, v.manifest, v.tree, langs[r], m);
+          if (!this.snapshotReady(name, l, k)) (more[r] ??= []).push({ kind: 'publish', name, lang: l, key: k, mode: m });
+        }
       }
     }
-    return ranks.flatMap((r) => r ?? []);
+    return Array.from({ length: Math.max(ranks.length, more.length) }, (_, r) => [...(ranks[r] ?? []), ...(more[r] ?? [])]).flat();
   }
   /** Whether a job's goal is reached. */
   met(j) { return j.kind === 'publish' ? this.snapshotReady(j.name, j.lang, j.key) : this.learned(j.name); }
@@ -177,7 +225,7 @@ export class Warmer {
       if (this.current && !this.met(this.current) && Date.now() - this.current.at < this.ttlMs) return null; // (the runner has not finished)
       this.current = null;
       for (const j of await this.plan()) {
-        if (this.jobs.want(j.name, j.lang, j.key, j.kind, { mode: j.mode ?? '' })) { this.current = { ...j, at: Date.now() }; this.log(`warm: queued ${j.kind} of ${j.name} (${j.lang || 'no language'}) ${j.key}`); return this.current; }
+        if (this.jobs.want(j.name, j.lang, j.key, j.kind, { mode: j.mode ?? '' })) { this.current = { ...j, at: Date.now() }; this.log(`warm: queued ${j.kind} of ${j.name} (${j.lang || 'no language'}${j.mode ? `, ${j.mode}` : ''}) ${j.key}`); return this.current; }
       }
       return null;
     } finally { this.busy = false; }

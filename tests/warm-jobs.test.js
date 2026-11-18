@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Warmer, defaultLanguage, warmLanguages, learnArgs, learnScenario, learnScenarios, LearnedScenarios, LEARN_TRIES } from '../src/server/warm-jobs.js';
+import { Warmer, defaultLanguage, warmLanguages, learnArgs, learnScenario, learnScenarios, LearnedScenarios, LEARN_TRIES, ModeUse, MODE_DAYS, WARM_MODE, WARM_MODES_MORE } from '../src/server/warm-jobs.js';
 import { SnapshotQueue } from '../src/server/snapshot-store.js';
 
 test('warmer queues one job at a time: publish first, learn once the snapshot is there, nothing when both are', async () => {
@@ -98,5 +98,31 @@ test('a full queue of finished jobs from earlier deploys still takes a new key (
     assert.equal(q.jobs.length, 4);
     q.jobs.forEach((j) => { j.at = now; }); // (all running: none may go)
     assert.equal(q.want('f', 'en', 'new'), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the display modes new players ask for: made after every version\'s warm mode in their language, a few at most, forgotten after a while', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'warm-m-'));
+  try {
+    let now = Date.parse('2026-11-18T12:00:00Z');
+    const use = new ModeUse(path.join(dir, 'mode-use.json'), { now: () => (now += 1000) });
+    use.add('a', 'fr', '2560x1440', 'n1'); use.add('a', 'fr', '2560x1440', 'n1'); // (a player reloading: one network)
+    use.add('a', 'fr', '1366x768', 'n2'); use.add('a', 'fr', '1366x768', 'n3');
+    use.add('a', 'fr', WARM_MODE, 'n4'); use.add('a', 'fr', '1280x1024', 'n5'); use.add('a', 'en', '1600x900', 'n6');
+    assert.deepEqual(use.used('a', 'fr'), ['1366x768', '1280x1024', WARM_MODE, '2560x1440'], 'most networks first, then the most recent');
+    const jobs = new SnapshotQueue(path.join(dir, 'queue.json')), snaps = new Set();
+    const man = { languages: ['en', 'fr'], newProfileIni: { 'G/Options.ini': { '': { Resolution: '{modeWidth} {modeHeight}' } } } };
+    const w = new Warmer({
+      versions: () => [{ name: 'a', man }, { name: 'b', man }],
+      fetchVersion: async (n) => ({ manifest: { name: n, newProfileIni: man.newProfileIni }, tree: { files: {} } }), sources: () => ({ hash: 'h' }),
+      snapshotReady: (n, l, k) => snaps.has(k), hasLearned: () => true, prefer: ['fr'], modesUsed: (n, l) => use.used(n, l), jobs,
+    });
+    const order = [];
+    for (let j; (j = await w.tick());) { order.push(`${j.name} ${j.lang} ${j.mode}`); snaps.add(j.key); }
+    assert.equal(WARM_MODES_MORE, 2);
+    assert.deepEqual(order, [`a fr ${WARM_MODE}`, `b fr ${WARM_MODE}`, 'a fr 1366x768', 'a fr 1280x1024', `a en ${WARM_MODE}`, `b en ${WARM_MODE}`, 'a en 1600x900']);
+    assert.deepEqual(jobs.jobs.map((j) => j.mode), [WARM_MODE, WARM_MODE, '1366x768', '1280x1024', WARM_MODE, WARM_MODE, '1600x900'], 'each session run at its mode');
+    now += (MODE_DAYS + 1) * 86400e3;
+    assert.deepEqual(use.used('a', 'fr'), [], 'not asked for since: no longer made');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

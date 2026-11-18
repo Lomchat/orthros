@@ -417,13 +417,21 @@ export function encodeSnapshot(snap) {
   return out;
 }
 
+/**
+ * The snapshot in `bytes` (encodeSnapshot's). Its binary parts are views on `bytes`, not copies: a snapshot is 300 to
+ * 550 MiB, and a copy of it beside the buffer and the guest memory it goes into made the restore's peak (only a page
+ * index not 4-byte aligned is copied: 4 bytes a page). Restoring copies the pages into the guest memory and the graph's
+ * buffers into objects of their own (decodeGraph): `bytes` is not needed afterwards.
+ */
 export function decodeSnapshot(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (dv.getUint32(0) !== 0x4f534e50) throw new SnapshotError('not a snapshot');
   const len = dv.getUint32(4), head = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + len)));
   if (head.format !== SNAPSHOT_FORMAT) throw new SnapshotError(`snapshot format ${head.format}, expected ${SNAPSHOT_FORMAT}`);
-  let at = 8 + len; const bins = head.bins.map((n) => { const b = bytes.slice(at, at + n); at += n; return b; });
-  const pages = (k) => ({ pageSize: head.pageSize, index: new Uint32Array(bins[2 * k].buffer), data: bins[2 * k + 1] }), n = head.procs ?? 0;
+  let at = 8 + len; const bins = head.bins.map((n) => { const b = bytes.subarray(at, at + n); at += n; return b; });
+  if (at > bytes.length) throw new SnapshotError(`a snapshot cut short (${bytes.length} of ${at} bytes)`);
+  const u32 = (b) => (b.byteOffset & 3 ? new Uint32Array(b.slice().buffer) : new Uint32Array(b.buffer, b.byteOffset, b.length >>> 2));
+  const pages = (k) => ({ pageSize: head.pageSize, index: u32(bins[2 * k]), data: bins[2 * k + 1] }), n = head.procs ?? 0;
   const out = { format: head.format, meta: head.meta, pages: pages(0), graph: { root: head.root, objects: head.objects, blobs: bins.slice(2 + 2 * n) } };
   if (n) out.procs = Array.from({ length: n }, (_, k) => ({ pages: pages(k + 1) }));
   return out;
