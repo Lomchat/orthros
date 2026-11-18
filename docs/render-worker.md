@@ -1415,7 +1415,10 @@ the learned lists already hold most of their programs, and what stays at draws i
 large pass whose shaders were not drawn before — AotR's two play builds are one pixel shader with its two skinning
 vertex shaders, the second from an 18-entry array. The gain is small (RotWK one build of 13, AotR none in 50 s of play)
 and costs builds for nothing (9 and 6) in the GPU process's background threads: kept on for its telemetry over long
-sessions, where the bursts are.
+sessions, where the bursts are. Headless Chromium on SwiftShader offers no KHR_parallel_shader_compile (its report:
+0 completion checks), so predictions stay off there; the owner's Chrome on ANGLE / Direct3D 11 offers it (his in-thread
+session of 11-17 reported `parallelCompile: true`; the render worker sessions' `false` is read before the render
+worker's first statistics arrive).
 
 ### 13.4 Fewer variants: alpha test and fog as uniforms (not done)
 
