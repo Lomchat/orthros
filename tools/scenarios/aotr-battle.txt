@@ -1,0 +1,74 @@
+# Age of the Ring big battle (docs/api-layer.md "A big battle"): aotr-endurance.txt's three-player skirmish (the player
+# and a Death March AI in team 1 against a Death March AI in team 2, the fixed start position), then a mark every 60 s of
+# play up to 15 min: the armies come from the 6th minute, and from the 11th the enemy attacks the player's fortress in
+# view (Node, virtual clock: ~425 draws per frame in minutes 1-5, 1 850-2 490 in minutes 12-15; a lost fortress ends on
+# the score screen, ~100 draws per frame). For tools/bench/startbench.mjs aotr-10 --games-dir data/games
+# --until-api none --child --coords 1024,768 --gfx recorder [--virtual --gfx-hash] [--queued-hist]; a profile past the
+# intro (--save <a copy of build/saves/aotr-10>, StaticGameLOD High as the owner's).
++3:key:27
++6:key:27
++9:key:27
++12:key:27
++15:key:27
++18:key:27
++20:waitframe:14,100000
+0:mark:menu
+4:move:199,148
+5:click:199,148
+8:move:400,149
+9:click:400,149
+10:waitframe:100,180
+0:mark:profile
+2:click:505,364
+4:text:Orthros
+7:move:404,513
+8:click:404,513
+9:waitframe:190,600
+0:mark:setup
+2:move:542,289
+3:click:542,289
+# player lists (Closed 25 px under the row, then Peasant, Soldier, Captain, Death March every 17 px): row 2 and row 3
+5:move:355,462
+6:click:355,462
+8:move:190,554
+9:click:190,554
+11:move:355,489
+12:click:355,489
+14:move:190,582
+15:click:190,582
+# team lists (- 25 px under the row, then 1, 2, 3, 4 every 17 px): row 1 and row 3 in team 1, row 2 in team 2
+17:move:740,435
+18:click:740,435
+20:move:715,476
+21:click:715,476
+23:move:740,489
+24:click:740,489
+26:move:715,530
+27:click:715,530
+29:move:740,462
+30:click:740,462
+32:move:715,520
+33:click:715,520
+36:move:873,734
+37:click:873,734
+38:mark:load
+39:waitframe:60,110
+0:mark:loadscreen
+1:waitframe:400,100000
+0:mark:play
+60:mark:m01
+120:mark:m02
+180:mark:m03
+240:mark:m04
+300:mark:m05
+360:mark:m06
+420:mark:m07
+480:mark:m08
+540:mark:m09
+600:mark:m10
+660:mark:m11
+720:mark:m12
+780:mark:m13
+840:mark:m14
+900:mark:m15
+960:mark:end

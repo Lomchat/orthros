@@ -589,10 +589,14 @@ export function defineEffects(X, vm, h) {
       };
       if (root) walk(n, ctype);
       // (allFloat: every component a float word or zero — compared with the registers as raw words, rootW, see
-      // bindShader; a gather by src: matrices by columns take every third or fourth word, no runs to copy)
+      // bindShader; a gather by src: matrices by columns take every third or fourth word)
       let allFloat = true;
       for (let i = 0; i < src.length; i++) if (src[i] >= 0 && kind[i] !== 0) allFloat = false;
-      return { root, rootW: root ? new Int32Array(root.buffer, root.byteOffset, root.length) : null, src, kind, allFloat };
+      // (run: the parameter word of the first component when every component takes the next word — vector and row arrays,
+      // raw palettes: setFloatPlan compares up to the first difference, then copies the rest at once; -1 otherwise)
+      let run = allFloat && src.length > 0 && src[0] >= 0 ? src[0] : -1;
+      for (let i = 1; i < src.length && run >= 0; i++) if (src[i] !== run + i) run = -1;
+      return { root, rootW: root ? new Int32Array(root.buffer, root.byteOffset, root.length) : null, src, kind, allFloat, run };
     }
     // (fill for one output type each, the call sites monomorphic: fillF32, fillI32; fill itself for the preshaders' inputs)
     /** a plan with integer or bool components into float registers (`out` a Float32Array): as fill */
@@ -681,9 +685,13 @@ export function defineEffects(X, vm, h) {
     setFloatPlan(dev, vs, dst, reg, count, plan) {
       const o = 4 * reg, n = Math.min(4 * count, dst.length - o);
       if (n <= 0) return;
-      const root = plan.rootW, src = plan.src;
+      const root = plan.rootW, src = plan.src, run = plan.run;
       let changed = false;
-      for (let i = 0; i < n; i++) { const k = src[i], w = k < 0 ? 0 : root[k]; if (dst[o + i] !== w) { dst[o + i] = w; changed = true; } }
+      if (run >= 0 && apiOpt.fxRuns) { // (a run of words: the same registers and changed flag as the loop below)
+        let i = 0;
+        while (i < n && dst[o + i] === root[run + i]) i++;
+        if (i < n) { dst.set(root.subarray(run + i, run + n), o + i); changed = true; }
+      } else for (let i = 0; i < n; i++) { const k = src[i], w = k < 0 ? 0 : root[k]; if (dst[o + i] !== w) { dst[o + i] = w; changed = true; } }
       if (changed) { dev.gfx?.constTouched?.(vs ? 0 : 1, o, o + n); dev.constVersion++; if (vs) dev.vsConstVersion++; else dev.psConstVersion++; }
     }
     /** bindShader as it was (dbg:ORTHROS_API_OPT_OFF=1: the reference; and with a state manager) */
