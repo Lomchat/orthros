@@ -656,6 +656,14 @@ ring of handles turning.
   frame's 45-171 a frame before (cycle of 15 frames at 78 blocks a frame), 0 over 60 frames after. Browser, paused,
   60 consecutive back buffers: at most 10 pixels moving by more than 8 levels (the command bar's orb), the veil in
   place; in play, 30 frames, no frame with more than 130 A-B-A pixels (the site's light beam).
+- **RotWK 2.02, his save** (Belfalas Abyss, a building at 48 %; 1024x768 `High` — his 1400x1050 `UltraHigh` passes
+  the test browser's 12 GB scope at the menu). There the paused frames keep one command signature and the values take
+  turns, as his report t8flwb3q showed (the veil fainter one frame in three): Node, 60 paused frames, before — the
+  opacity constant c6.x over the frame's effect draws changed in 30 frames (0.9333 on 49 draws, then 0.8267 on 29-38
+  of them: the building's own opacity on other materials), the veil at 0.747 or 0.661 with depth write on, the
+  inscription at 0.467 or 0.413; after — the same values in all 60 frames, the veil at 0.8 without depth write, the
+  inscription at 0.5. Browser, after: 40 paused back buffers, no A-B-A pixel (the inscription turns: 600-1 260
+  pixels a frame, smoothly).
 - **What would have shown it.** `ApplyParameterBlock` failed 50 times a frame for weeks without a line anywhere: an
   application naming a block the effect does not hold is now a `[warn]` (once per effect, with the caller). And a
   signed frame's values record also hashes the shader constants its draws read (`csig`, `cn`, `cd`: d3d8-webgl.js
