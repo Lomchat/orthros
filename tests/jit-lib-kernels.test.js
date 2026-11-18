@@ -17,7 +17,7 @@ import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { PeImage, mapImage } from '../src/loader/pe.js';
-import { LIB_KERNELS } from '../src/cpu/jit/libkernels.js';
+import { LIB_KERNELS, LIB_LIVE } from '../src/cpu/jit/libkernels.js';
 import { depth } from './depth.js';
 
 const root = new URL('..', import.meta.url).pathname;
@@ -185,3 +185,47 @@ test('library kernels: floor, ceil, fabs, memcmp, memcpy against the interpreter
   C.jit.run({ stopAt: RET, maxInsns: 100000 });
   assert.ok(!C.jit.libLive?.size, 'not recognised outside a library');
 });
+
+// A kernel run inline by the caller's region (opts.libInline, translate.js libInlineOf): memcmp called through an import
+// stub (`call stub` ; stub: `jmp [slot]`, as the SAGE games call it) and through `call [slot]`, the caller pushing the
+// arguments, restoring ESP without touching the flags and returning. Against the interpreter (on the kernel's path)
+// and the JIT without kernels (always): registers, flags, stack, instructions; the calls after the first (which
+// installs the kernel) run inline; the kernel dropped (its code written), the regions take the ordinary call.
+test('library kernels run inline: memcmp through an import stub and through call [slot]', { skip }, () => {
+  const img = new PeImage(new Uint8Array(fs.readFileSync(DLL)));
+  const dataSec = img.sections.find((s) => s.name === '.data');
+  const CALLER = 0x00500000, STUB = 0x00500100, SLOT = 0x00500200, n = depth(400, 80);
+  for (const [form, jitOpts] of [['stub', {}], ['call', { chain: false }], ['stub', { chain: false }]]) {
+    const A = machine(img, img.imageBase, null), D = machine(img, img.imageBase, { ...jitOpts, libKernels: false });
+    const B = machine(img, img.imageBase, { ...jitOpts, libKernels: 'memcmp', libInline: true, profile: true });
+    const entry = B.mod.exports.get('memcmp'), data = [B.mod.base + dataSec.rva, B.mod.base + dataSec.rva + dataSec.virtualSize];
+    const rel = STUB - (CALLER + 19), push = [0xff, 0x74, 0x24, 0x0c]; // (push dword [esp+12], three times: n, b2, b1)
+    const call = form === 'stub' ? [0xe8, rel & 0xff, (rel >> 8) & 0xff, (rel >> 16) & 0xff, (rel >>> 24) & 0xff] : [0xff, 0x15, ...le32(SLOT)];
+    for (const M of [A, B, D]) {
+      // (test ecx, ecx ; the pushes ; the call ; lea esp, [esp+12] ; setb dl — the carry memcmp left — ; ret)
+      M.mem.writeBytes(CALLER, [0x85, 0xc9, ...push, ...push, ...push, ...call, 0x8d, 0x64, 0x24, 0x0c, 0x0f, 0x92, 0xc2, 0xc3]);
+      M.mem.writeBytes(STUB, [0xff, 0x25, ...le32(SLOT)]); M.mem.write32(SLOT, entry);
+    }
+    let expect = 0;
+    for (let i = 0; i < n; i++) {
+      const c = { esp: STACK - 0x400 + 4 * rnd(64), regs: Array.from({ length: 8 }, r32), eflags: (r32() & 0x8d5) | 2 | (rnd(10) ? 0 : 0x400), cw: 0x27f, sw: 0, top: 0, tw: 0,
+        fpr: Array(8).fill([0, 0]), garbage: Array.from({ length: 0x80 }, r32), sse2: 0, sse2Addr: data[0] + 0x100, cwg: 0, cwgAddr: data[0] + 0x104, ...memcmpCase() };
+      for (const M of [A, B, D]) setup(M, CALLER, c);
+      const ra = A.I.run({ stopAt: RET, maxInsns: 20000 }), na = 20000 - A.I.remaining() - 1;
+      const rb = B.jit.run({ stopAt: RET, maxInsns: 20000 }), nb = 20000 - B.jit.remaining();
+      const rd = D.jit.run({ stopAt: RET, maxInsns: 20000 }), nd = 20000 - D.jit.remaining();
+      const what = `memcmp inline (${form}, ${JSON.stringify(jitOpts)}) case ${i}: ${JSON.stringify({ ...c, garbage: undefined, buf: undefined })}`;
+      const sb = snapshot(B, c, data);
+      assert.equal(rb, rd, what); assert.deepEqual(sb, snapshot(D, c, data), what); assert.equal(nb, nd, `${what}: instructions`);
+      if (c.eflags & 0x400) continue; // (DF set: the exact way)
+      assert.equal(rb, ra, what); assert.deepEqual(sb, snapshot(A, c, data), what); assert.equal(nb, na, `${what}: instructions`);
+      if (i > 0) expect++;
+    }
+    assert.ok(B.jit.stats.libInline > 0 && expect > n / 2, 'translated inline');
+    assert.equal(B.jit.stats.prof.libInline, expect, `${form}: every call after the first ran inline`);
+    // the kernel's code written: the kernel dropped, and with it what the regions check before running it inline
+    B.jit.invalidate(entry + 0x10, 1);
+    assert.equal(B.mem.read32(LIB_LIVE + 4 * LIB_KERNELS.findIndex((d) => d.kind === 'memcmp')), 0, 'dropped: not run inline');
+  }
+});
+function le32(v) { return [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24]; }

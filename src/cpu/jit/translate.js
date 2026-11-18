@@ -18,6 +18,7 @@ import { ST, EXIT, F, SEG } from '../state.js';
 import { NULL_PAGE_END, USER_END, nullChecks, nullCheckApplies } from '../nullpage.js';
 import { LZ, REGION_PARAMS, REGION_RESULTS, HASH_ENTRY, HASH_PROBES, NEST_EPOCH, MATH_KERNELS, EXIT_FPUMODE, EXIT_STEP, EXIT_T2MODE, FAST_TABLE, FAST_PROF, PROC_CONSTS } from './runtime.js';
 import { THUNK_BASE, THUNK_END, THUNK_SIZE, SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL, JIT_HASH_BASE, JIT_HASH_BITS, JIT_SCRATCH_BASE, JIT_ALT_BASE, JIT_ALT_SLOTS, MUTEX_HANDLES, MUTEX_HANDLE_END, BLOCK_COUNTS_BASE, BLOCK_COUNTS_SLOTS } from '../memory.js';
+import { LIB_KERNELS, LIB_CALLS, LIB_LIVE, LIB_INLINE_KINDS, matchLibKernel, libKernelDefs, emitLibInline } from './libkernels.js';
 
 // Locals 0..15 are the function parameters (REGION_PARAMS), declared locals start at 16.
 // the instruction budget travels as the last parameter (a chained transition would otherwise store it for the next
@@ -141,7 +142,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: false, strSmcOne: true, divFast: true, mmxTopOnce: true, smcGroup: true, apiInline: false, x87Bounds: false, nestCalls: false, linkExits: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: ["memcmp"], libInline: true, strSmcOne: true, divFast: true, mmxTopOnce: true, smcGroup: true, apiInline: false, x87Bounds: false, nestCalls: false, linkExits: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -181,6 +182,43 @@ function inlineApiOf(mem, insn) {
   if (thunk < THUNK_BASE || thunk >= THUNK_END || (thunk - THUNK_BASE) % THUNK_SIZE) return null;
   const fid = mem.u8[FAST_TABLE + (thunk - THUNK_BASE) / THUNK_SIZE];
   return INLINE_FIDS.has(fid) ? { slot, thunk, fid } : null;
+}
+
+/**
+ * Library kernels run inline (opts.libInline, libkernels.js emitLibInline): a `call dword ptr [slot]`, or an import
+ * stub's `jmp dword ptr [slot]` reached by a call, whose slot holds, when the region is translated, the entry of a
+ * function a kernel on (opts.libKernels) recognises — the C runtime's memcmp, which a SAGE game calls ~300 million times
+ * before its first frame through such a stub. The kernel runs on the region's registers without leaving it (no exit to
+ * the kernel, no chain back to the return site: the two transitions that cost more than the comparison); a call goes on
+ * at its return site, a stub returns as RET does. At run time the slot must still hold that entry and the Jit's kernel
+ * for it be live (LIB_LIVE: installed, its library recognised there, its bytes not written since — SMC drops it), else
+ * the ordinary call or jump, as for an input off the kernel's path. Returns { slot, entry, def, index } or null.
+ */
+function libInlineOf(mem, insn, on) {
+  if ((insn.op !== OP.CALL && insn.op !== OP.JMP) || insn.opsize !== 4 || insn.adsize === 2) return null;
+  const o = insn.ops[0];
+  if (o.t !== OT.MEM || o.base >= 0 || o.index >= 0 || o.seg === SEG.FS || o.seg === SEG.GS) return null;
+  const slot = o.disp >>> 0, entry = slot >= 0x10000 && slot < USER_END - 4 ? mem.read32(slot) >>> 0 : 0;
+  if (entry < 0x10000 || entry >= USER_END) return null;
+  const def = matchLibKernel(mem.u8, entry, on);
+  return def && LIB_INLINE_KINDS.has(def.kind) ? { slot, entry, def, index: LIB_KERNELS.indexOf(def) } : null;
+}
+/** the region's scratch locals a kernel run inline uses (libkernels.js emitLibInline; G shares S) */
+const LIB_INLINE_LOCALS = Object.freeze({ S: L_TA, G: L_TA, N: L_TV, LEN: L_T2, B1: L_T3, B2: L_T4, I: L_T5, U: L_T6, J: L_T7, Q: L_I64A });
+/**
+ * A kernel run inline (libInlineOf) at a call (`ret`: its return address) or an import stub's jump (`ret` null): the
+ * slot still holding the entry and the kernel live there, else `slow` (as for an input off the kernel's path); then the
+ * kernel, its instructions charged and its call counted (LIB_CALLS, which the kernel counts too: Jit.libFallback's share
+ * of calls off its path). ESP is left as it is (a stub's return address still on the stack).
+ */
+function emitLibRun(E, lib, slow, ret) {
+  const c = E.c, calls = LIB_CALLS + 4 * lib.index, L = LIB_INLINE_LOCALS;
+  c.i32(0).i32load(lib.slot).i32(lib.entry).ne().i32(0).i32load(LIB_LIVE + 4 * lib.index).i32(lib.entry).ne().or().hint(false).br_if(slow);
+  emitLibInline(c, lib.def, slow, L, ret);
+  c.get(L_ICOUNT).get(L.N).sub().set(L_ICOUNT);
+  c.i32(0).i32(0).i32load(calls).i32(1).add().i32store(calls);
+  E.count(PF.libInline);
+  E.stats.libInline = (E.stats.libInline ?? 0) + 1;
 }
 
 /**
@@ -405,7 +443,7 @@ function regionRetSites(blocks, byEip, outsideSites = true) {
       default: return [];
     }
   };
-  const returns = (b) => b.term === TERM_RET || (b.term === TERM_INDIRECT && b.insns[b.insns.length - 1].inlineApi && b.insns[b.insns.length - 1].op === OP.JMP);
+  const returns = (b) => { const l = b.insns[b.insns.length - 1]; return b.term === TERM_RET || (b.term === TERM_INDIRECT && (l.inlineApi || l.libInline) && l.op === OP.JMP); };
   for (const [entry, rs] of callers) {
     const seen = new Set([entry]), stack = [entry];
     while (stack.length) {
@@ -519,7 +557,7 @@ function planSmcGroups(insns) {
   const open = new Map(), lead = new Map(), member = new Map();
   for (let i = 0; i < insns.length; i++) {
     const insn = insns[i], o = insn.ops[0];
-    if (!HANDLERS[insn.op] || insn.inlineApi) { open.clear(); continue; }
+    if (!HANDLERS[insn.op] || insn.inlineApi || insn.libInline) { open.clear(); continue; }
     if (SMC_GROUP_OPS.has(insn.op) && o && o.t === OT.MEM && !o.str && !o.a16 && o.seg !== SEG.FS && o.seg !== SEG.GS &&
       !(o.base === 4 && o.index < 0) && (o.size === 1 || o.size === 2 || o.size === 4 || o.size === 8 || o.size === 16) &&
       insn.ops.find((x) => x.t === OT.MEM) === o) {
@@ -746,8 +784,19 @@ export function discoverRegion(mem, entry, opts) {
   const decoded = new Map(); // eip -> insn (shared cache within this translation)
   let total = 0;
   const MAX_BLOCKS = opts.maxBlocks ?? JIT_DEFAULTS.maxBlocks, MAX_INSNS = opts.maxInsns ?? JIT_DEFAULTS.maxInsns; // (region size limits)
-  const dec = (a) => { let i = decoded.get(a); if (!i) { i = decode(mem, a); if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i); decoded.set(a, i); } return i; };
-  const termOf = (insn) => (insn.inlineApi && insn.op === OP.CALL ? TERM_NONE : termOfInsn(insn)); // (a call run inline does not end its block)
+  // (library kernels run inline: the kernels on, opts.libInline, not in tier 2's functions — see libInlineOf)
+  const libOn = (opts.libInline ?? JIT_DEFAULTS.libInline) && !opts.t2 ? libKernelDefs(opts.libKernels ?? JIT_DEFAULTS.libKernels) : null;
+  const dec = (a) => {
+    let i = decoded.get(a);
+    if (!i) {
+      i = decode(mem, a);
+      if (opts.inlineApi !== false) i.inlineApi = inlineApiOf(mem, i);
+      if (libOn !== null && !i.inlineApi) i.libInline = libInlineOf(mem, i, libOn);
+      decoded.set(a, i);
+    }
+    return i;
+  };
+  const termOf = (insn) => ((insn.inlineApi || insn.libInline) && insn.op === OP.CALL ? TERM_NONE : termOfInsn(insn)); // (a call run inline does not end its block)
   // opts.coldExits with a heat (opts.heat, see heat.js: get(address) = executions, VISITED for the learned / visited
   // ranges): a successor of a branch that ran at least opts.coldMin times is left out of the region when it never ran
   // itself — that edge becomes an exit (exact whatever the heat says: only the region's extent changes)
@@ -777,7 +826,9 @@ export function discoverRegion(mem, entry, opts) {
       total++;
       const term = termOf(insn);
       const addLeader = (t) => { if (!isBoundary(t) && !leaders.has(t) && !cold(insn.addr, t)) { if (leaders.size < MAX_BLOCKS) { leaders.add(t); queue.push(t); } else limited?.add(t); } };
-      if (term === TERM_NONE) { a = insn.next; if (leaders.has(a)) break; continue; }
+      // (a library kernel's call run inline: its return site a block all the same — the ordinary call, taken until the
+      // kernel is installed, returns there through the hash table instead of starting a region in the middle of a block)
+      if (term === TERM_NONE) { a = insn.next; if (insn.libInline) addLeader(a); if (leaders.has(a)) break; continue; }
       if (term === TERM_JMP) { addLeader(insn.ops[0].v); break; }
       if (term === TERM_JCC || term === TERM_LOOP) { addLeader(insn.ops[0].v); addLeader(insn.next); break; }
       if (term === TERM_CALL) { if (!callBounds?.has(insn.ops[0].v >>> 0)) addLeader(insn.ops[0].v); addLeader(insn.next); break; }
@@ -1060,7 +1111,9 @@ export const JIT_PROF = ['forward', 'backward', 'fallthrough', 'ret', 'indirect'
   // 24-bit precision truncating (translate-x87.js roundTowardZero24): arithmetic run, results on the 24-bit grid (the
   // exactness test), those of the arithmetic on bounded narrow values (roundTowardZeroBounded); FST m32 under a static
   // directed 24-bit mode of a value not known to be a float
-  'x87DirArith', 'x87DirGrid', 'x87DirBounded', 'x87DirSt32'];
+  'x87DirArith', 'x87DirGrid', 'x87DirBounded', 'x87DirSt32',
+  // library kernels run inline (opts.libInline, libInlineOf): the calls that took the kernel's path
+  'libInline'];
 /** state block offset of profiling counter k */
 export const profOffset = (k) => (k < 16 ? ST.PROF + 4 * k : ST.PROF2 + 4 * (k - 16));
 const PF = Object.fromEntries(JIT_PROF.map((k, i) => [k, i]));
@@ -3422,6 +3475,22 @@ HANDLERS[OP.JMP] = (E, insn, b) => {
     E.exitToStack();
     c.end(); // slow
   }
+  const lib = insn.libInline;
+  if (lib) { // an import stub `jmp [slot]` to a library kernel's function (libInlineOf): run inline, then return as RET does
+    const c = E.c, slow = c.block(), lz = E.lz;
+    emitLibRun(E, lib, slow, null);
+    c.get(L_REG + 4).i32load(0, 0).set(L_TV); c.get(L_REG + 4).i32(4).add().set(L_REG + 4); // (its ret)
+    E.lz = null; // (the flags it left: in the lazy locals, their kind known at run time only)
+    for (const site of E.retSitesOf[E.cur] ?? []) {
+      c.get(L_TV).i32(site).eq();
+      const i = c.if_(); E.count(PF.retLocal); E.inRet = true; E.jumpTo(site, E.insnIdx); E.inRet = false; c.end(); void i;
+    }
+    E.count(PF.ret);
+    c.get(L_TV);
+    E.exitToStack();
+    c.end(); // slow
+    E.lz = lz;
+  }
   const t2s = insn.opsize === 4 ? E.t2Slot(t) : -1;
   if (t2s >= 0) { // (an import stub's jump to a tier-2 function: a tail call, guarded by the slot's value)
     const c = E.c;
@@ -3458,12 +3527,18 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   }
   // a fast API through a slot that still holds its thunk (and no parked call being resumed): run inline, the block
   // goes on (see inlineApiOf); otherwise the ordinary call below
-  const api = insn.inlineApi, done = api ? c.block() : null;
+  const api = insn.inlineApi, lib = insn.libInline, done = api || lib ? c.block() : null;
   if (api) {
     const slow = c.block();
     c.i32(0).i32load(api.slot).i32(api.thunk).ne().get(L_STATE).i32load(ST.RESUMING).or().hint(false).br_if(slow);
     emitInlineApi(E, api.fid, slow);
     E.stats.inlineApi = (E.stats.inlineApi ?? 0) + 1;
+    c.br(done);
+    c.end(); // slow
+  }
+  if (lib) { // a library kernel's function (libInlineOf): run inline, the block goes on at the return site
+    const slow = c.block();
+    emitLibRun(E, lib, slow, insn.next);
     c.br(done);
     c.end(); // slow
   }
@@ -3478,7 +3553,8 @@ HANDLERS[OP.CALL] = (E, insn, b) => {
   E.count(PF.indirect);
   if (globalThis.ORTHROS_SITE_PROF) { c.set(L_TV); E.siteProf(insn.addr, t.t === OT.MEM && t.base < 0 && t.index < 0 ? 'icallAbs' : 'icall'); c.get(L_TV); }
   E.exitToStack();
-  if (api) c.end(); // done: the block continues after the call
+  if (api || lib) c.end(); // done: the block continues after the call
+  if (lib) E.lz = null; // (the flags the kernel left: in the lazy locals, their kind known at run time only)
 };
 /**
  * An indirect CALL / JMP whose target (L_T4) turns out to be an API thunk with a WASM fast path (opts.apiInline): the
