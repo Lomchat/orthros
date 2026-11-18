@@ -344,6 +344,9 @@ export class RenderLink {
   canvas(w, h) { if (!this.failed) this.w.put(OP.CANVAS, w, h); }
 }
 
+/** the words a pass's prediction may take in the ring (Recorder.predictPrograms) */
+const PREDICT_WORDS = 1 << 18;
+
 /** The `gfx` of one Direct3D device: records its work into a RenderLink (see the file comment). */
 export class Recorder {
   constructor(link, dev) {
@@ -379,6 +382,18 @@ export class Recorder {
   deleteVertexShader(sh) { this.shaderHook = true; this.deleteShader(sh); }
   deletePixelShader(sh) { this.shaderHook = true; this.deleteShader(sh); }
   deleteShader(sh) { const id = this.link.objIds.get(sh); if (id && !this.link.failed) { this.sel(); this.w.c1(OP.SHADER_DELETE, id); this.link.objIds.delete(sh); } }
+  /**
+   * The programs a D3DX effect's pass can make (d3d8-webgl.js predictPrograms), for the render worker's backend: its
+   * shader codes packed per side as (length, words)... — at most PREDICT_WORDS words in all (the rest left out).
+   */
+  predictPrograms(h) {
+    if (this.link.failed) return;
+    let left = PREDICT_WORDS;
+    const pack = (codes) => { const n = codes.reduce((t, c) => t + 1 + c.length, 0), w = new Uint32Array(Math.min(n, left)); let o = 0; for (const c of codes) { if (o + 1 + c.length > w.length) break; w[o++] = c.length; w.set(c, o); o += c.length; } left -= o; return w.subarray(0, o); };
+    const vs = pack(h.vs), ps = pack(h.ps);
+    if (!vs.length || !ps.length) return;
+    this.sel(); this.w.put(OP.PREDICT, h.at >>> 0, h.af >>> 0, h.fog >>> 0, h.table >>> 0, vs, ps);
+  }
   constTouched(k, lo, hi) { const s = this.s; if (lo < s.cLo[k]) s.cLo[k] = lo; if (hi > s.cHi[k]) s.cHi[k] = hi; }
   surfaceDirty(sf, rect) {
     const rr = recOf(sf); if (!rr || rr.destroyed || this.link.failed) return;

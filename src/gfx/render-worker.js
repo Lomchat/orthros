@@ -64,7 +64,7 @@ function init(m) {
 function postStats() {
   const pc = backend.programCache, devices = [];
   for (const [id, m] of replayer.devices) if (m.gfx) devices.push([id, { ...m.gfx.stats }]);
-  const pcs = { queueLength: pc.queue.length, started: pc.started, hits: pc.hits, pending: pc.pending, resolved: pc.resolved ?? 0, caughtUp: pc.caughtUp ?? 0, resolveMs: pc.resolveMs ?? 0, resolveMaxMs: pc.resolveMaxMs ?? 0, polls: pc.polls ?? 0, pollMs: pc.pollMs ?? 0, startMs: pc.startMs ?? 0, resolvedHits: pc.resolvedHits ?? 0, parallel: pc.parallel };
+  const pcs = { queueLength: pc.queue.length, started: pc.started, hits: pc.hits, pending: pc.pending, resolved: pc.resolved ?? 0, caughtUp: pc.caughtUp ?? 0, resolveMs: pc.resolveMs ?? 0, resolveMaxMs: pc.resolveMaxMs ?? 0, polls: pc.polls ?? 0, pollMs: pc.pollMs ?? 0, startMs: pc.startMs ?? 0, resolvedHits: pc.resolvedHits ?? 0, parallel: pc.parallel, predicted: pc.predicted ?? 0, predictStarted: pc.predictStarted ?? 0, predictHits: pc.predictHits ?? 0 };
   const sf = replayer.staticFrames?.stats;
   self.postMessage({ type: 'stats', devices, programCache: pcs, replay: { ...replay, commands: replayer.commands, staticFrames: sf ? { ...sf } : null } });
   // (static frames: logged every 10 s while frames are presented)

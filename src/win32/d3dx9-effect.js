@@ -783,6 +783,7 @@ export function defineEffects(X, vm, h) {
      */
     opsOf(ps) {
       if (ps[PASS_OPS] === undefined) {
+        this.predictPass(ps);
         const ops = this.compilePass(ps);
         ps[PASS_ALL] = ops.map((o) => o.f); ps[PASS_DYN] = ops.filter((o) => o.dyn).map((o) => o.f);
         ps[PASS_OPS] = ops;
@@ -855,6 +856,44 @@ export function defineEffects(X, vm, h) {
         if (f) ops.push({ f, dyn: dyn || cls === 'vs' || cls === 'ps' || cls === 'sampler' || cls === 'texture', touches });
       });
       return ops;
+    }
+    /**
+     * The GL programs this pass can make, for the backend to build before their first draw (gfx/d3d8-webgl.js
+     * predictPrograms): every vertex and pixel shader it may set — each element an array selector may pick — as code
+     * (read from the effect: no shader object created ahead), and the alpha test and fog states its draws will have:
+     * those it sets (from a parameter: as it is now), else the device's. Given once per pass, at its first application.
+     */
+    predictPass(ps) {
+      const dev = this.devImpl ??= com.implAt(this.dev), g = dev?.gfx;
+      if (!g?.predictPrograms) return;
+      // (ALPHATESTENABLE, ALPHAFUNC, FOGENABLE, FOGTABLEMODE: the device's, with Direct3D's defaults)
+      const codes = { vs: [], ps: [] }, st = { 15: dev.rs?.get(15) ?? 0, 25: dev.rs?.get(25) ?? 8, 28: dev.rs?.get(28) ?? 0, 35: dev.rs?.get(35) ?? 0 };
+      ps.states.forEach((s, k) => {
+        const [cls, idx] = STATES[s.op] ?? [];
+        if (cls === 'vs' || cls === 'ps') { for (const b of this.shaderCodes(ps, k)) if (!codes[cls].includes(b)) codes[cls].push(b); }
+        else if (cls === 'rs' && idx in st) st[idx] = this.wordOf(s, `${ps.technique}:${ps.index}:${k}`)() >>> 0;
+      });
+      if (!codes.vs.length || !codes.ps.length) return;
+      const words = (b) => { const w = new Uint32Array(b.length >> 2); for (let i = 0; i < w.length; i++) w[i] = b[4 * i] | (b[4 * i + 1] << 8) | (b[4 * i + 2] << 16) | (b[4 * i + 3] << 24); return w; };
+      g.predictPrograms({ vs: codes.vs.map(words), ps: codes.ps.map(words), at: st[15] ? 1 : 0, af: st[25] >>> 0, fog: st[28] ? 1 : 0, table: st[35] >>> 0 });
+    }
+    /** the bytecode of every shader state k of pass ps may set (stateShaderCandidates' shaders, none created) */
+    shaderCodes(ps, k) {
+      const key = `${ps.technique}:${ps.index}:${k}`, own = this.shaders.get(key);
+      if (own) return [own.bytes];
+      const ref = this.refs.get(key), ex0 = this.exprs.get(key), ex = ex0?.name ? ex0 : null;
+      const objectCode = (id) => { const b = this.fx.objects.get(id); return b && b.length >= 8 ? b : null; };
+      if (ref || ex) {
+        const n = this.lookup(ref ?? ex.name, null); if (!n) return [];
+        const pi = this.params.indexOf(n), out = [];
+        for (let el = 0; el < (ex ? Math.max(1, n.elements.length) : 1); el++) {
+          const leaf = n.elements.length ? n.elements[el] : n, b = this.shaders.get(`p${pi}:${el}`)?.bytes ?? (leaf?.obj?.id ? objectCode(leaf.obj.id) : null);
+          if (b) out.push(b);
+        }
+        return out;
+      }
+      const v = ps.states[k].value, b = v instanceof Uint32Array && v[0] ? objectCode(v[0]) : null;
+      return b ? [b] : [];
     }
     /** a pass state with no shader to set (its log line, once per state) */
     noShader(key, cls, ps, k) {

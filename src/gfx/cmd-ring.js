@@ -87,6 +87,10 @@ export const OPS = [
   // the draw probe (draw-probe.js), while it asks: before a draw, the game's own TEXTUREFACTOR and state version as the
   // emulator's device holds them (the mirror keeps the last: what its backend reads is compared with it)
   ['PROBE', 'uu'],
+  // the programs a D3DX effect's pass can make, for the backend to build before their first draw (d3d8-webgl.js
+  // predictPrograms): ALPHATESTENABLE, ALPHAFUNC, FOGENABLE, FOGTABLEMODE its draws will have, the vertex then the pixel
+  // shader codes, each list packed as (code length, code words)...
+  ['PREDICT', 'uuuuww'],
 ];
 export const OP = Object.fromEntries(OPS.map(([name], i) => [name, i]));
 export const OP_NAMES = OPS.map(([name]) => name);

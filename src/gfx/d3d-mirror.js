@@ -264,6 +264,11 @@ export class Replayer {
         if (a[2] === 0) { b.dirty = true; g?.bufferUpdated(b, a[1], bytes.length); }
         break;
       }
+      case OP.PREDICT: { // (the codes unpacked: copies, the ring's words are reused)
+        const unpack = (w) => { const out = []; for (let o = 0; o < w.length;) { const n = w[o]; if (n <= 0 || o + 1 + n > w.length) break; out.push(Uint32Array.from(w.subarray(o + 1, o + 1 + n))); o += 1 + n; } return out; };
+        g?.predictPrograms?.({ at: a[0], af: a[1], fog: a[2], table: a[3], vs: unpack(a[4]), ps: unpack(a[5]) });
+        break;
+      }
       case OP.TEX_LOD: { const t = this.res.get(a[0]); if (t) t.lod = a[1]; break; }
       case OP.PROBE: if (m) { m.probeTf = a[0] >>> 0; m.probeSv = a[1] >>> 0; } break; // (the game's TEXTUREFACTOR before the next draw: draw-probe.js)
       case OP.VOL_MEM: { const t = this.res.get(a[0]); const l = t?.levels?.[a[1]]; if (l) { l.mem = a[2]; l.dirty = true; t.gen = a[3] | 0; } break; } // (its memory, or new contents: uploaded at the next use, its generation acknowledged then)

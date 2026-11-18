@@ -1020,6 +1020,7 @@ export class WebGLDevice {
     this.dprobe = this.drawHooks(); // (the next frame's draw hooks: draw probe, fakeTfDraw)
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
     if (this.pc?.queue.length) this.prewarmStep();
+    if (this.pc?.fx) this.predictStep(); // (predicted programs: a few started per present, beside the learned ones)
     // (ORTHROS_CAPTURE_FRAMES=<n>: that many consecutive frames captured — a frame's work compared with the next one's)
     if (this.capturing) { this.capturing = false; this.log(`d3d-webgl: capture end (${this.frameDraws} draws)${this.glCallCounts ? '; GL calls: ' + this.stopGlCount() : ''}`); if (--this.captureLeft > 0) this.captureAt = this.frame; }
     if (this.countLeft && --this.countLeft === 0) this.log(`d3d-webgl: GL calls per frame over ${this.countFrames} frames: ${this.stopGlCount(this.countFrames)}`);
@@ -1175,7 +1176,7 @@ export class WebGLDevice {
       for (const smp of this.samplerPool.values()) gl.deleteSampler(smp);
       this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.samplerPool.clear(); this.smpCache = null; this.gamma = null; this.gammaDirty = true;
       const recs = [...this.programsBySrc.values(), ...(this.pc ? [...this.pc.ready.values()].map((e) => e.rec).filter(Boolean) : [])];
-      for (const r of recs) { r.v = undefined; r.cs = null; if (r.failed) continue; gl.useProgram(r.prog); setSamplerUnits(gl, r.u); }
+      for (const r of recs) { r.v = undefined; r.cs = null; if (r.failed || r.building) continue; gl.useProgram(r.prog); setSamplerUnits(gl, r.u); }
       this.invalidateGlState(); this.curVao = null; this.lastProgram = null;
       this.reset(this.dev);
       this.log(`d3d-webgl: GL null mode off (textures, buffers, targets, VAOs and samplers recreated; ${recs.length} programs kept)`);
@@ -1458,8 +1459,9 @@ export class WebGLDevice {
     } else if (L.code && L.dx9) {
       // (the D3DCOLOR inputs, named as attrSpecs binds them: a declaration's streams, or an FVF's attributes)
       const all = L.layout.streams ? [...L.layout.streams.values()].flatMap((s) => s.attrs) : L.layout.attrs ?? [];
-      const t = translateVertexShader9(L.code, new Set(all.filter((a) => a.type === 'color').map((a) => a.sem ?? FVF_SEM[a.name] ?? a.name)));
-      vsSrc = t.glsl; attrNames = [...t.inputs.values()].map((n) => 'a_' + n);
+      const sem = this.pc ? (this.pc.semKinds ??= new Map()) : null; // (the kinds seen per semantic: predicted programs' guesses, predictPrograms)
+      if (sem) for (const a of all) sem.set(a.sem ?? FVF_SEM[a.name] ?? a.name, a.type === 'color');
+      ({ vs: vsSrc, attrs: attrNames } = vertexShader9(L.code, new Set(all.filter((a) => a.type === 'color').map((a) => a.sem ?? FVF_SEM[a.name] ?? a.name))));
     }
     else if (L.code) { vsSrc = translateVertexShader(L.code, L.layout); attrNames = [...new Set([...L.layout.streams.values()].flatMap((s) => s.attrs.map((a) => 'a_v' + a.reg)))]; }
     else {
@@ -1477,9 +1479,10 @@ export class WebGLDevice {
     // key records but these sources ignore): that program, without a new compile and link
     const srcKey = programSourceKey(vsSrc, fsSrc, attrNames);
     p = this.programsBySrc.get(srcKey);
+    let built = false; // (at this draw: neither shared nor compiled ahead)
     if (p) this.stats.programsShared = (this.stats.programsShared ?? 0) + 1;
     else {
-      p = this.takePrewarmed(srcKey, key, vsSrc, fsSrc, attrNames) ?? this.compile(vsSrc, fsSrc, key, attrNames);
+      p = this.takePrewarmed(srcKey, key, vsSrc, fsSrc, attrNames) ?? ((built = true), this.compile(vsSrc, fsSrc, key, attrNames));
       p.srcKey = srcKey; p.shaders = new Set(); // (the shader objects of its keys: dropProgramsOf)
       this.programsBySrc.set(srcKey, p);
     }
@@ -1488,7 +1491,30 @@ export class WebGLDevice {
     if (this.programs.size < 8) this.log(`d3d-webgl: program ${this.programs.size} key=${key.slice(0, 120)} attrs=${attrNames.join(',')}`);
     if (this.dumpShaders && this.programs.size < 64) this.log(`d3d-webgl: program ${this.programs.size} key=${key}${L.code ? `\nD3D VS\n${disasmShader9(L.code)}` : ''}${ps ? `\nD3D PS\n${disasmShader9(ps.code)}` : ''}\nGLSL VS\n${vsSrc}\nGLSL FS\n${fsSrc}`);
     this.programs.set(key, p);
+    if (this.pc && dev.api9 && ps) this.notePredictable(L, ps, stages, built, fog, alphaTest);
     return { p, L, stages, lighting, fog, lightTypes, ps };
+  }
+  /**
+   * A new program key of a Direct3D 9 pixel shader: the kinds of the textures its stages had (counted per stage: the
+   * guesses of predicted programs, predictedSources) and, once predictions are registered (pc.fx), its shaders marked
+   * drawn — the pairs a large pass can make of drawn shaders are predicted then (predictPrograms).
+   */
+  notePredictable(L, ps, stages, built, fog, alphaTest) {
+    const pc = this.pc, k = pc.stageCh ??= Array.from({ length: 16 }, () => [0, 0, 0, 0, 0]);
+    for (let i = 0; i < stages.length && i < 16; i++) if (stages[i].bound) k[i][stages[i].ch]++;
+    if (!pc.fx || !L.code || !L.dx9) return;
+    // (a program built at this draw: why no prediction had it — stats.predictMiss: its shaders named by no pass ('none'),
+    // a pair no pass predicted ('pair'), predicted in this frame — a pass's first draw — ('first') or earlier but not
+    // started yet ('late'), predicted with other sources ('guess'))
+    if (built) {
+      const P = pc.fx, v = P.codes.get(codeKeyOf(P, L.code)), p = P.codes.get(codeKeyOf(P, ps.code)), m = this.stats.predictMiss ??= { none: 0, pair: 0, first: 0, late: 0, guess: 0 };
+      const q = v && p ? P.queue.find((x) => x.v === v && x.p === p && x.fog === fog && x.at === alphaTest) : null;
+      if (!v || !p) m.none++;
+      else if (!P.seen.has(`${v.id}:${p.id}:${fog}:${alphaTest}`)) m.pair++;
+      else if (q) { if (q.step === P.steps) m.first++; else m.late++; }
+      else m.guess++;
+    }
+    predictDrawn(pc.fx, L.code, ps.code);
   }
   /**
    * Shader instructions the translators left out (their `// unsupported vs|ps op N` lines: d3d8-shaders.js,
@@ -1512,6 +1538,8 @@ export class WebGLDevice {
    * server by the worker) so that later sessions compile it in the background before it is needed (prewarmStep).
    */
   compile(vsSrc, fsSrc, key, attrNames) {
+    const async = this.asyncBuildMs();
+    if (async) return this.buildAsync(this.startProgram(vsSrc, fsSrc, attrNames), key, attrNames, vsSrc, fsSrc, async, true);
     const ap = acct.enter(ACCT.prog), t0 = acct.stamp();
     let p; try { p = this.finishProgram(this.startProgram(vsSrc, fsSrc, attrNames), key, attrNames, vsSrc, fsSrc); } finally { acct.leave(ap); }
     this.stats.programs++;
@@ -1540,6 +1568,40 @@ export class WebGLDevice {
     P.failLogged = true;
     if ((this.failedProgramLogs = (this.failedProgramLogs ?? 0) + 1) <= 10) this.log(`d3d-webgl: draws with a program GL did not link are skipped (key ${String(P.key).slice(0, 160)})`);
   }
+  /**
+   * dbg ORTHROS_GL_ASYNC_PROGRAMS=<ms> (off by default: frames then lack what those draws draw): a draw whose program the
+   * GPU process is still building is not issued — for at most <ms> ms from its first draw, after which the draw waits
+   * for the build as it does without the switch — instead of the whole frame waiting (ANGLE over Direct3D 11: 100-270 ms
+   * per program). With KHR_parallel_shader_compile only (without it the build stops the GPU process anyway). 0: off.
+   */
+  asyncBuildMs() { const v = Number(globalThis.ORTHROS_GL_ASYNC_PROGRAMS); return v > 0 && (this.parallelExt ??= this.gl.getExtension('KHR_parallel_shader_compile') ?? false) ? Math.min(v, 5000) : 0; }
+  /** has the GPU process finished this started build? (COMPLETION_STATUS_KHR: a query that does not wait) */
+  buildDone(prog) { return !!this.gl.getProgramParameter(prog, this.parallelExt.COMPLETION_STATUS_KHR); }
+  /** A program record whose build its draws do not wait for (asyncBuildMs; `learn`: built for a draw, learned once resolved). */
+  buildAsync(h, key, attrNames, vsSrc, fsSrc, ms, learn) {
+    this.stats.programsAsync = (this.stats.programsAsync ?? 0) + 1;
+    return { prog: h.prog, u: () => null, attrNames, key, locs: Object.create(null), failed: false, building: { h, t0: performance.now(), ms, vsSrc, fsSrc, learn, polled: -1 } };
+  }
+  /**
+   * A draw whose program GL refused, or is still building (asyncBuildMs): false when it is not issued — refused, or
+   * building within its bound (polled once per frame); a build done, or past its bound, resolved then (resolveProgram:
+   * the wait for a build not done yet, timed as a build at a draw).
+   */
+  drawable(P) {
+    const b = P.building;
+    if (!b) { this.skipFailed(P); return false; }
+    if (performance.now() - b.t0 < b.ms && (b.polled === this.frame || ((b.polled = this.frame), !this.buildDone(b.h.prog)))) { this.stats.buildingDraws = (this.stats.buildingDraws ?? 0) + 1; return false; }
+    const ap = acct.enter(ACCT.prog), t0 = acct.stamp();
+    let r; try { r = resolveProgram(this.gl, b.h, P.key, P.attrNames, b.vsSrc, b.fsSrc, this.log); } finally { acct.leave(ap); }
+    if (!r.ok) this.stats.errors++; else this.gs.prog = b.h.prog;
+    Object.assign(P, r.rec); P.building = null;
+    const ms = acct.stamp() - t0, pc = this.pc;
+    if (!b.learn) this.stats.prewarmTakeMs = (this.stats.prewarmTakeMs ?? 0) + ms; // (a learned or predicted one, as takePrewarmed times it)
+    else { this.stats.programs++; this.stats.programMs = (this.stats.programMs ?? 0) + ms; this.stats.programMaxMs = Math.max(this.stats.programMaxMs ?? 0, ms); }
+    if (b.learn && pc && !P.failed && pc.learned.length < 4096) pc.learned.push({ key: P.key, vs: b.vsSrc, fs: b.fsSrc, attrs: P.attrNames, t: Math.round(performance.now() - pc.t0) });
+    if (P.failed) { this.skipFailed(P); return false; }
+    return true;
+  }
   /** Learned programs started at a present (prewarmPrograms): a few per frame. */
   prewarmStep() { const ap = acct.enter(ACCT.prog); try { prewarmPrograms(this.gl, this.pc, this.programsBySrc); } finally { acct.leave(ap); } }
   /**
@@ -1555,6 +1617,7 @@ export class WebGLDevice {
     // build the GPU process has not finished, and for the commands queued before it: timed apart from full builds)
     let p;
     if (e.rec) { p = e.rec; p.key = key; if (e.ok) pc.resolvedHits = (pc.resolvedHits ?? 0) + 1; else this.stats.errors++; }
+    else if (this.asyncBuildMs() && !this.buildDone(e.prog)) { pc.pending--; p = this.buildAsync(e, key, attrNames, vsSrc, fsSrc, this.asyncBuildMs(), false); }
     else {
       pc.pending--;
       const ap = acct.enter(ACCT.prog), t0 = acct.stamp();
@@ -1564,9 +1627,55 @@ export class WebGLDevice {
     // (a program GL refused — the same sources would fail again: its failed record is the program of these sources —
     // is not reported as used: it ages out of the server's list)
     if (p.failed) return p;
+    // (a predicted one, which no earlier session built: learned as a program built at a draw — the server lists it to the
+    // next sessions, compiled before the device exists — not reported as used)
+    if (e.predicted) { pc.predictHits = (pc.predictHits ?? 0) + 1; if (pc.learned.length < 4096) pc.learned.push({ key, vs: vsSrc, fs: fsSrc, attrs: attrNames, t: Math.round(performance.now() - pc.t0) }); return p; }
     pc.hits++;
     if (pc.used && pc.used.length < 4096) pc.used.push(e.id ?? programSourceId(vsSrc, fsSrc, attrNames));
     return p;
+  }
+
+  /**
+   * Programs predicted before their first draw. A D3DX effect's pass names the vertex and pixel shaders it may set (an
+   * array selector: every element it may pick) and the alpha test and fog states its draws will have (d3dx9-effect.js
+   * predictPass, at the pass's first application): `hint` { vs, ps: shader codes, at, af, fog, table: ALPHATESTENABLE
+   * (0 / 1), ALPHAFUNC, FOGENABLE (0 / 1), FOGTABLEMODE }.
+   * A pass of a few pairs (PREDICT_ALL) has them all predicted; a larger one (a pixel shader per lighting case, a vertex
+   * shader per skinning case: up to 18 x 288) the pairs of the shaders drawn so far — each shader the session draws
+   * completes the pairs it makes with the other side's drawn ones (predictDrawn). A pair's program is guessed as a draw
+   * would build it (predictedSources). A wrong guess costs a build in the GPU process's background threads, never a
+   * frame: a draw finds its program by its exact sources (programsBySrc, pc.ready). Only with
+   * KHR_parallel_shader_compile (without it a build stops the GPU process); dbg ORTHROS_GL_PREDICT=0 turns it off.
+   */
+  predictPrograms(hint) {
+    const pc = this.pc;
+    if (!pc?.parallel || globalThis.ORTHROS_GL_PREDICT === 0 || !hint?.vs?.length || !hint.ps?.length) return;
+    const P = pc.fx ??= predictState(pc);
+    if (P.passes >= PREDICT_PASSES) return;
+    P.passes++;
+    // (the pixel shader's fog and alpha test values as programUncached has them with a vertex shader: table fog, else vertex fog)
+    const pass = { vs: [], ps: [], fog: hint.fog ? hint.table || -1 : 0, at: hint.at ? hint.af : 0, all: hint.vs.length * hint.ps.length <= PREDICT_ALL };
+    for (const [list, codes] of [[pass.vs, hint.vs], [pass.ps, hint.ps]]) for (const c of codes) { const r = codeRecord(P, c); if (!list.includes(r)) { list.push(r); r.passes.push(pass); } }
+    for (const v of pass.vs) for (const p of pass.ps) if (pass.all || (v.drawn && p.drawn)) predictPair(pc, P, v, p, pass);
+  }
+  /** Predicted programs started at a present (beside the learned ones, prewarmStep): a few at once, see predictStart. */
+  predictStep() { const P = this.pc?.fx; if (!P) return; P.steps++; if (P.queue.length || P.live.length) predictStart(this, this.pc, P); }
+  /**
+   * The sources a draw would build for a predicted pair (predictPrograms): the vertex shader's D3DCOLOR inputs the
+   * semantics this session's layouts gave as D3DCOLOR (pc.semKinds; a semantic not seen yet: colors and blend indices),
+   * each stage's texture channels the most frequent ones at that stage in this session's draws (pc.stageCh), not flat.
+   */
+  predictedSources(q) {
+    const pc = this.pc, v = q.v;
+    if (!v.src) {
+      const inputs = translateVertexShader9(v.code, null).inputs, sem = pc.semKinds;
+      const bgra = new Set(); for (const n of inputs.values()) if (sem?.get(n) ?? /^s(?:10|2)_/.test(n)) bgra.add(n);
+      v.src = vertexShader9(v.code, bgra);
+    }
+    const k = pc.stageCh, ch = new Array(16), no = new Array(16).fill(false);
+    for (let i = 0; i < 16; i++) { const c = k?.[i]; ch[i] = !c ? 4 : c[1] > c[4] && c[1] >= c[2] ? 1 : c[2] > c[4] ? 2 : 4; }
+    const fs = translatePixelShader9(q.p.code, { cube: no, volume: no, projected: no, ch, fog: q.fog, alphaTest: q.at }).glsl;
+    return { vs: v.src.vs, fs, attrs: v.src.attrs };
   }
 
   /**
@@ -2230,7 +2339,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
-    if (P.failed) { this.skipFailed(P); return; }
+    if ((P.failed || P.building) && !this.drawable(P)) return;
     this.applyState(P, info, type, count, -1);
     if (!this.bindAttributes(P, info.L)) return;
     if (this.capturing) {
@@ -2270,7 +2379,7 @@ export class WebGLDevice {
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const ib = this.comImpl(dev.indices.ib); if (!ib) return;
     const info = this.program(); const P = info.p;
-    if (P.failed) { this.skipFailed(P); return; }
+    if ((P.failed || P.building) && !this.drawable(P)) return;
     this.applyState(P, info, type, count, ib.id);
     const inst = dev.freqMask ? instanceCount(dev) : -1; // (hardware instancing, d3d9-shaders.js: the instances drawn; -1 no stream frequency set)
     if (!this.bindAttributes(P, info.L, null, baseVertex | 0, inst >= 0)) return;
@@ -2310,7 +2419,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
-    if (P.failed) { this.skipFailed(P); return; }
+    if ((P.failed || P.building) && !this.drawable(P)) return;
     this.applyState(P, info, type, count, -2);
     const n = this.vertexCount(type, count);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);
@@ -2328,7 +2437,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
-    if (P.failed) { this.skipFailed(P); return; }
+    if ((P.failed || P.building) && !this.drawable(P)) return;
     this.applyState(P, info, type, count, -2);
     const n = this.vertexCount(type, count);
     const short = ifmt === FMT.INDEX16;
@@ -2421,6 +2530,79 @@ function layoutVaoSig(layout) {
     .map(([n, s]) => `${n}:${s.stride}:` + (s.attrs ?? []).map((a) => `${a.name}/${a.sem}/${a.reg}@${a.offset}${a.type}x${a.comps}`).join(',')).join('|');
 }
 
+/** A Direct3D 9 vertex shader's GLSL and attribute names, its inputs of the semantics in `bgra` read as D3DCOLOR. */
+function vertexShader9(code, bgra) { const t = translateVertexShader9(code, bgra); return { vs: t.glsl, attrs: [...t.inputs.values()].map((n) => 'a_' + n) }; }
+
+// Predicted programs (WebGLDevice.predictPrograms): pairs of at most PREDICT_ALL predicted whole at a pass's first
+// application (a larger pass: a drawn shader with the other side's drawn ones, or with all of them when they are at most
+// PREDICT_SIDE), at most PREDICT_MAX pairs and PREDICT_PASSES passes per GL context, at most PREDICT_LIVE builds started
+// and not finished at once (a build a draw needs must not wait behind many predicted ones in the GPU process's compile
+// threads), started within PREDICT_STEP_MS per present
+const PREDICT_ALL = 16, PREDICT_SIDE = 4, PREDICT_MAX = 1024, PREDICT_PASSES = 4096, PREDICT_LIVE = 3, PREDICT_STEP_MS = 2, PREDICT_LOGS = 12;
+/** a GL context's predictions (programCache.fx): shader codes by content, pairs queued, builds started and not finished */
+function predictState(pc) { return { pc, codes: new Map(), keys: new WeakMap(), seen: new Set(), queue: [], live: [], passes: 0, next: 1, steps: 0 }; }
+/** a shader code's content key (FNV-1a of its words, and its length) */
+function codeKeyOf(P, code) {
+  let k = P.keys.get(code);
+  if (k === undefined) { let h = 0x811c9dc5; for (let i = 0; i < code.length; i++) h = Math.imul(h ^ code[i], 0x01000193); k = `${(h >>> 0).toString(36)}.${code.length}`; P.keys.set(code, k); }
+  return k;
+}
+/** the record of a shader code a prediction named (one per content): { id, code, passes, drawn, src (its GLSL, once guessed) } */
+function codeRecord(P, code) {
+  const k = codeKeyOf(P, code);
+  let r = P.codes.get(k);
+  if (!r) P.codes.set(k, (r = { id: P.next++, code, passes: [], drawn: false, src: null }));
+  return r;
+}
+/** a pair queued for a build (once per pair and states) */
+function predictPair(pc, P, v, p, pass) {
+  const k = `${v.id}:${p.id}:${pass.fog}:${pass.at}`;
+  if (P.seen.has(k)) return;
+  P.seen.add(k);
+  if (P.seen.size > PREDICT_MAX) { pc.predictDropped = (pc.predictDropped ?? 0) + 1; return; }
+  P.queue.push({ v, p, fog: pass.fog, at: pass.at, step: P.steps });
+  pc.predicted = (pc.predicted ?? 0) + 1;
+}
+/**
+ * A draw built a program of these shader codes: those a prediction named are drawn — in the larger passes that name
+ * them, their pairs with the other side's shaders are predicted: all of them when that side has at most PREDICT_SIDE
+ * (a vertex shader per skinning case: a new pixel shader is soon drawn with each), else its drawn ones.
+ */
+function predictDrawn(P, vsCode, psCode) {
+  const v = P.codes.get(codeKeyOf(P, vsCode)), p = P.codes.get(codeKeyOf(P, psCode));
+  for (const [r, side] of [[v, 'ps'], [p, 'vs']]) {
+    if (!r || r.drawn) continue;
+    r.drawn = true;
+    for (const pass of r.passes) if (!pass.all) for (const o of pass[side]) if (o.drawn || pass[side].length <= PREDICT_SIDE) predictPair(P.pc, P, side === 'ps' ? r : o, side === 'ps' ? o : r, pass);
+  }
+}
+/**
+ * Predicted pairs built: their sources guessed (WebGLDevice.predictedSources), those of a program already built or
+ * started skipped, the others started as learned ones are (pc.ready: a draw takes them, resolvePrewarmed resolves them
+ * when the GPU process has caught up) — while fewer than PREDICT_LIVE started ones are unfinished (COMPLETION_STATUS_KHR,
+ * a query that does not wait).
+ */
+function predictStart(d, pc, P) {
+  const gl = d.gl, ext = pc.parallelExt ??= gl.getExtension('KHR_parallel_shader_compile');
+  if (!ext) return;
+  const t0 = performance.now();
+  P.live = P.live.filter((e) => e.rec === null && pc.ready.get(e.srcKey) === e && !gl.getProgramParameter(e.prog, ext.COMPLETION_STATUS_KHR));
+  while (P.live.length < PREDICT_LIVE && P.queue.length && performance.now() - t0 < PREDICT_STEP_MS) {
+    const src = d.predictedSources(P.queue.shift());
+    const srcKey = programSourceKey(src.vs, src.fs, src.attrs);
+    let known = pc.ready.has(srcKey);
+    if (!known) for (const x of pc.devices ?? [d]) if (x.programsBySrc.has(srcKey)) { known = true; break; }
+    if (known) { pc.predictKnown = (pc.predictKnown ?? 0) + 1; continue; }
+    const e = { ...startProgram(gl, src.vs, src.fs, src.attrs), id: null, vsSrc: src.vs, fsSrc: src.fs, attrs: src.attrs, rec: null, ok: false, predicted: true, srcKey };
+    pc.ready.set(srcKey, e); pc.pending = (pc.pending ?? 0) + 1; pc.predictStarted = (pc.predictStarted ?? 0) + 1;
+    P.live.push(e);
+  }
+  pc.predictMs = (pc.predictMs ?? 0) + performance.now() - t0;
+  // (the queue drained: a line for the session's report and telemetry, the first PREDICT_LOGS times)
+  if (P.queue.length) P.busy = true;
+  else if (P.busy && (P.busy = false, (P.logs = (P.logs ?? 0) + 1) <= PREDICT_LOGS)) d.log(`d3d-webgl: programs predicted from ${P.passes} effect passes (${P.codes.size} shaders): ${pc.predicted ?? 0} pairs, ${pc.predictStarted ?? 0} built ahead, ${pc.predictKnown ?? 0} already built, ${pc.predictHits ?? 0} taken at their first draw; builds at a draw since predictions began: ${JSON.stringify(d.stats.predictMiss ?? {})} (none: shaders of no pass, pair: a pair not predicted, first: a pass's first draw, late: not started yet, guess: other sources)`);
+}
+
 /** Compile and link a program without waiting for the result (no status query: the GPU process works meanwhile). */
 function startProgram(gl, vsSrc, fsSrc, attrNames) {
   const mk = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); return sh; };
@@ -2438,7 +2620,8 @@ function startProgram(gl, vsSrc, fsSrc, attrNames) {
  * A program GL refused to link stops there: deleted, never made current (useProgram would fail and leave the previous
  * program in use: a draw then ran that one, or none), its record marked `failed` — the draws that need it are not
  * issued (WebGLDevice.skipFailed).
- * @returns {{ rec: { prog: WebGLProgram, u: (name: string) => WebGLUniformLocation|null, attrNames: string[], key: string, locs: object, failed: boolean }, ok: boolean }}
+ * @returns {{ rec: { prog: WebGLProgram, u: (name: string) => WebGLUniformLocation|null, attrNames: string[], key: string, locs: object, failed: boolean, building: object|null }, ok: boolean }}
+ * (`building`: a build its draws do not wait for yet — WebGLDevice.buildAsync —, null once resolved)
  * (`locs`: the locations by uniform name, u's cache — a flicker capture names the uniforms it records with it)
  */
 function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
@@ -2447,7 +2630,7 @@ function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
     for (const [sh, src] of [[h.vs, vsSrc], [h.fs, fsSrc]]) if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) log(`d3d-webgl: shader compile error: ${gl.getShaderInfoLog(sh)}\n${src.split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n')}`);
     log(`d3d-webgl: link error: ${gl.getProgramInfoLog(prog)}`);
     gl.deleteShader(h.vs); gl.deleteShader(h.fs); gl.deleteProgram(prog);
-    return { rec: { prog, u: () => null, attrNames, key, locs: Object.create(null), failed: true }, ok };
+    return { rec: { prog, u: () => null, attrNames, key, locs: Object.create(null), failed: true, building: null }, ok };
   }
   gl.deleteShader(h.vs); gl.deleteShader(h.fs);
   const loc = Object.create(null); // uniform name -> location (null when absent), filled from the active uniforms then on demand
@@ -2457,7 +2640,7 @@ function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
   // samplers: stage i always reads texture unit i (uniform values persist in the program: set once here)
   gl.useProgram(prog);
   setSamplerUnits(gl, u);
-  return { rec: { prog, u, attrNames, key, locs: loc, failed: false }, ok };
+  return { rec: { prog, u, attrNames, key, locs: loc, failed: false, building: null }, ok };
 }
 /** The sampler uniforms of the program in use: stage i reads texture unit i. */
 function setSamplerUnits(gl, u) {
@@ -2534,7 +2717,7 @@ export function createWebGLBackend(canvas, log, dump) {
   // a lost context (GPU reset, driver update, memory pressure) is restored by the browser when allowed
   // (preventDefault); the device then recreates its GL objects
   canvas.addEventListener?.('webglcontextlost', (e) => { e.preventDefault(); log('d3d-webgl: WebGL context lost'); });
-  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; probe?.reset(); probe?.flicker?.reset(); backend.device?.contextRestored(); });
+  canvas.addEventListener?.('webglcontextrestored', () => { if (globalThis.ORTHROS_GL_DISCARD) gl.enable(gl.RASTERIZER_DISCARD); programCache.ready.clear(); programCache.pending = 0; programCache.fence = null; if (programCache.fx) programCache.fx.live = []; probe?.reset(); probe?.flicker?.reset(); backend.device?.contextRestored(); });
   // programs learned by earlier sessions, compiled ahead (queue: from the server; ready: started builds by key) and the
   // programs this session had to build at a draw (learned: sent to the server by the worker)
   // GPU time per frame and GL calls per frame for telemetry (gpu-probe.js; dbg ORTHROS_GL_PROBES=0: off)
