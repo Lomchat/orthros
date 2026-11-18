@@ -7,7 +7,7 @@
 import { FMT, FLOAT_FORMATS, surfacePitch, surfaceBytes, readFloatTexels, writeFloatTexels, floatsToRgba8, texKindOf, texChannels } from '../win32/d3d8.js';
 import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, ffProgramFromKey, flatVaryings, translateVertexShader, translatePixelShader, leanShaders, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
 import { translateVertexShader9, translatePixelShader9, semName, disasmShader9, OPN, instanceCount, streamDivisor } from './d3d9-shaders.js';
-import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION } from './program-id.js';
+import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION, programRecipe, codeToText, codeFromText } from './program-id.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { apiOpt } from '../core/api-opt.js';
 import { GpuProbe } from './gpu-probe.js';
@@ -1451,7 +1451,7 @@ export class WebGLDevice {
     const key = vsKey + '|' + fsKey + (flat ? '|flat' : '');
     let p = this.programs.get(key);
     if (p) return { p, L, stages, lighting, fog, lightTypes, ps };
-    let vsSrc, attrNames;
+    let vsSrc, attrNames, bgra = null;
     // (fixed function over an FVF layout: the sources from the key, as a later session regenerates a learned program)
     const ff = !L.code && !ps && !L.shader && !L.layout.dx9 ? ffProgramFromKey(key) : null;
     if (ff) {
@@ -1461,7 +1461,8 @@ export class WebGLDevice {
       const all = L.layout.streams ? [...L.layout.streams.values()].flatMap((s) => s.attrs) : L.layout.attrs ?? [];
       const sem = this.pc ? (this.pc.semKinds ??= new Map()) : null; // (the kinds seen per semantic: predicted programs' guesses, predictPrograms)
       if (sem) for (const a of all) sem.set(a.sem ?? FVF_SEM[a.name] ?? a.name, a.type === 'color');
-      ({ vs: vsSrc, attrs: attrNames } = vertexShader9(L.code, new Set(all.filter((a) => a.type === 'color').map((a) => a.sem ?? FVF_SEM[a.name] ?? a.name))));
+      bgra = new Set(all.filter((a) => a.type === 'color').map((a) => a.sem ?? FVF_SEM[a.name] ?? a.name));
+      ({ vs: vsSrc, attrs: attrNames } = vertexShader9(L.code, bgra));
     }
     else if (L.code) { vsSrc = translateVertexShader(L.code, L.layout); attrNames = [...new Set([...L.layout.streams.values()].flatMap((s) => s.attrs.map((a) => 'a_v' + a.reg)))]; }
     else {
@@ -1482,7 +1483,9 @@ export class WebGLDevice {
     let built = false; // (at this draw: neither shared nor compiled ahead)
     if (p) this.stats.programsShared = (this.stats.programsShared ?? 0) + 1;
     else {
-      p = this.takePrewarmed(srcKey, key, vsSrc, fsSrc, attrNames) ?? ((built = true), this.compile(vsSrc, fsSrc, key, attrNames));
+      // (a Direct3D 9 shader program's inputs, learned with it: later translators rebuild it from them, recipeSources)
+      const recipe = L.code && L.dx9 && ps && dev.api9 && bgra && !globalThis.ORTHROS_GL_FLATFS ? () => ({ vs: codeToText(L.code), ps: codeToText(ps.code), c: [...bgra].join(','), e: stageEnv(stages), fog, at: alphaTest, f: flat ? 1 : 0 }) : null;
+      p = this.takePrewarmed(srcKey, key, vsSrc, fsSrc, attrNames, recipe) ?? ((built = true), this.compile(vsSrc, fsSrc, key, attrNames, recipe));
       p.srcKey = srcKey; p.shaders = new Set(); // (the shader objects of its keys: dropProgramsOf)
       this.programsBySrc.set(srcKey, p);
     }
@@ -1537,16 +1540,16 @@ export class WebGLDevice {
    * Build a program at its first draw. The build is learned (programCache.learned: the key and sources, sent to the
    * server by the worker) so that later sessions compile it in the background before it is needed (prewarmStep).
    */
-  compile(vsSrc, fsSrc, key, attrNames) {
+  compile(vsSrc, fsSrc, key, attrNames, recipe = null) {
     const async = this.asyncBuildMs();
-    if (async) return this.buildAsync(this.startProgram(vsSrc, fsSrc, attrNames), key, attrNames, vsSrc, fsSrc, async, true);
+    if (async) return this.buildAsync(this.startProgram(vsSrc, fsSrc, attrNames), key, attrNames, vsSrc, fsSrc, async, true, recipe);
     const ap = acct.enter(ACCT.prog), t0 = acct.stamp();
     let p; try { p = this.finishProgram(this.startProgram(vsSrc, fsSrc, attrNames), key, attrNames, vsSrc, fsSrc); } finally { acct.leave(ap); }
     this.stats.programs++;
     { const ms = performance.now() - t0; this.stats.programMs = (this.stats.programMs ?? 0) + ms; this.stats.programMaxMs = Math.max(this.stats.programMaxMs ?? 0, ms); // (report: GL program builds, the frame hitches of first uses)
       if (ms > 100 && (this.slowProgramLogs = (this.slowProgramLogs ?? 0) + 1) <= 10) this.log(`d3d-webgl: program built in ${ms.toFixed(0)} ms: VS ${vsSrc.length} chars, FS ${fsSrc.length} chars, key ${key.slice(0, 160)}`); }
     const pc = this.pc;
-    if (pc && !p.failed && pc.learned.length < 4096) pc.learned.push({ key, vs: vsSrc, fs: fsSrc, attrs: attrNames, t: Math.round(performance.now() - pc.t0) }); // (not a program GL refused: no later session builds it ahead)
+    if (pc && !p.failed && pc.learned.length < 4096) pc.learned.push({ key, vs: vsSrc, fs: fsSrc, attrs: attrNames, t: Math.round(performance.now() - pc.t0), r: recipe?.() }); // (not a program GL refused: no later session builds it ahead)
     return p;
   }
   /** Compile and link a program without waiting for the result (no status query: the GPU process works meanwhile). */
@@ -1577,10 +1580,10 @@ export class WebGLDevice {
   asyncBuildMs() { const v = Number(globalThis.ORTHROS_GL_ASYNC_PROGRAMS); return v > 0 && (this.parallelExt ??= this.gl.getExtension('KHR_parallel_shader_compile') ?? false) ? Math.min(v, 5000) : 0; }
   /** has the GPU process finished this started build? (COMPLETION_STATUS_KHR: a query that does not wait) */
   buildDone(prog) { return !!this.gl.getProgramParameter(prog, this.parallelExt.COMPLETION_STATUS_KHR); }
-  /** A program record whose build its draws do not wait for (asyncBuildMs; `learn`: built for a draw, learned once resolved). */
-  buildAsync(h, key, attrNames, vsSrc, fsSrc, ms, learn) {
+  /** A program record whose build its draws do not wait for (asyncBuildMs; `learn`: built for a draw, learned once resolved, with its recipe). */
+  buildAsync(h, key, attrNames, vsSrc, fsSrc, ms, learn, recipe = null) {
     this.stats.programsAsync = (this.stats.programsAsync ?? 0) + 1;
-    return { prog: h.prog, u: () => null, attrNames, key, locs: Object.create(null), failed: false, building: { h, t0: performance.now(), ms, vsSrc, fsSrc, learn, polled: -1 } };
+    return { prog: h.prog, u: () => null, attrNames, key, locs: Object.create(null), failed: false, building: { h, t0: performance.now(), ms, vsSrc, fsSrc, learn, recipe, polled: -1 } };
   }
   /**
    * A draw whose program GL refused, or is still building (asyncBuildMs): false when it is not issued — refused, or
@@ -1598,7 +1601,7 @@ export class WebGLDevice {
     const ms = acct.stamp() - t0, pc = this.pc;
     if (!b.learn) this.stats.prewarmTakeMs = (this.stats.prewarmTakeMs ?? 0) + ms; // (a learned or predicted one, as takePrewarmed times it)
     else { this.stats.programs++; this.stats.programMs = (this.stats.programMs ?? 0) + ms; this.stats.programMaxMs = Math.max(this.stats.programMaxMs ?? 0, ms); }
-    if (b.learn && pc && !P.failed && pc.learned.length < 4096) pc.learned.push({ key: P.key, vs: b.vsSrc, fs: b.fsSrc, attrs: P.attrNames, t: Math.round(performance.now() - pc.t0) });
+    if (b.learn && pc && !P.failed && pc.learned.length < 4096) pc.learned.push({ key: P.key, vs: b.vsSrc, fs: b.fsSrc, attrs: P.attrNames, t: Math.round(performance.now() - pc.t0), r: b.recipe?.() });
     if (P.failed) { this.skipFailed(P); return false; }
     return true;
   }
@@ -1609,7 +1612,7 @@ export class WebGLDevice {
    * (programCache.used: the server keeps the programs sessions still use). Programs learned from sources an older
    * translator produced are never taken (no draw builds those sources any more) and age out of the server's list.
    */
-  takePrewarmed(srcKey, key, vsSrc, fsSrc, attrNames) {
+  takePrewarmed(srcKey, key, vsSrc, fsSrc, attrNames, recipe = null) {
     const pc = this.pc, e = pc?.ready.get(srcKey);
     if (!e) return null;
     pc.ready.delete(srcKey);
@@ -1629,9 +1632,12 @@ export class WebGLDevice {
     if (p.failed) return p;
     // (a predicted one, which no earlier session built: learned as a program built at a draw — the server lists it to the
     // next sessions, compiled before the device exists — not reported as used)
-    if (e.predicted) { pc.predictHits = (pc.predictHits ?? 0) + 1; if (pc.learned.length < 4096) pc.learned.push({ key, vs: vsSrc, fs: fsSrc, attrs: attrNames, t: Math.round(performance.now() - pc.t0) }); return p; }
+    if (e.predicted) { pc.predictHits = (pc.predictHits ?? 0) + 1; if (pc.learned.length < 4096) pc.learned.push({ key, vs: vsSrc, fs: fsSrc, attrs: attrNames, t: Math.round(performance.now() - pc.t0), r: recipe?.() }); return p; }
     pc.hits++;
     if (pc.used && pc.used.length < 4096) pc.used.push(e.id ?? programSourceId(vsSrc, fsSrc, attrNames));
+    // (a learned shader program listed without its recipe — learned before recipes —: sent again with it, once, so that
+    // later translators rebuild it)
+    if (!e.r && recipe && pc.learned.length < 4096) pc.learned.push({ key, vs: vsSrc, fs: fsSrc, attrs: attrNames, t: Math.round(performance.now() - pc.t0), r: recipe() });
     return p;
   }
 
@@ -1674,8 +1680,7 @@ export class WebGLDevice {
     }
     const k = pc.stageCh, ch = new Array(16), no = new Array(16).fill(false);
     for (let i = 0; i < 16; i++) { const c = k?.[i]; ch[i] = !c ? 4 : c[1] > c[4] && c[1] >= c[2] ? 1 : c[2] > c[4] ? 2 : 4; }
-    const fs = translatePixelShader9(q.p.code, { cube: no, volume: no, projected: no, ch, fog: q.fog, alphaTest: q.at }).glsl;
-    return { vs: v.src.vs, fs, attrs: v.src.attrs };
+    return sources9(v.src, q.p.code, { cube: no, volume: no, projected: no, ch, fog: q.fog, alphaTest: q.at }, false);
   }
 
   /**
@@ -2532,6 +2537,26 @@ function layoutVaoSig(layout) {
 
 /** A Direct3D 9 vertex shader's GLSL and attribute names, its inputs of the semantics in `bgra` read as D3DCOLOR. */
 function vertexShader9(code, bgra) { const t = translateVertexShader9(code, bgra); return { vs: t.glsl, attrs: [...t.inputs.values()].map((n) => 'a_' + n) }; }
+/**
+ * A Direct3D 9 shader program's sources as programUncached builds them, from its vertex part (vertexShader9), its pixel
+ * shader with the stages' and states' `env` (translatePixelShader9) and flat shading — a prediction's, a recipe's.
+ */
+function sources9(v, psCode, env, flat) {
+  let vs = v.vs, fs = translatePixelShader9(psCode, env).glsl;
+  if (flat) ({ vs, fs } = flatVaryings(vs, fs));
+  return { vs, fs, attrs: v.attrs };
+}
+/** the stages' texture kinds as a recipe keeps them (program-id.js programRecipe `e`): per stage a digit of flags (1 cube, 2 volume, 4 projected), then its channels */
+const stageEnv = (stages) => stages.map((s) => `${(s.cube ? 1 : 0) | (s.volume ? 2 : 0) | (s.projected ? 4 : 0)}${s.ch}`).join('');
+/** a learned program's sources rebuilt from its recipe (`r`) by this translator, or null (none, or one that does not parse) */
+function recipeSources(r) {
+  if (!programRecipe(r)) return null;
+  try {
+    const cube = [], volume = [], projected = [], ch = [];
+    for (let i = 0; i < r.e.length; i += 2) { const f = +r.e[i]; cube.push((f & 1) !== 0); volume.push((f & 2) !== 0); projected.push((f & 4) !== 0); ch.push(+r.e[i + 1]); }
+    return sources9(vertexShader9(codeFromText(r.vs), new Set(r.c ? r.c.split(',') : [])), codeFromText(r.ps), { cube, volume, projected, ch, fog: r.fog, alphaTest: r.at }, r.f === 1);
+  } catch { return null; }
+}
 
 // Predicted programs (WebGLDevice.predictPrograms): pairs of at most PREDICT_ALL predicted whole at a pass's first
 // application (a larger pass: a drawn shader with the other side's drawn ones, or with all of them when they are at most
@@ -2689,15 +2714,16 @@ function prewarmPrograms(gl, pc, built) {
   const t0 = performance.now();
   for (let n = pc.parallel ? 8 : 2; n > 0 && pc.queue.length; n--) {
     const e = pc.queue.shift();
-    // (a fixed-function program: rebuilt from its key by this translator, whatever sources it was learned with; any
-    // other: its sources, unless another translator version made them — no draw builds those any more)
-    const ff = ffProgramFromKey(e.key), vs = ff ? ff.vs : e.vs, fs = ff ? ff.fs : e.fs, attrs = ff ? ff.attrs : e.attrs;
+    // (a fixed-function program: rebuilt from its key by this translator, whatever sources it was learned with; a shader
+    // program learned with its recipe: rebuilt from it; any other: its sources, unless another translator version made
+    // them — no draw builds those any more)
+    const ff = ffProgramFromKey(e.key) ?? recipeSources(e.r), vs = ff ? ff.vs : e.vs, fs = ff ? ff.fs : e.fs, attrs = ff ? ff.attrs : e.attrs;
     if (typeof vs !== 'string' || typeof fs !== 'string' || !Array.isArray(attrs)) continue;
     if (!ff && e.v != null && e.v !== PROGRAM_GLSL_VERSION) { pc.stale = (pc.stale ?? 0) + 1; continue; }
     if (ff) pc.regenerated = (pc.regenerated ?? 0) + 1;
     const srcKey = programSourceKey(vs, fs, attrs);
     if (pc.ready.has(srcKey) || built?.has(srcKey)) continue;
-    pc.ready.set(srcKey, { ...startProgram(gl, vs, fs, attrs), id: typeof e.id === 'string' ? e.id : null, vsSrc: vs, fsSrc: fs, attrs, rec: null, ok: false });
+    pc.ready.set(srcKey, { ...startProgram(gl, vs, fs, attrs), id: typeof e.id === 'string' ? e.id : null, vsSrc: vs, fsSrc: fs, attrs, rec: null, ok: false, r: !!e.r });
     pc.started++; pc.pending = (pc.pending ?? 0) + 1;
   }
   pc.startMs = (pc.startMs ?? 0) + performance.now() - t0;

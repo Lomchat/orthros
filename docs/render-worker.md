@@ -1435,10 +1435,26 @@ Each game uses one alpha function (GREATEREQUAL, Vice City GREATER), and a pass'
 exact moves save 0-6 programs of 287. Only merging alpha test on and off saves 13-18 %, and it puts a `discard` in
 every program, which turns early depth writes off for opaque draws on a GPU and makes a software rasterizer shade every
 fragment before its depth test — a cost on every frame for fewer builds once. Any of these changes the GLSL, so
-`PROGRAM_GLSL_VERSION` would move and every learned shader program would be built at draws again until relearned (what
-11-10's session met). Not done.
+`PROGRAM_GLSL_VERSION` would move: until the learned lists carry recipes (13.5) every learned shader program would be
+built at draws again until relearned (what 11-10's session met). Not done: too few programs saved for either cost.
 
-### 13.5 Draws skipped while their program builds (`dbg ORTHROS_GL_ASYNC_PROGRAMS=<ms>`, off by default)
+### 13.5 Learned shader programs rebuilt from their recipe
+
+The heaviest sessions of 13.1 followed GLSL changes: a learned shader program is only its GLSL, which a changed
+translator no longer produces, so every one is built at draws again until sessions relearn it (fixed-function ones
+are not: their key is their recipe, `ffProgramFromKey`). A Direct3D 9 shader program is now learned with its recipe
+(`r`, `program-id.js programRecipe`: both shader codes in base64, the layout's D3DCOLOR semantics, each stage's texture
+kind and channels, fog, alpha test, flat shading), sent by the session that builds it at a draw or takes it predicted
+(and once by a session that takes a learned one listed without it: the lists of before recipes fill themselves).
+The server keeps it beside the sources and lists the entry to every translator version, as its recipe without the
+sources (about the same bytes); the session rebuilds the sources with its own translator (`recipeSources`, the same
+`vertexShader9` / `sources9` as `programUncached`), compiles them ahead, and reports the entry used. A
+`PROGRAM_GLSL_VERSION` bump, or a change the version's corpus misses (d3d8-webgl's float channels of 11-17), then costs
+no session its learned shader programs. `tests/program-predict.test.js` checks that a recipe learned with stale sources
+and another version is rebuilt into the program a draw takes (alpha test, vertex fog, flat shading); the server's side
+is in `tests/program-version.test.js`.
+
+### 13.6 Draws skipped while their program builds (`dbg ORTHROS_GL_ASYNC_PROGRAMS=<ms>`, off by default)
 
 With the switch, a draw whose program the GPU process is still building (built at a draw, or a learned / predicted one
 not finished) is not issued, for at most <ms> ms from its first draw (polled once per frame with

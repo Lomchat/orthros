@@ -20,8 +20,8 @@ export function installNodeGfx(host, kind, o = {}) {
   let pcache = null, dev = null, link = null;
   if (o.programs) {
     const j = JSON.parse(fs.readFileSync(o.programs, 'utf8')), sessions = Number(j.sessions) || 0;
-    const list = j.programs.filter((r) => r[8] === PROGRAM_GLSL_VERSION || ffKeyRegenerable(r[1]) || ((r[8] ?? null) === null && r[7] >= sessions + 1 - 4)).sort((a, b) => a[5] - b[5]);
-    pcache = { queue: list.map(([id, key, vs, fs2, attrs, , , , v]) => ({ id, key: o.raw ? '' : key, vs, fs: fs2, attrs, v })), ready: new Map(), learned: [], used: [], t0: performance.now(), parallel: true, started: 0, pending: 0, hits: 0, devices: new Set() };
+    const list = j.programs.filter((r) => r[8] === PROGRAM_GLSL_VERSION || ffKeyRegenerable(r[1]) || r[9] || ((r[8] ?? null) === null && r[7] >= sessions + 1 - 4)).sort((a, b) => a[5] - b[5]);
+    pcache = { queue: list.map(([id, key, vs, fs2, attrs, , , , v, r]) => ({ id, key: o.raw ? '' : key, vs, fs: fs2, attrs, v, r })), ready: new Map(), learned: [], used: [], t0: performance.now(), parallel: true, started: 0, pending: 0, hits: 0, devices: new Set() };
     o.log?.(`programs: ${list.length} of ${j.programs.length} learned listed${o.raw ? ' (keys dropped: their sources as learned)' : ''}`);
   }
   // (o.compileMs, or ORTHROS_NOOP_COMPILE_MS: program builds that take that long, as ANGLE over Direct3D 11 — the waits
