@@ -521,8 +521,18 @@ as a precomputed plan in one call. Measured here first — AotR skirmish (`fixes
 
 ## WebGL backend (src/gfx/d3d8-webgl.js, applyState)
 
+- The GL state cache (`gs`: program, framebuffer, vertex array, units' textures and samplers, capabilities, raster
+  functions) is the context's, shared by every device of the context (`programCache.glCtx`; both render paths make the
+  devices of a context from one `createWebGLBackend`): with one per device, a device drawing after another believed its
+  own bindings still in place (2026-11-18 audit: device A's draw ran with device B's program and framebuffer, no GL error).
+  A switch costs only the states that differ (GL calls per frame with two devices alternating every 30 draws: +1.5 to
+  +3.4 per switch, against +17 to +20 for a cache dropped at every switch).
 - The depth / stencil / blend / color mask / culling block is skipped while the render state table's version, the target's
-  orientation and the GL state cache are those of the previous draw (`StateTable.ver`).
+  orientation and the GL state cache are those of the previous draw (`StateTable.ver`) and nothing wrote these states
+  since (`gs.rseq`: another device's draw, a clear's masks).
+- A program GL does not link is never made current nor drawn with: its record is marked `failed`, the draws that need it
+  are skipped (`stats.failedDraws`, logged once per program), it is neither learned nor reported as used (a learned one
+  that fails ages out of the server's list).
 - A stage's sampler object is kept while its sampler (DX8: stage) states and its texture did not change.
 - A texture whose levels are all uploaded and clean is not scanned at each bind (`levelsClean`, cleared by
   `Surface.dirty` / `markLocked`); its GL record is kept on the resource (`glOwner` / `glRec` / `glGen`: no lookup by
