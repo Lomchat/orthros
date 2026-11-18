@@ -45,11 +45,24 @@
 // later, DP_TRIES times at most, each screen (its command signature) once per kind of start (a menu that stays must not
 // use the tries its pause needs; nor its second look, CONFIRM_MS, sampled again). It runs
 // before the session's flicker capture, whose warm-up sends every uniform again (a stale one would be hidden).
+// What a sample of three frames cannot see — a picture missing for a run of 2-3 frames, then back (A-A-B-B-B-A-A: the
+// owner's AotR pause menu of 2026-11-18, its darkening layer gone 2-3 frames out of ~6, under commands that changed
+// every frame, docs/aotr-play.md "A building under construction") — the alternation sample does: with each sample, the
+// next SEQ_N presented frames are copied whole into a GW x GH grid each (one NEAREST blit: a native pixel per point),
+// read back once (a pixel buffer behind a fence); a picture that came back after a run of up to MAX_RUN frames of one
+// other picture, between two ends that are the same picture (a still camera), RETURNS_MIN times at the same place
+// (src/shared/draw-probe.js alternation) starts the draw probe too (`alternation`), whatever the commands did; `runs`
+// counts those samples (`seqs` all of them). A scroll, a scene or an animation that moves on, an object bouncing back
+// and forth (once per turn, elsewhere at each end), flashes here and there do not; a layer animated back and forth fast
+// that does is what the draw probe's own filter leaves out (its texture matrices moved: not sent).
+// A player's display report also starts a draw probe in its own window (trigger `report` with the report's id; sent
+// whatever it finds, beside the session's own probe — the server counts it with the reports).
 // ORTHROS_FLICKER (debug global): 0 off, 2 every sample logged. ORTHROS_DRAW_PROBE: 0 never, 1 a draw probe now (sent
 // whatever it finds).
 import { FlickerCapture, CAPTURE_STILL } from './flicker-capture.js';
 import { FrameReport } from './frame-report.js';
 import { DrawProbe } from './draw-probe.js';
+import { GW, GH, SEQ_N, RETURNS_MIN, gridLum, alternation } from '../shared/draw-probe.js';
 
 export const W = 64, H = 48, PERIOD_MS = 10000, T = 24;
 /**
@@ -147,12 +160,13 @@ export class FlickerProbe {
     this.gl = gl; this.now = opts.now ?? (() => performance.now()); this.log = opts.log ?? null; this.logged = 0; this.errors = opts.errors ?? true;
     this.send = opts.send ?? null; this.encode = opts.encode; this.cap = null; this.captured = false; this.armed = null; this.report = null; this.reportAsked = null;
     this.dp = null; this.dpArmed = null; this.dpSent = false; this.dpTries = 0; this.dpNext = 0; this.sameRun = 0; this.dpSeen = new Set(); // (the draw probe: draw-probe.js; dpSeen: the screens tried, `${why}:${signature}`)
-    this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, abaAlt: 0, altSame: 0, altCmdAba: 0, glErrors: 0, glError: 0 };
+    this.seq = null; this.seqAtlas = null; this.seqRead = null; this.seqLogged = 0; // (the alternation sample: SEQ_N frames' grids)
+    this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, abaAlt: 0, altSame: 0, altCmdAba: 0, seqs: 0, runs: 0, glErrors: 0, glError: 0 };
     this.next = this.now() + PERIOD_MS; this.left = 0; this.read = null; this.presents = 0; this.sigs = [0, 0, 0];
     this.reset();
   }
   /** The context was lost (and restored): its objects are gone, the sample in progress dropped. */
-  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; this.cap?.abort(); this.cap = null; this.report?.abort('WebGL context lost'); this.report = null; this.dp?.abort('WebGL context lost'); this.dp = null; this.unsign(); }
+  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; this.seq = null; this.seqAtlas = null; this.seqRead = null; this.cap?.abort(); this.cap = null; this.report?.abort('WebGL context lost'); this.report = null; this.dp?.abort('WebGL context lost'); this.dp = null; this.unsign(); }
   /** the device that signs the sample's frames told to stop */
   unsign() { if (this.sigDev) { this.sigDev.sigOn = false; this.sigDev = null; } }
   /** a capture records GL calls now (the GL call counter keeps away) */
@@ -186,7 +200,7 @@ export class FlickerProbe {
     if ((this.armed || ask === 1) && ask !== 0 && this.send && !this.left && !this.read && !this.dpArmed && !this.dp && (dev?.flickerCanRecord?.() ?? true)) { // (after the draw probe: its warm-up would hide a stale uniform)
       if (ask === 1) globalThis.ORTHROS_FLICKER_CAPTURE = undefined;
       this.cap = new FlickerCapture(gl, { send: this.send, trigger: this.armed ?? { asked: true }, now: this.now, encode: this.encode, errors: this.errors });
-      this.armed = null; this.captured = true; this.unsign();
+      this.armed = null; this.captured = true; this.unsign(); this.seq = null;
       return this.cap.present(fbo, w, h, dev);
     }
     if (!this.left && !this.read && now >= this.next) {
@@ -194,10 +208,13 @@ export class FlickerProbe {
       // sample starts at the next present, the first frame drawn with it on; switched off after the sample's third)
       if (dev && dev.sigOn === false) { dev.sigOn = true; this.sigDev = dev; return false; }
       this.next = now + PERIOD_MS; this.left = 3; this.w = w; this.h = h;
+      if (!this.seq && !this.seqRead) this.seq = { k: 0, w, h }; // (the alternation sample: this frame and the next SEQ_N - 1)
       if (this.errors) { const e = gl.getError(); if (e) { this.stats.glErrors++; this.stats.glError = e; } }
     }
-    if (!this.left) return false;
-    if (w !== this.w || h !== this.h) { this.left = 0; this.unsign(); this.dropCopies(); return false; } // (a resize between the frames: not a sample)
+    const sc = this.seq ? this.seqStep(fbo, w, h) : false;
+    if (this.seqRead) this.seqPoll();
+    if (!this.left) return sc;
+    if (w !== this.w || h !== this.h) { this.left = 0; this.unsign(); this.dropCopies(); return sc; } // (a resize between the frames: not a sample)
     const k = 3 - this.left--;
     this.sigs[k] = sig;
     if (!this.left) this.unsign();
@@ -210,29 +227,39 @@ export class FlickerProbe {
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fbo);
     gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0); // (no copy kept alive by the attachment)
-    if (k < 2) { gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); const t = this.texBound; this.texBound = false; return t; }
+    if (k < 2) { gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); const t = this.texBound; this.texBound = false; return t || sc; }
     this.reduce(w, h);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     return true;
   }
   /**
    * The display report's share of a present: started when the page asked for one (ORTHROS_FLICKER_REPORT=<id>, a new
-   * id; not while a flicker capture wraps the GL methods — it waits for its end), then given the presents while it
+   * id; not while a flicker capture wraps the GL methods, nor while a draw probe records or is being made — it waits for
+   * their end, a few frames: its own probe then starts with it, in the same window), then given the presents while it
    * records (the sample in progress dropped, none started; a capture reading back still polled), and afterwards each
    * present until it is read back (the probe goes on meanwhile). Returns what present returns while it records, else null.
    */
   reportStep(fbo, w, h, dev, sig) {
     const ask = globalThis.ORTHROS_FLICKER_REPORT;
-    if (ask && ask !== this.reportAsked && !this.report && this.send && !globalThis.ORTHROS_GL_DISCARD && !(this.cap && (this.cap.recording || this.cap.phase === 'start')) && !this.dp?.active) {
+    if (ask && ask !== this.reportAsked && !this.report && this.send && !globalThis.ORTHROS_GL_DISCARD && !(this.cap && (this.cap.recording || this.cap.phase === 'start')) && !this.dp) {
       this.reportAsked = ask; globalThis.ORTHROS_FLICKER_REPORT = undefined;
       if (this.left) { this.left = 0; this.dropCopies(); }
-      this.unsign();
+      this.unsign(); this.seq = null;
       this.report = new FrameReport(this.gl, { id: ask, send: this.send, encode: this.encode });
+      // (the draw probe in the same window, asked by the player: what each of the frame's last draws did while he saw it
+      // — sent whatever it finds, beside the session's own probe, which it neither uses up nor counts as a try; started
+      // first, so that it signs the frames — dev.sigOn — for its whole length, the report's shorter window inside it)
+      if (!this.dp && globalThis.ORTHROS_DRAW_PROBE !== 0 && dev?.dev && (dev.flickerCanRecord?.() ?? true)) {
+        this.dp = new DrawProbe(this.gl, { send: this.send, trigger: { why: 'report', id: ask }, now: this.now, force: true });
+        this.report.notes.push(`draw probe started with it (event draw-probe, trigger report ${ask})`);
+      }
     }
     const r = this.report;
     if (!r) return null;
     if (!r.active) { r.present(fbo, w, h, dev, sig); if (r.phase === 'done') this.report = null; return null; } // (reading back, encoding)
-    const changed = r.present(fbo, w, h, dev, sig);
+    let changed = false;
+    if (this.dp?.active) changed = this.dp.present(fbo, w, h, dev, sig); // (it leaves `fbo` bound, as the report expects)
+    changed = r.present(fbo, w, h, dev, sig) || changed;
     if (this.read) this.poll();
     if (this.cap && !this.cap.recording && this.cap.phase !== 'start') { this.cap.present(fbo, w, h, dev); if (this.cap.phase === 'done') this.cap = null; }
     return changed;
@@ -249,7 +276,9 @@ export class FlickerProbe {
       if (this.dp.active) return this.dp.present(fbo, w, h, dev, sig);
       this.dp.present(fbo, w, h, dev, sig); // (its readbacks polled, its record made)
       if (this.dp.done) {
-        if (this.dp.sent) this.dpSent = true;
+        const asked = this.dp.trigger?.why === 'report'; // (a display report's: not the session's own probe)
+        if (asked) { if (!this.dp.sent) this.log?.(`d3d-webgl: draw probe (display report ${this.dp.trigger.id}): ${this.dp.notes.slice(-2).join('; ') || 'no record'}: not sent`); }
+        else if (this.dp.sent) this.dpSent = true;
         else { // (nothing sent: another try later, DP_TRIES in all — the log line says it ran)
           this.dpTries++; this.dpNext = this.now() + DP_RETRY_MS; this.sameRun = 0;
           const r = this.dp.result;
@@ -259,10 +288,71 @@ export class FlickerProbe {
       }
       return null;
     }
-    if (!this.dpArmed || ask === 0 || !this.send || this.left || this.read || this.cap || !dev?.dev || !(dev.flickerCanRecord?.() ?? true)) return null;
+    const reportAsked = globalThis.ORTHROS_FLICKER_REPORT && globalThis.ORTHROS_FLICKER_REPORT !== this.reportAsked; // (a display report waits to start: its own probe goes first)
+    if (!this.dpArmed || ask === 0 || reportAsked || !this.send || this.left || this.read || this.cap || !dev?.dev || !(dev.flickerCanRecord?.() ?? true)) return null;
     this.dp = new DrawProbe(this.gl, { send: this.send, trigger: this.dpArmed, now: this.now, force: this.dpArmed.why === 'asked' });
-    this.dpArmed = null; this.unsign();
+    this.dpArmed = null; this.unsign(); this.seq = null;
     return this.dp.present(fbo, w, h, dev, sig);
+  }
+  /**
+   * The alternation sample's share of a present: the frame copied into its cell of the sample's atlas (SEQ_N cells of
+   * GW x GH, one NEAREST blit: each point a native pixel); after the last one, the atlas read into a pixel buffer behind
+   * a fence. Leaves `fbo` bound to FRAMEBUFFER; true when it bound another renderbuffer (its atlas made).
+   */
+  seqStep(fbo, w, h) {
+    const gl = this.gl, q = this.seq;
+    if (w !== q.w || h !== q.h) { this.seq = null; return false; } // (a resize: not a sample)
+    let made = false;
+    if (!this.seqAtlas) {
+      const rb = gl.createRenderbuffer(), fb = gl.createFramebuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, SEQ_N * GW, GH);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb);
+      this.seqAtlas = { rb, fb }; made = true;
+    }
+    const x = q.k * GW;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.seqAtlas.fb);
+    gl.blitFramebuffer(0, 0, w, h, x, 0, x + GW, GH, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    if (++q.k === SEQ_N) {
+      const buf = gl.createBuffer();
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.seqAtlas.fb);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, buf); gl.bufferData(gl.PIXEL_PACK_BUFFER, SEQ_N * GW * GH * 4, gl.STREAM_READ);
+      gl.readPixels(0, 0, SEQ_N * GW, GH, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      this.seqRead = { buf, sync: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0), at: this.presents, w, h };
+      this.seq = null;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    return made;
+  }
+  /** The alternation sample's readback, once the GPU finished it: its grids' returns counted (countSeq). */
+  seqPoll() {
+    const gl = this.gl, r = this.seqRead;
+    if (gl.getSyncParameter(r.sync, gl.SYNC_STATUS) !== gl.SIGNALED) {
+      if (this.presents - r.at >= STALE) { try { gl.deleteSync(r.sync); gl.deleteBuffer(r.buf); } catch { /* context lost */ } this.seqRead = null; }
+      return;
+    }
+    this.seqRead = null; gl.deleteSync(r.sync);
+    const px = new Uint8Array(SEQ_N * GW * GH * 4);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, r.buf); gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, px); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null); gl.deleteBuffer(r.buf);
+    this.countSeq(Array.from({ length: SEQ_N }, (_, i) => gridLum(px, SEQ_N * GW, i * GW, 0, true)), r.w, r.h);
+  }
+  /**
+   * An alternation sample's grids (consecutive presented frames, returnsOf): counted, logged when the picture came back
+   * RETURNS_MIN times (the first LOG_MAX such samples, or every sample with ORTHROS_FLICKER=2), and the draw probe armed
+   * then (`alternation`: whatever the commands did — they may change every frame —, with the tries and spacing of the
+   * others).
+   */
+  countSeq(grids, w, h) {
+    const alt = alternation(grids), st = this.stats, hit = alt.same >= RETURNS_MIN;
+    st.seqs++; if (hit) st.runs++;
+    let armed = false;
+    if (hit && !this.dpSent && !this.dp && !this.dpArmed && this.send && globalThis.ORTHROS_DRAW_PROBE !== 0 && this.dpTries < DP_TRIES && this.now() >= this.dpNext) {
+      this.dpArmed = { why: 'alternation', returns: alt.returns, same: alt.same, runs: alt.at.map(([, j]) => j - 1), w, h, sample: st.n }; armed = true;
+    }
+    if (this.log && (globalThis.ORTHROS_FLICKER === 2 || (hit && this.seqLogged < LOG_MAX))) {
+      if (hit && globalThis.ORTHROS_FLICKER !== 2) this.seqLogged++;
+      this.log(`d3d-webgl: alternation sample: the picture came back ${alt.returns} times in ${grids.length} frames, ${alt.same} at the same place${alt.at.length ? ` (${alt.at.map(([k, j, v]) => `frame ${k} after ${j - 1} other${j > 2 ? 's' : ''}, ${(v / 1e4).toFixed(1)} %`).join('; ')})` : ''}, ${w}x${h}${armed ? '; draw probe armed' : ''}`);
+    }
   }
   /** the third frame copied: the draw comparing the three into the small target, its readback started */
   reduce(w, h) {

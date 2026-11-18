@@ -245,7 +245,11 @@ the frame, mostly missing such a patch and blurring what it saw). The same perio
 feedback loop, a draw WebGL refuses: an error; not on a software rasterizer, where that round trip waits for seconds of
 queued work). Stats `gpu.flk` (cumulative; `aba`, `still`, `chg`, `max` in ppm of the frame, `recent` the last 32 samples'
 still share for a window's own maximum), summary field `flicker` = `{ n, aba, still, chg, max, over1, alt, abaAlt,
-altSame, altCmdAba, glErrors, glError }` (percentages, 4 decimals; `max`, `over1` and `alt` are about `still`, about `aba` in the first version),
+altSame, altCmdAba, seqs, runs, glErrors, glError }` (percentages, 4 decimals; `max`, `over1` and `alt` are about `still`, about `aba` in the first version;
+`seqs` the alternation samples — since 2026-11-18 evening, with each sample the next 16 presented frames copied into a
+64x48 grid each and read back once — and `runs` those whose picture came back after runs of 1-3 frames of one other
+picture, between ends that are the same picture, 3 times at the same place: src/shared/draw-probe.js `alternation`, the
+owner's AotR pause of that day, which starts the draw probe too, docs/aotr-play.md "A building under construction"),
 `telemetry-report.mjs --session <id>` prints it per stretch. Flicker shows as still A-B-A that dominates what changed
 (`alt`). The first 3 samples with still A-B-A over 1 %, `alt` or `abaAlt` of a session are also logged (gfx `d3d-webgl: flicker
 sample: …`, sent with the telemetry, both shares and the changed one in the text): `mask 64x48` the blocks where pixels

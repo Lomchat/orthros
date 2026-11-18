@@ -24,9 +24,9 @@
 //   varied (no frame went A-B-A, no value moved; `sent` false: the flicker probe tries again at another still screen) and
 //   it was not asked for (`force`).
 // No uniform is sent again at its start (a flicker capture's warm-up does that, which could hide a stale one).
-import { GW, GH, LAST_N, PROBE_MS, CONTROL_MS, MAX_FRAMES, ODD_PPM, DRAW_PROBE_VERSION, DRAW_PROBE_MAX_BYTES, gridLum, rectSum, fixedRects, medianGrid, gridAway, gridAba, varyingRects, topRects, packSums, packGrid, analyse, fitDrawProbe } from '../shared/draw-probe.js';
+import { GW, GH, LAST_N, PROBE_MS, CONTROL_MS, MAX_FRAMES, ODD_PPM, DRAW_PROBE_VERSION, DRAW_PROBE_MAX_BYTES, gridLum, rectSum, fixedRects, medianGrid, gridAway, runOdd, varyingRects, topRects, packSums, packGrid, analyse, fitDrawProbe } from '../shared/draw-probe.js';
 import { runSliced, SLICE_MS, counted } from '../shared/flicker-record.js';
-import { RS, TS_TEXTURE0 } from './d3d8-shaders.js';
+import { RS, TS_TEXTURE0, TS_WORLD, TS_VIEW, TS_PROJECTION } from './d3d8-shaders.js';
 import { gpuInfo } from '../web/gpu-class.js';
 
 /** atlas cells per row */
@@ -150,7 +150,7 @@ export class DrawProbe {
       const slot = TS_TEXTURE0 + i, m = dev.transforms.get(slot), ver = Math.max(tsv.get(slot) ?? 0, tall), seen = pv?.ts?.get(slot) === ver ? 1 : 0;
       (tm ??= []).push(m ? [i, ttff, seen, r4(m[0]), r4(m[1]), r4(m[4]), r4(m[5]), r4(m[8]), r4(m[9]), r4(m[12]), r4(m[13])] : [i, ttff, seen]);
     }
-    this.cur = { k, d, P, tgt, tm, tfM, tfP: this.path === 'thread' ? tfM : dev.probeTf, pvS: pv ? pv.s === dev.stateVersion : false, pvT: pv ? pv.t === dev.transformVersion : false,
+    this.cur = { k, d, P, tgt, tm, tfM, xh: xfHash(dev.transforms), tfP: this.path === 'thread' ? tfM : dev.probeTf, pvS: pv ? pv.s === dev.stateVersion : false, pvT: pv ? pv.t === dev.transformVersion : false,
       svB: pv?.sv?.tf, up0: d.stats.uploads, bs: -1, as: -1, mode: 0, start: 0, count: 0 };
   }
   /** right before the draw's GL call: its target copied */
@@ -183,7 +183,7 @@ export class DrawProbe {
     const d = c.d, dev = d.dev, P = c.P, pv = P.v, tgt = c.tgt, gs = d.gs, gl = this.gl, id = (o) => this.id(o);
     const hasU = !!P.u('u_tfactor'), svA = pv?.sv?.tf;
     const flags = (hasU ? 1 : 0) | (c.pvS ? 2 : 0) | (hasU && svA !== c.svB ? 4 : 0) | (c.pvT ? 8 : 0) | (c.tfP !== undefined ? 16 : 0);
-    const vals = [c.tfP === undefined ? null : c.tfP >>> 0, c.tfM, c.svB === undefined ? null : c.svB >>> 0, svA === undefined ? null : svA >>> 0, P.tfSent === undefined ? null : P.tfSent >>> 0, flags];
+    const vals = [c.tfP === undefined ? null : c.tfP >>> 0, c.tfM, c.svB === undefined ? null : c.svB >>> 0, svA === undefined ? null : svA >>> 0, P.tfSent === undefined ? null : P.tfSent >>> 0, flags, c.xh];
     const rt = dev.renderTarget ?? dev.backBuffers[0], v = d.curVao, s0 = dev.streams?.[0], vb = s0 ? d.comImpl(s0.vb) : null, ib = d.comImpl(dev.indices?.ib);
     const en = (cap) => (gs.en[cap] ? 1 : 0);
     const meta = `prog ${id(P.prog)} sig ${P.sid ?? '-'} key ${keyHash(P.key)}${hasU ? ' tf' : ''} | target fb ${id(tgt.fbo)} color ${id(tgt.color)} depth ${id(tgt.depth)} surface ${rt?.id ?? '-'} ds ${dev.depthTarget?.id ?? '-'} ${tgt.w}x${tgt.h}${tgt.flip ? ' flipped' : ''}`
@@ -259,12 +259,15 @@ export class DrawProbe {
     if (!frames.length) { this.notes.push('no frame read back'); return; }
     const presents = frames.map((f) => f.grids.present);
     const ref = await step(() => medianGrid(presents));
-    // (odd: a frame that went A-B-A between its neighbours; `away`: its share away from the median picture; the
+    // (odd: a frame that went A-B-A between its neighbours, or in a run of up to MAX_RUN frames of one other picture
+    // between two equal ones — A-B-B-A —: runOdd; `away`: its share away from the median picture; the
     // rectangles where the odd frames differed most — without odd frames, where the frames varied most)
     const vmap = new Uint8Array(GW * GH);
     await step(() => {
       const P = this.frames.map((f) => f.grids?.present ?? null);
-      this.frames.forEach((f, k) => { if (!f.grids) return; const a = gridAway(f.grids.present, ref); f.away = a.ppm; f.mad = a.mad; f.odd = gridAba(P[k - 1] ?? null, P[k], P[k + 1] ?? null, vmap); });
+      // (a run's frames are odd only away from the median picture: in A-A-B-A-A-B the A-As are a run between Bs too, but
+      // the usual picture; in runs of 3 and 3 the median takes one of the two pictures, the other one is odd)
+      this.frames.forEach((f, k) => { if (!f.grids) return; const a = gridAway(f.grids.present, ref), r = runOdd(P, k, vmap); f.away = a.ppm; f.mad = a.mad; f.odd = r === null || a.ppm >= ODD_PPM ? r : Math.min(r, ODD_PPM - 1); });
     });
     const anyOdd = frames.some((f) => f.odd >= ODD_PPM);
     const varR = await step(() => (anyOdd ? topRects(vmap) : varyingRects(presents, ref))), fix = fixedRects().filter((r) => !varR.some((v) => Math.abs(v[0] - r[0]) < 4 && Math.abs(v[1] - r[1]) < 4));
@@ -335,3 +338,14 @@ function intern(list, idx, key, value) {
   return i;
 }
 function keyHash(s) { let h = 0x811c9dc5; const t = String(s ?? ''); for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 0x01000193); return (h >>> 0).toString(16); }
+/** a hash of the world, view and projection matrices as the backend's device has them at the draw (their bits) */
+function xfHash(transforms) {
+  let h = 0x811c9dc5;
+  for (const slot of [TS_WORLD, TS_VIEW, TS_PROJECTION]) {
+    const m = transforms?.get(slot);
+    if (!m) { h = Math.imul(h ^ slot, 0x01000193); continue; }
+    const w = new Int32Array(m.buffer, m.byteOffset, 16);
+    for (let i = 0; i < 16; i++) h = Math.imul(h ^ w[i], 0x01000193);
+  }
+  return h >>> 0;
+}

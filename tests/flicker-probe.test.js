@@ -26,7 +26,7 @@ test('a sample: three presents compared in one draw, read back without a stall; 
     assert.deepEqual(binds[binds.length - 1].slice(1), [gl.FRAMEBUFFER, back], 'the back buffer bound last');
   }
   assert.deepEqual(stale, [true, false, true, false, false], 'the caller told when GL state was set behind its cache');
-  assert.equal(calls.filter((c) => c[0] === 'blitFramebuffer').length, 3, 'three frames copied');
+  assert.equal(calls.filter((c) => c[0] === 'blitFramebuffer' && c[7] === 800 && c[8] === 600).length, 3, 'three frames copied'); // (the others: the alternation sample's small grids)
   assert.equal(calls.filter((c) => c[0] === 'drawArrays').length, 1, 'compared in one draw');
   assert.equal(calls.filter((c) => c[0] === 'readPixels').length, 1, 'one readback');
   assert.equal(calls.filter((c) => c[0] === 'clientWaitSync' || c[0] === 'finish').length, 0, 'no wait for the GPU');

@@ -85,9 +85,19 @@ the figures. The renderer's window starts when the emulator's thread passes the 
 page records until that window's end too. `window.orthros.reportDisplay()` does the same from the console or a harness.
 `tools/with-browser-slot.sh node tools/check/display-report-check.mjs` checks both halves and the tool without a game
 (a square drawn every other frame, a red picture and a stale one shown on purpose: both must be found, and nothing else).
-Its automatic companion, without any click: the **draw probe** (`src/gfx/draw-probe.js`, docs/aotr-play.md "The draw
-probe"): on a still screen that stays, or a flicker under the same commands, a few seconds of what each of the frame's
-last draws did to the picture and the values it was drawn with, sent once per session (`tools/dev/draw-probe.mjs`).
+Its companion: the **draw probe** (`src/gfx/draw-probe.js`, docs/aotr-play.md "The draw probe"): a few seconds of what
+each of the frame's last draws did to the picture and the values it was drawn with. **The report starts one in its
+own window** (since 2026-11-18 evening: the player sees the fault while the probe records it): started at the present
+that starts the report's back buffers, 2 s probed then 1 s of presented frames only, sent whatever it finds as its own
+telemetry line (trigger `{ why: 'report', id }`; the server counts it with the reports: one per report), beside the
+session's automatic one, which it neither uses up nor counts as a try; the report's notes say it was started, and
+`flicker-report.mjs` prints its frames, odd ones and verdict under the report (`tools/dev/draw-probe.mjs --report <id>`:
+its draws). Its copies around the frame's last draws could hide a fault that hangs on GPU timing — the back-buffer strip
+of the same window then shows no fault where the player saw one, and the probe says "odd frames only in the control
+phase" if it comes back after. Not while a capture records, nor when another probe is recording (the report then waits
+for its end, as before). Without a click, the flicker probe starts the session's own probe: on a still screen that
+stays, a flicker under the same commands, or a picture that comes back after runs of frames at the same place
+(`alternation`, whatever the commands: the owner's AotR pause of 2026-11-18); sent once per session.
 
 ## Another window: the game keeps playing (Windows games, 2026-11-17)
 

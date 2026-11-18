@@ -1050,7 +1050,7 @@ export class WebGLDevice {
    */
   fakeSkip() { return (this.frame & 1) === 1 && this.fakeN++ % this.fakeFlicker === 0; }
   /**
-   * Debugging (dbg:ORTHROS_FAKE_TF=<k>): in every k-th frame, the draws whose program reads TEXTUREFACTOR drawn with
+   * Debugging (dbg:ORTHROS_FAKE_TF=<k>; -k: in runs of k frames out of 2k): in every k-th frame, the draws whose program reads TEXTUREFACTOR drawn with
    * its alpha x 0.3 — what GL holds then is neither the game's value nor the backend's cached one — and the true value
    * given back after the draw (`on` false): a GL-side fault made on purpose, to check the draw probe (draw-probe.js)
    * end to end — the owner's pause-menu veil, fainter one frame in three, as a stale uniform would make it.
@@ -1063,8 +1063,8 @@ export class WebGLDevice {
   }
   /** the hooks of the next frame's draws: the draw probe recording this device, wrapped in the fault of fakeTfDraw on its frames; null: none */
   drawHooks() {
-    const k = globalThis.ORTHROS_FAKE_TF;
-    if (!(k > 0) || this.frame % (k | 0) !== 0) return this.drawProbe;
+    const k = globalThis.ORTHROS_FAKE_TF | 0; // (k < 0: runs, -k frames faulty then -k not — the owner's A-A-B-B-B of 2026-11-18)
+    if (!(k > 0 ? this.frame % k === 0 : k < 0 && this.frame % (-2 * k) < -k)) return this.drawProbe;
     const h = this.fakeHook ??= {
       inner: null,
       state(d, P, info, tgt) { this.inner?.state(d, P, info, tgt); },
@@ -2238,7 +2238,7 @@ export class WebGLDevice {
       const stride = st.stride || info.L.layout.stride || 0;
       const vtx = (i) => { if (!vb) return '?'; const a = vb.mem + (st.offset ?? 0) + (start + i) * stride; const L = info.L.layout; const dif = L.attrs?.find((x) => x.name === 'diffuse'), t0 = L.attrs?.find((x) => x.name === 'tex0'); return Array.from({ length: 3 }, (_, k) => this.mem.readF32(a + 4 * k).toFixed(1)).join(',') + (dif ? ' c=' + (this.mem.read32(a + dif.offset) >>> 0).toString(16) : '') + (t0 ? ' uv=' + this.mem.readF32(a + t0.offset).toFixed(3) + ',' + this.mem.readF32(a + t0.offset + 4).toFixed(3) : ''); };
       const nv = Math.min(12, this.vertexCount(type, count));
-      this.log(`d3d-webgl: [cap] drawPrimitive type ${type} start ${start} prims ${count} ${Array.from({ length: nv }, (_, i) => `v${i}=(${vtx(i)})`).join(' ')} world=${Array.from(this.dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')} view=${Array.from(this.dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')}`);
+      this.log(`d3d-webgl: [cap] drawPrimitive type ${type} start ${start} prims ${count} ${Array.from({ length: nv }, (_, i) => `v${i}=(${vtx(i)})`).join(' ')} world=${Array.from(this.dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')} view=${Array.from(this.dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')} proj=${Array.from(this.dev.transforms.get(TS_PROJECTION) ?? IDENTITY).map((x) => +x.toPrecision(7)).join(',')}`);
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     if (this.dprobe !== null) this.dprobe.before(this, P, type, start, count); // (the draw probe: its target copied before and after: draw-probe.js)
@@ -2286,7 +2286,7 @@ export class WebGLDevice {
       // full attribute dump of the first vertices (stream 0, float attributes) for offline checks
       let vdump = '';
       if (L.attrs && vb) { const str0 = st.stride || L.stride || 0; for (let i = 0; i < Math.min(6, this.vertexCount(type, count)); i++) { const a0 = vb.mem + (st.offset ?? 0) + (baseVertex + idx(i)) * str0; vdump += ` v${i}(i${idx(i)})=` + L.attrs.map((a) => a.name + ':' + (a.type === 'float' ? Array.from({ length: a.comps }, (_, k) => +this.mem.readF32(a0 + a.offset + 4 * k).toPrecision(6)).join(',') : (this.mem.read32(a0 + a.offset) >>> 0).toString(16))).join(' '); } }
-      this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV} tri0=[${vtx(0)} ${vtx(1)} ${vtx(2)}] ${uvr.join(' ')} stride=${st.stride} off=${st.offset ?? 0} fvf=${this.dev.fvf}${vdump} tss=${info.stages.map((st, i) => `${i}:${st.colorOp}/${st.colorArg1},${st.colorArg2}|${st.alphaOp}/${st.alphaArg1},${st.alphaArg2} tci${st.tci} ttff${st.ttff}`).join(' ')}${info.stages.map((st, i) => (st.ttff & 0xff) ? ` texmat${i}=[${Array.from(dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]` : '').join('')} world=[${Array.from(dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}] view=[${Array.from(dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]`);
+      this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV} tri0=[${vtx(0)} ${vtx(1)} ${vtx(2)}] ${uvr.join(' ')} stride=${st.stride} off=${st.offset ?? 0} fvf=${this.dev.fvf}${vdump} tss=${info.stages.map((st, i) => `${i}:${st.colorOp}/${st.colorArg1},${st.colorArg2}|${st.alphaOp}/${st.alphaArg1},${st.alphaArg2} tci${st.tci} ttff${st.ttff}`).join(' ')}${info.stages.map((st, i) => (st.ttff & 0xff) ? ` texmat${i}=[${Array.from(dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]` : '').join('')} world=[${Array.from(dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}] view=[${Array.from(dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}] proj=[${Array.from(dev.transforms.get(TS_PROJECTION) ?? IDENTITY).map((x) => +x.toPrecision(7)).join(',')}]`);
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     if (this.dprobe !== null) this.dprobe.before(this, P, type, start, count);

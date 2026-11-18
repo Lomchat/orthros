@@ -14,7 +14,10 @@
 //   the ratio per rectangle, its TEXTUREFACTOR when it varies, the texture matrices when they do;
 // - PNGs (--out): the record's pictures (the reference and odd presented frames, before / after the draw that changed
 //   most), 4x, the rectangles outlined.
-// Usage: node tools/dev/draw-probe.mjs <telemetry .jsonl | record .json> [--session <id>] [--out <dir>] [--frames] [--draws all]
+// A session may hold several: its own (started by a flicker sample, a still screen or an alternation sample — the
+// picture coming back at the same place after runs of frames, src/shared/draw-probe.js alternation) and one per display
+// report (the player's button, the same window: --report <id> picks it). Odd frames are A-B-A or runs that came back.
+// Usage: node tools/dev/draw-probe.mjs <telemetry .jsonl | record .json> [--session <id>] [--report <id>] [--out <dir>] [--frames] [--draws all]
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -22,8 +25,10 @@ import { GW, GH, ODD_PPM, analyse, frameRects, unpackGrid } from '../../src/shar
 import { encodePng } from '../../src/gfx/codecs/png.js';
 
 const args = process.argv.slice(2), opt = (k) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : null; };
-const file = args[0], only = opt('session'), out = opt('out'), allFrames = args.includes('--frames'), allDraws = opt('draws') === 'all';
-if (!file) { console.error('usage: node tools/dev/draw-probe.mjs <telemetry .jsonl | record .json> [--session <id>] [--out <dir>] [--frames] [--draws all]'); process.exit(2); }
+const file = args[0], only = opt('session'), onlyReport = opt('report'), out = opt('out'), allFrames = args.includes('--frames'), allDraws = opt('draws') === 'all';
+if (!file) { console.error('usage: node tools/dev/draw-probe.mjs <telemetry .jsonl | record .json> [--session <id>] [--report <id>] [--out <dir>] [--frames] [--draws all]'); process.exit(2); }
+/** what started the probe, in words (src/gfx/flicker-probe.js: the probe's own triggers, or a player's display report) */
+const triggerText = (t) => (!t ? '?' : t.why === 'report' ? `the player's display report ${t.id} (the same window)` : t.why === 'alternation' ? `an alternation sample: the picture came back ${t.same ?? '?'} times at the same place in ${t.returns ?? '?'} returns (runs of ${(t.runs ?? []).join('/')} frames), ${t.w}x${t.h}` : t.why === 'asked' ? 'asked (ORTHROS_DRAW_PROBE=1)' : `${t.why}: sample ${t.sample ?? '?'}, ${t.still ?? '?'} % flickering, commands ${t.cmd ?? '?'}`);
 if (out) fs.mkdirSync(out, { recursive: true });
 const hex = (v) => (v === null || v === undefined ? '-' : (v >>> 0).toString(16));
 const f2 = (x) => (x === null || x === undefined ? '  -  ' : x.toFixed(2));
@@ -31,7 +36,7 @@ const f2 = (x) => (x === null || x === undefined ? '  -  ' : x.toFixed(2));
 function report(rec) {
   const S = rec.session ?? 'x', a = analyse(rec), R = rec.rects.length;
   console.log(`=== draw probe of session ${S} at ${rec.at ?? '?'}: ${rec.game ?? '?'} ${rec.version ?? ''}, build ${rec.build ?? '?'}`);
-  console.log(`trigger ${JSON.stringify(rec.trigger)}; ${rec.gl?.renderer ?? '?'}; frames ${rec.size?.join('x')} (mode ${rec.mode}); path ${rec.path} (the game's TEXTUREFACTOR ${rec.stamps ? 'known' : 'NOT known'}); last ${rec.lastN} draws probed; page ${JSON.stringify(rec.page ?? {})}`);
+  console.log(`started by ${triggerText(rec.trigger)}; ${rec.gl?.renderer ?? '?'}; frames ${rec.size?.join('x')} (mode ${rec.mode}); path ${rec.path} (the game's TEXTUREFACTOR ${rec.stamps ? 'known' : 'NOT known'}); last ${rec.lastN} draws probed; page ${JSON.stringify(rec.page ?? {})}`);
   if (rec.notes?.length) console.log(`notes: ${rec.notes.join(' | ')}`);
   if (rec.cut?.length) console.log(`cut: ${rec.cut.join(', ')}`);
   console.log(`frames: ${a.frames} (${a.probed} probed, ${a.control} control); odd: ${a.odd} (${a.oddProbed} probed, ${a.oddControl} control); signatures ${[...new Set(rec.frames.map((f) => f.sig))].join(' ')}; values ${[...new Set(rec.frames.map((f) => f.vsig))].join(' ')}`);
@@ -48,7 +53,7 @@ function report(rec) {
     console.log(`  d${d.pos} (${d.n} frames) ${d.kind}${d.ratio !== null ? `: after/before ${f2(d.ratio)} in normal frames, each frame within ±${d.ratioSpread.toFixed(2)}` : ''}; in the odd frames its result moved by ${d.oddAfter.toFixed(0)}, the picture under it by ${d.oddBefore.toFixed(0)} (luminance)${d.pos === culprit ? '   <== the first draw whose result moved over the same picture' : ''}`);
     console.log(`     TEXTUREFACTOR in normal frames: producer ${d.normal.tfP.map(hex).join('/')} backend ${d.normal.tfM.map(hex).join('/')} cache ${d.normal.sv.map(hex).join('/')} sent ${d.normal.sent.map(hex).join('/')}; in odd frames: producer ${d.odd.tfP.map(hex).join('/') || '-'} backend ${d.odd.tfM.map(hex).join('/') || '-'} cache ${d.odd.sv.map(hex).join('/') || '-'} sent ${d.odd.sent.map(hex).join('/') || '-'}`);
     for (const m of metas) console.log(`     ${rec.metas[m] ?? '?'}${metas.length > 1 ? ` (${rows.filter((e) => e[1] === m).length} frames)` : ''}`);
-    for (const v of vals) { const x = rec.vals[v]; if (x) console.log(`     TEXTUREFACTOR producer ${hex(x[0])} backend ${hex(x[1])}, program cache ${hex(x[2])} -> ${hex(x[3])}, last sent ${hex(x[4])}; ${flagText(x[5])}${vals.length > 1 ? ` (${rows.filter((e) => e[2] === v).length} frames)` : ''}`); }
+    for (const v of vals) { const x = rec.vals[v]; if (x) console.log(`     TEXTUREFACTOR producer ${hex(x[0])} backend ${hex(x[1])}, program cache ${hex(x[2])} -> ${hex(x[3])}, last sent ${hex(x[4])}; ${flagText(x[5])}${x[6] !== undefined ? `; matrices ${hex(x[6])}` : ''}${vals.length > 1 ? ` (${rows.filter((e) => e[2] === v).length} frames)` : ''}`); }
     const tms = [...new Set(rows.map((e) => e[3]).filter((x) => x >= 0))];
     if (tms.length) console.log(`     texture matrices: ${tms.length} distinct (e.g. ${JSON.stringify(rec.tms[tms[0]])})`);
     console.log(`     per rect (normal frames: before -> after, after/before; odd frames: how far after / before moved): ${d.perRect.map((p, i) => `R${i} ${p.before === null ? '-' : p.before.toFixed(0)}->${p.after === null ? '-' : p.after.toFixed(0)}${p.ratio !== null ? ` x${p.ratio.toFixed(2)}` : ''} odd ${p.oddAfter.toFixed(0)}/${p.oddBefore.toFixed(0)}`).join('  ')}`);
@@ -86,6 +91,7 @@ else {
     if (!line.includes('"draw-probe"')) continue;
     let rec; try { rec = JSON.parse(line); } catch { continue; }
     if (rec.event !== 'draw-probe' || (only && rec.session !== only)) continue;
+    if (onlyReport !== null && !(rec.trigger?.why === 'report' && String(rec.trigger.id) === onlyReport)) continue;
     n++; report(rec);
   }
 }

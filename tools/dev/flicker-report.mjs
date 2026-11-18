@@ -13,7 +13,10 @@
 //   matched best (presented in the 600 ms before it) and their difference (red: luminance apart by more than T);
 // - the text: the page's and renderer's notes, the strips' summaries (from the decoded pictures; the page's own,
 //   made before the JPEG encode, beside them), the alignment's (screen pictures matched, unmatched, back), then frame
-//   by frame both strips and the alignment, the canvases' states, the page's events and the bitmaps it received.
+//   by frame both strips and the alignment, the canvases' states, the page's events and the bitmaps it received;
+// - the draw probe the report started in the same window (since 2026-11-18 evening; its own telemetry line, trigger
+//   `report`): its frames, the odd ones (A-B-A or a run that came back), its verdict — tools/dev/draw-probe.mjs
+//   --report <id> prints its draws.
 // Usage: node tools/dev/flicker-report.mjs <telemetry .jsonl> [--session <id>] [--id <n>] [--out <dir>] [--cols 8] [--rows 6]
 //   [--match <ppm>] (a screen picture farther than this from every back buffer is "unmatched"; default 20000 = 2 %)
 //   [--frames] (the frame-by-frame tables; default: only frames that are marked)
@@ -23,6 +26,7 @@ import zlib from 'node:zlib';
 import readline from 'node:readline';
 import { decodeJpeg } from '../../src/gfx/codecs/jpeg.js';
 import { lumOf, stripAnalysis, alignStrips, resampleLum, T } from '../../src/shared/display-report.js';
+import { ODD_PPM, analyse } from '../../src/shared/draw-probe.js';
 
 const args = process.argv.slice(2), opt = (k) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : null; };
 const file = args[0], only = opt('session'), onlyId = opt('id'), out = opt('out') ?? '.', COLS = Number(opt('cols') ?? 8), ROWS = Number(opt('rows') ?? 6), MATCH = Number(opt('match') ?? 20000), allFrames = args.includes('--frames');
@@ -166,12 +170,29 @@ function png(rgba, w, h) {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw, { level: 6 })), chunk('IEND', Buffer.alloc(0))]);
 }
 
-// (the reports, read once every helper above is defined)
-let n = 0;
-for await (const line of readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity })) {
-  if (!line.includes('"display-report"')) continue;
-  let rec; try { rec = JSON.parse(line); } catch { continue; }
-  if (rec.event !== 'display-report' || (only && rec.session !== only) || (onlyId && String(rec.id) !== onlyId)) continue;
-  n++; report(rec);
+/**
+ * The draw probe the report started in its window (src/gfx/flicker-probe.js reportStep: event draw-probe, trigger
+ * { why: 'report', id }; sent apart, after the report): its frames, odd ones and verdict (src/shared/draw-probe.js
+ * analyse); tools/dev/draw-probe.mjs prints its draws.
+ */
+function probeOf(rec, probes) {
+  const p = probes.find((x) => x.session === rec.session && Number(x.trigger?.id) === Number(rec.id));
+  if (!p) { console.log(`--- draw probe of this report: none in that file${(rec.bb?.notes ?? []).some((x) => /draw probe started/.test(x)) ? ' (the renderer started one: not sent, or refused by the server)' : ' (a build before 2026-11-18 evening, or another probe was recording)'}`); return; }
+  const a = analyse(p), sigs = new Set(p.frames.map((f) => f.sig)).size, vs = new Set(p.frames.map((f) => f.vsig)).size;
+  console.log(`--- draw probe of this report (${p.at ?? '?'}; ${p.path}, the game's TEXTUREFACTOR ${p.stamps ? 'stamped' : 'NOT known'}): ${a.frames} frames (${a.probed} probed, ${a.control} control), ${a.odd} odd (${a.oddProbed} probed, ${a.oddControl} control), ${sigs} command signatures, ${vs} values signatures${p.notes?.length ? `; notes: ${p.notes.join(' | ')}` : ''}`);
+  console.log(`  VERDICT: ${a.verdict}`);
+  console.log(`  frames: ${p.frames.map((f) => `${f.ctl ? 'c' : ''}${f.odd >= ODD_PPM ? 'ODD' : '.'}`).join(' ')}`);
+  console.log(`  node tools/dev/draw-probe.mjs ${file} --session ${rec.session} --report ${rec.id} [--frames] [--out <dir>]: its draws, values and pictures`);
 }
-if (!n) console.log(`no display report${only ? ` of session ${only}` : ''} in that file`);
+
+// (the reports, read once every helper above is defined; the draw probes they started, sent apart)
+const reports = [], probes = [];
+for await (const line of readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity })) {
+  if (!line.includes('"display-report"') && !(line.includes('"draw-probe"') && line.includes('"report"'))) continue;
+  let rec; try { rec = JSON.parse(line); } catch { continue; }
+  if ((only && rec.session !== only)) continue;
+  if (rec.event === 'draw-probe' && rec.trigger?.why === 'report') probes.push(rec);
+  else if (rec.event === 'display-report' && !(onlyId && String(rec.id) !== onlyId)) reports.push(rec);
+}
+for (const rec of reports) { report(rec); probeOf(rec, probes); }
+if (!reports.length) console.log(`no display report${only ? ` of session ${only}` : ''} in that file`);

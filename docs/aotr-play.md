@@ -478,7 +478,11 @@ sends nothing — a gfx log line, sent with the telemetry, says it ran: `draw pr
 not sent` — and tries again at the next such screen, 30 s later at least, 10 times at most, each screen (its command
 signature) once per kind of start (a menu that stays does not use the tries its pause needs). A probe whose device stops
 presenting (released, its process ended) gives up ~10 s after its recording's length (it holds the presents meanwhile). `?dbg=ORTHROS_DRAW_PROBE=1` starts one now and sends it whatever it finds;
-`ORTHROS_DRAW_PROBE=0` never.
+`ORTHROS_DRAW_PROBE=0` never. Since 2026-11-18 evening (section "A building under construction" below) it also starts
+on an **alternation sample** (`alternation`, whatever the commands did: the owner's pause changed its command signature
+every frame) and **with every display report** (trigger `report`, the player's button: the same window, sent whatever
+it finds, counted with the reports, not the session's one probe — docs/game-frame.md); its odd frames are A-B-A or
+frames of a run of up to 3 that came back away from the record's median picture (A-B-B-A, A-B-B-B-A: `runOdd`).
 - **Phases**: the device signs its frames (command signature and values record); with the render worker, the emulator
   stamps each draw with the game's own TEXTUREFACTOR and state version (ring command `PROBE`, `d3d-recorder.js stamp`,
   asked by the render worker's `stamp` message: the mirror keeps it); then **2 s probed**: for each of the frame's last
@@ -532,3 +536,86 @@ presenting (released, its process ended) gives up ~10 s after its recording's le
   92 frames reached the page. `tests/draw-probe.test.js`: it starts by
   itself on a still screen, copies around draws only while it records, the producer's value reaches it through the ring,
   no uniform resent, one record the server takes.
+
+## A building under construction: the owner's AotR pause menu (2026-11-18 evening, cause still open)
+
+**His clue**: the flicker (Age of the Ring and RotWK 2.02, RTX 4050 / ANGLE D3D11) happens only while a building is under
+construction — none of the reproductions above had one. **His display report** (session mjcpu55w, build of 18:01,
+render worker, 2560x1440, the pause menu over a skirmish; `node tools/dev/flicker-report.mjs <telemetry> --session
+mjcpu55w`): 59 back buffers at 30 fps (31.7-36.4 ms apart); the pause layer — the darkening veil and the round swirl —
+missing in runs of 2-3 frames (the scene and the HUD bright: mean luminance 76 of the 320x180 pictures) and present in
+the next 2-3, darker by a level that changes from frame to frame (mean 28-51); one values signature for all 59 frames
+(the same draws in the same order with the same TEXTUREFACTOR, material, ambient, alpha reference, fog); **44 command
+signatures in a cycle of exactly 45 frames** (frame k and k + 45 the same signature for all 14 pairs; frames 0 and 45 the
+same picture, no 80-pixel block apart; ~8 bright runs per cycle). Between two frames of one run only a few small blocks
+change, two sets in turn. So on his machine the picture is a function of commands that cycle with a 1.5 s period while
+the game is paused, the values staying the same: what changes is what the signature sees and the values record does
+not — programs, primitive counts, textures, vertex buffers, raster states, viewports or scissors of some draws — and
+the veil's result changes with it on his GPU. His device had 392 draws per frame there.
+
+**Reproduction attempts** (headless Chromium, SwiftShader, one browser, learn-aotr-skirmish.txt's start, 1024x768). The
+dwarves' porter (selected through the portrait at (320,728)) builds from a panel at the right edge of the screen that a
+4:3 mode leaves mostly outside it: its first button, at (1012,130), is "Build Dwarven Mine (W)" (300); a click on the
+map at (700,290) places it, a porter walks there, "Building: 0 %" then 10, 27, 44, 56 % (2-4 min at 2.5-5 fps). The game
+chose its own LOD for a fresh profile (~4 040 draws per pause frame); a third run took build/saves/aotr-10's profile
+with `StaticGameLOD = High`, the owner's (483 draws per pause frame: the R32F shadow map's ~210, the 512x512 reflection,
+the back buffer's; the construction site's dust particles drawn).
+| run | stretch (construction going on) | frames | changed between frames | A-B-A / A-B-B-A | commands |
+|---|---|---|---|---|---|
+| 1, game's LOD | play, still camera | 6 + 8 grabbed | 0.01-0.08 % | ≤ 0.003 % / ≤ 0.001 % | — |
+| 1 | pause (fade-in done) | 12 grabbed | 0.00 % (≤ 6 000 pixels of the minimap, below the threshold) | 0 / 0 | `same` in every sample |
+| 1 | pause, the mouse over a menu button | 16 grabbed | 0.00-0.14 % (the button's highlight fading in, then still) | 0.005 % / 0.006 % | `same` |
+| 3, High | play, still camera | 12 grabbed | 0.02-0.05 % | ≤ 0.005 % / ≤ 0.001 % | — |
+| 3, High | pause | 16 grabbed | 0.00 % | 0 / 0 | `same` (one signature) |
+Not reproduced: here the paused game draws the same commands every frame; on his machine they cycle. What in his game
+cycles while paused was not found (another building, his saved game — `Save/Sauvegarde 1` in his profile —, his 16:9
+mode, whose pause layer shows a round disc where 4:3 shows a mist; the harness's `--screen 1280x720` did not change the
+game's mode). The pause frame's work (captures, the projection now in the `[cap]` lines): the HUD, a clear of depth and
+stencil, three layers drawn LESSEQUAL without depth write — the veil (XYZ|NORMAL|DIFFUSE, 45 vertices, 64 triangles,
+lit, no texture, alpha TEXTUREFACTOR 0xcc000000, SRCALPHA / INVSRCALPHA, colour write RGB), a DXT5 mist (additive,
+0xa8000000) and the swirl (1 600 triangles, two scrolling stages, additive, 0x7f000000) —, then the APT menu (depth test
+ALWAYS, stencil masks: REPLACE ref 5, then EQUAL). The pause camera's projection has its near plane at 1 and its far one
+at ~5 001; the layers lie 2 212-3 307 units away (depth 0.9997-0.9999, far from the cleared 1.0 at 24 bits): not a far
+plane clip. Nothing in it reads what an earlier frame left (every target cleared first, as above).
+
+**What these frames ask of WebGL that an implementation may answer otherwise** (ranked by how well it fits a layer that
+vanishes or changes level with commands that cycle, the values staying the same):
+1. A value Orthros keeps per program and does not send again (the per-program uniform cache, `P.v`): a draw of the
+   cycling commands using the veil's fixed-function program (or another) with other transforms or states can leave GL
+   holding values the cache believes current — deterministic, so the same on SwiftShader with the same commands, which
+   it never got here; the uniform check found none in RotWK's pause (above), never with a cycling scene. The draw probe's
+   records now carry each probed draw's world / view / projection matrices (a hash, `xf`) and name them when they moved
+   in the odd frames; `?dbg=ORTHROS_GL_UNIFORM_CHECK=1` and `?dbg=ORTHROS_GL_NOCACHE=1` on his construction scene tell
+   the cache apart.
+2. Vertex data the stages do not use: the APT UI quads (FVF 0x594, stride 44) carry garbage in their normal and second
+   texture coordinates (6.7e31, denormals); Direct3D ignores them with lighting off and stage 1 disabled, a shader that
+   computes them anyway may hold Inf / NaN in varyings — harmless unless read (excluded before for the veil's own data).
+3. Alpha test (GREATEREQUAL 96 on the High scene's units and particles) compared in floats in the fragment shader where
+   Direct3D compares 8-bit alpha: pixels at the edge may differ between GPUs — not frame to frame.
+4. The R32F shadow map (EXT_color_buffer_float, z/w written as colour, 4 compare taps): precision differences give acne
+   that moves with the camera, not with commands of a paused frame.
+5. GL dithering left at its default (enabled): implementation-defined, not a vanishing layer.
+No translation found in these frames that departs from Direct3D 9 semantics in a way that could hide a layer, so no fix
+was made blind. What decides it is his next report: **the display report now starts a draw probe in the same window**
+(docs/game-frame.md), which names the first of the frame's last draws whose result moved in the odd frames and whether
+its TEXTUREFACTOR, its matrices, the render worker's replay or Orthros' cache moved with it — and **the session's own probe
+starts by itself on such a screen** (below).
+
+**The draw probe's new trigger** (src/shared/draw-probe.js `alternation`, run by the flicker probe; unit test
+tests/alternation-trigger.test.js): with each 10 s sample, the next 16 presented frames are copied into a 64x48 grid each
+(one NEAREST blit per frame, one 196 KB readback behind a fence); a frame "returns" when it is the same picture again
+(at most 2 % of the points apart) as the frame 2-4 before, after a run of 1-3 frames of one other picture (each run
+frame away by more than T from both ends at ≥ 0.5 % of the points, the run's frames apart on less than half of that) —
+A-B-A, A-B-B-A, A-B-B-B-A; three returns at the same place (each sharing half its points with the first) start the
+probe (`alternation`), whatever the commands did. His frames' pattern (bright and dark runs of 2-3, from the report's
+mean luminances) gives 4 returns in 16 frames, runs of 3 and 3 at least 3 at every phase; a scroll, an object bouncing back and forth (one return per turn, elsewhere each time),
+four flashes at four places, a still screen: none (the test). In the probe, a frame of such a run is odd when it is away
+from the record's median picture (in A-A-B-A-A-B the A-As are a run between Bs, but the usual picture). In the games:
+31 alternation samples of run 2 (menus, loading, play, pause) and those of run 3 came back at most once; no false start.
+`tools/with-browser-slot.sh node tools/check/draw-probe-check.mjs` now also draws the veil faint in runs of 3 frames out
+of 6 (`dbg ORTHROS_FAKE_TF=-3`) under commands that change every frame (the depth function cycling with depth off): the
+alternation sample starts the probe, verdict "what GL makes of the same commands and values"; a display report asked
+at frame 20 and one asked while the session's probe records (it waits for that probe's end, then its own records in its
+window): two records, the report's printed by flicker-report.mjs. On the game (run 3, High, the pause over the
+construction, the header's button): the report and its probe sent (63 KB and 9 KB, server 204), the probe's 6 frames
+(SwiftShader ~2 fps) with the game's values stamped, no odd frame.

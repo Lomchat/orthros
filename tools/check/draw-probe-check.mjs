@@ -8,7 +8,11 @@
 // - gl: the veil drawn with alpha x 0.3 by GL while the game, the mirror and the backend's cache all say 0xcc
 //   (dbg ORTHROS_FAKE_TF=3: d3d8-webgl.js fakeTfDraw) — the reader must say "what GL makes of the same commands and values";
 // - game: the game sets TEXTUREFACTOR 0x28 — the reader must name the game's own value;
-// - none: nothing varies — the probe tries, finds nothing and sends nothing.
+// - none: nothing varies — the probe tries, finds nothing and sends nothing;
+// - runs (2026-11-18): the GL fault in runs of 3 frames out of 6 (ORTHROS_FAKE_TF=-3) under commands that change every
+//   frame — the owner's AotR pause — the alternation sample must start the probe (src/shared/draw-probe.js alternation);
+// - report: the same, the player's display report asked before any sample — the probe runs in its window (trigger
+//   `report`), its record printed by tools/dev/flicker-report.mjs with the report.
 // Each record is written as a telemetry line and read by tools/dev/draw-probe.mjs; also printed: the frame time without
 // and with the probe recording (the page's CPU time per frame, SwiftShader).
 // Usage: tools/with-browser-slot.sh node tools/check/draw-probe-check.mjs [--out <dir>] (default
@@ -41,10 +45,11 @@ try {
     const { createInlineGfx } = await import('/src/gfx/render-host.js');
     const { d3dEnv } = await import('/tests/d3d-env.js');
     const W = 640, H = 480, recs = [], logs = [];
-    const log = (m) => { if (m && typeof m === 'object') { if (m.event === 'draw-probe') recs.push(m); } else logs.push(String(m)); };
+    const bb = [];
+    const log = (m) => { if (m && typeof m === 'object') { if (m.event === 'draw-probe') recs.push(m); else if (m.event === 'display-report-bb' && !m.started) bb.push(m); } else logs.push(String(m)); };
     const canvas = new OffscreenCanvas(W, H);
     const gfx = sc.path === 'inline' ? createInlineGfx(canvas, log, null) : createWebGLBackend(canvas, log, null);
-    globalThis.ORTHROS_FAKE_TF = sc.fault === 'gl' ? 3 : undefined;
+    globalThis.ORTHROS_FAKE_TF = sc.fault === 'gl' ? 3 : sc.fault === 'runs' ? -3 : undefined;
     const { mem, ctx, com, defs, alloc } = d3dEnv(gfx);
     const pp = alloc(64), out = alloc(16), vb = alloc(4096);
     [W, H, 22, 1, 0, 0, 1, 0, 0, 1, 75, 0, 0, 0].forEach((v, i) => mem.write32(pp + 4 * i, v));
@@ -61,13 +66,15 @@ try {
     };
     const RS = (k, v) => call('SetRenderState', k, v >>> 0), TSS = (k, v) => call('SetTextureStageState', 0, k, v);
     call('SetFVF', 0x44); RS(7, 0); RS(22, 1); RS(137, 0);
-    let frame = 0, t = 0, fp = null;
+    let frame = 0, t = 0, fp = null, asked = false;
     const times = { idle: [], rec: [] };
     const step = () => {
       const t0 = performance.now();
       call('BeginScene'); call('Clear', 0, 0, 1, 0xff304050, 0x3f800000, 0);
-      // (the scene and the UI: opaque)
-      TSS(1, 2); TSS(2, 0); TSS(4, 2); TSS(5, 0); RS(27, 0);
+      // (the scene and the UI: opaque; with sc.vary, commands that change every frame — a depth function, depth off —
+      // as the owner's AotR pause of 2026-11-18, whose command signature changed every frame along a 45-frame cycle)
+      TSS(1, 2); TSS(2, 0); TSS(4, 2); TSS(5, 0); RS(27, 0); if (sc.vary) RS(23, 1 + (frame % 7));
+      if (sc.report === frame || (sc.report === 'busy' && fp?.dp?.phase === 'record' && !asked)) { globalThis.ORTHROS_FLICKER_REPORT = 1; asked = true; } // (the player's button: src/web/main.js reportDisplay; busy: while the session's own probe records)
       quad(0, 0, W / 2, H, [0xffc08040, 0xff80c060, 0xff4080c0, 0xffc0c0c0]); quad(W / 2, 0, W, H, [0xff80c060, 0xffe0a060, 0xffc0c0c0, 0xff60a0e0]);
       for (let i = 0; i < 4; i++) quad(260, 120 + 50 * i, 380, 160 + 50 * i, 0xff4070a0);
       // (the veil: black, alpha = vertex alpha x TEXTUREFACTOR, SRCALPHA / INVSRCALPHA)
@@ -88,34 +95,54 @@ try {
     for (let k = 0; k < sc.frames; k++) {
       step();
       await new Promise((r) => setTimeout(r, 0)); // (the record is made in slices between frames)
-      if (recs.length || (sc.fault === 'none' && fp?.dpTries >= 1)) break;
+      if ((recs.length >= (sc.report === 'busy' ? 2 : 1) && (sc.report === undefined || bb.length)) || (sc.fault === 'none' && fp?.dpTries >= 1)) break;
     }
     for (let k = 0; k < 40 && fp?.dp && !recs.length; k++) { step(); await new Promise((r) => setTimeout(r, 5)); }
     const mean = (a) => (a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length * 100) / 100 : null);
-    return { recs, logs: logs.filter((l) => /draw probe|flicker|error/i.test(l)).slice(-10), frames: frame, tries: fp?.dpTries ?? null, sent: fp?.dpSent ?? null, idleMs: mean(times.idle.slice(5)), recMs: mean(times.rec), recFrames: times.rec.length, renderer: gfx.gl?.getParameter(gfx.gl.RENDERER) };
+    globalThis.ORTHROS_FLICKER_REPORT = undefined;
+    return { recs, bb: bb.map((m) => ({ id: m.id, frames: m.strip?.frames?.length ?? 0, notes: m.strip?.notes ?? m.notes ?? [], summary: m.strip?.analysis?.summary ?? null })), logs: logs.filter((l) => /draw probe|flicker|alternation|error/i.test(l)).slice(-10), frames: frame, tries: fp?.dpTries ?? null, sent: fp?.dpSent ?? null, idleMs: mean(times.idle.slice(5)), recMs: mean(times.rec), recFrames: times.rec.length, renderer: gfx.gl?.getParameter(gfx.gl.RENDERER) };
   }, sc);
 
-  for (const sc of [{ name: 'gl', path: 'thread', fault: 'gl', frames: 400 }, { name: 'gl-ring', path: 'inline', fault: 'gl', frames: 400 }, { name: 'game', path: 'thread', fault: 'game', frames: 400 }, { name: 'none', path: 'thread', fault: 'none', frames: 400 }]) {
+  // (runs: the veil faint in runs of 3 frames out of 6 — ORTHROS_FAKE_TF=-3 — under commands that change every frame,
+  // as the owner's AotR pause of 2026-11-18: neither a still screen nor a same-commands flicker; the alternation sample
+  // must start the probe. report: the same, the player's display report asked at frame 20, before any sample: the probe
+  // runs in its window, trigger `report`)
+  for (const sc of [{ name: 'gl', path: 'thread', fault: 'gl', frames: 400 }, { name: 'gl-ring', path: 'inline', fault: 'gl', frames: 400 }, { name: 'game', path: 'thread', fault: 'game', frames: 400 }, { name: 'none', path: 'thread', fault: 'none', frames: 400 },
+    { name: 'runs', path: 'thread', fault: 'runs', vary: true, frames: 400 }, { name: 'report', path: 'thread', fault: 'runs', vary: true, report: 20, frames: 400 },
+    { name: 'report-busy', path: 'inline', fault: 'runs', vary: true, report: 'busy', frames: 600 }]) {
     const r = await run(sc);
-    console.log(`--- ${sc.name} (${sc.path}, fault ${sc.fault}): ${r.error ?? `${r.frames} frames, ${r.recs.length} record(s), tries ${r.tries}; page CPU per frame ${r.idleMs} ms idle, ${r.recMs} ms while recording (${r.recFrames} frames)`}`);
+    console.log(`--- ${sc.name} (${sc.path}, fault ${sc.fault}${sc.vary ? ', commands changing every frame' : ''}${sc.report === 'busy' ? ', display report asked while the session\'s probe records' : sc.report !== undefined ? `, display report at frame ${sc.report}` : ''}): ${r.error ?? `${r.frames} frames, ${r.recs.length} record(s), tries ${r.tries}; page CPU per frame ${r.idleMs} ms idle, ${r.recMs} ms while recording (${r.recFrames} frames)`}`);
     for (const l of r.logs ?? []) console.log(`  [log] ${l}`);
     if (r.error) { check(false, r.error); continue; }
     if (sc.fault === 'none') { check(r.recs.length === 0 && r.tries === 1, 'a still screen where nothing varies: tried once, nothing sent'); continue; }
-    check(r.recs.length === 1, 'one record, sent without being asked');
+    // (busy: the report asked while the session's own probe recorded — it waits for that one's end, then its own probe
+    // records in its window: two records)
+    check(r.recs.length === (sc.report === 'busy' ? 2 : 1), sc.report === 'busy' ? `two records, the session's (${r.recs[0]?.trigger?.why}) and the report's` : sc.report !== undefined ? 'one record, the report\'s' : 'one record, sent without being asked');
     if (!r.recs.length) continue;
-    const rec = { at: new Date().toISOString(), session: `check-${sc.name}`, game: 'draw-probe-check', ...r.recs[0] };
+    const mine = sc.report !== undefined ? r.recs.find((x) => x.trigger?.why === 'report') ?? r.recs[0] : r.recs[0];
+    const rec = { at: new Date().toISOString(), session: `check-${sc.name}`, game: 'draw-probe-check', ...mine };
     fs.appendFileSync(telemetry, JSON.stringify(rec) + '\n');
     const text = execFileSync(process.execPath, [path.join(root, 'tools/dev/draw-probe.mjs'), telemetry, '--session', rec.session, '--out', out], { encoding: 'utf8' });
     fs.writeFileSync(path.join(out, `${sc.name}.txt`), text);
-    console.log(text.split('\n').filter((l) => /^(trigger|frames:|notes|VERDICT|  d\d)/.test(l)).join('\n'));
+    console.log(text.split('\n').filter((l) => /^(started by|frames:|notes|VERDICT|  d\d)/.test(l)).join('\n'));
     console.log(`  (record ${Math.round(JSON.stringify(rec).length / 1024)} KB, made in ${rec.took?.ms} ms, longest slice ${rec.took?.longest} ms; reader output: ${path.join(out, `${sc.name}.txt`)})`);
-    check(['still', 'flicker'].includes(rec.trigger?.why), `started by the flicker probe (${rec.trigger?.why})`);
+    if (sc.report !== undefined) {
+      check(rec.trigger?.why === 'report' && rec.trigger.id === 1, `started by the display report (${JSON.stringify(rec.trigger)})`);
+      const b = r.bb[0];
+      check(!!b && b.frames > 10 && b.notes.some((n) => /draw probe started/.test(n)), `the report's back-buffer strip, the probe named in its notes (${b ? `${b.frames} frames, A-B-B-A frames ${b.summary?.abbaFrames}` : 'none'})`);
+      // (the display report as the page sends it, the probe beside it: the reader prints both)
+      fs.appendFileSync(telemetry, JSON.stringify({ at: rec.at, event: 'display-report', v: 1, id: 1, session: rec.session, bb: null, screen: null, notes: [] }) + '\n');
+      const rep = execFileSync(process.execPath, [path.join(root, 'tools/dev/flicker-report.mjs'), telemetry, '--session', rec.session, '--out', out], { encoding: 'utf8' });
+      check(/draw probe of this report .*VERDICT/s.test(rep), 'flicker-report.mjs prints the report\'s draw probe');
+    } else check(sc.vary ? rec.trigger?.why === 'alternation' : ['still', 'flicker', 'alternation'].includes(rec.trigger?.why), `started by the flicker probe (${rec.trigger?.why})`);
     check(rec.summary.oddProbed >= 5, `odd frames found while probing: ${rec.summary.oddProbed} of ${rec.summary.probed}`);
     if (sc.path === 'inline') check(rec.path === 'worker' && rec.stamps, "the game's TEXTUREFACTOR came through the ring");
     // (the veil: 3rd draw from the frame's end — after / before ~0.20 in normal frames)
     const veil = text.split('\n').find((l) => /^ {2}d3 /.test(l)) ?? '';
     const med = Number((/after\/before ([\d.]+)/.exec(veil) ?? [])[1]);
-    check(Math.abs(med - 0.2) < 0.03, `the veil's after/before ratio ~0.20 (${med})`);
+    // (runs of 3 and 3: as many faulty frames as normal ones — the record's median picture is either, so the "normal"
+    // frames' ratio is the veil's 0.20 or the faulty 1 - 0.8 x 0.3 = 0.76)
+    check(Math.abs(med - 0.2) < 0.03 || (sc.fault === 'runs' && Math.abs(med - 0.76) < 0.03), `the veil's after/before ratio ~0.20${sc.fault === 'runs' ? ' (or 0.76: the faulty half taken as normal)' : ''} (${med})`);
     if (sc.fault === 'gl') check(/what GL makes of the same commands and values/.test(text), 'verdict: GL, the same values');
     if (sc.fault === 'game') check(/the game's own TEXTUREFACTOR changed/.test(text), "verdict: the game's values");
   }

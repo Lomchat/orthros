@@ -22,13 +22,14 @@
 // - `rects`: [x, y, w, h] in grid points (rows from the top of the picture), each RECT x RECT points; `rectKinds`: 'var'
 //   (where the presented frames varied most), 'fix' (fixed places);
 // - a frame: { f (device frame), t (ms since the first), n (draws), sig, vsig, tf (the values record: d3d8-webgl.js
-//   valDraw), fb, ctl (1: control phase), odd (ppm of the grid points that went A-B-A: ODD_PPM), away (ppm away from the
+//   valDraw), fb, ctl (1: control phase), odd (ppm of the grid points that went A-B-A, or came back after a run of frames: runOdd, ODD_PPM), away (ppm away from the
 //   median picture), mad (mean absolute difference from it), d: [[draw index, meta index, vals index, tms index (-1
 //   none), start, count, vertex base, buffer uploads], ...], p: base64 of uint16 little-endian sums of each rect's
 //   luminance (0-255 per point, RECT x RECT points): for each probed draw in `d`'s order its before then its after (2 x
 //   rects), then the presented frame's (rects); a control frame's only the presented frame's };
 // - `metas`: the distinct descriptions of a probed draw that do not move (program, target, buffers, raster state...);
-//   `vals`: the distinct value tuples [tfP, tfM, svBefore, svAfter, sent, flags] (flags: 1 the program has u_tfactor, 2
+//   `vals`: the distinct value tuples [tfP, tfM, svBefore, svAfter, sent, flags, xf] (xf, since 2026-11-18 evening: a
+//   hash of the world, view and projection matrices as the backend has them at the draw; flags: 1 the program has u_tfactor, 2
 //   its state group was skipped — the program had seen this state version —, 4 the uniform was sent at this draw, 8 its
 //   transform group skipped, 16 the producer's value known); `tms`: the distinct texture matrix sets
 //   ([[stage, flags, m11, m12, m21, m22, m31, m32, m41, m42], ...]);
@@ -53,6 +54,8 @@ export const T = 24;
 /**
  * A frame is odd when this share of its grid points (ppm) went A-B-A: away by more than T from both the frame before
  * and the frame after, which agree there (within T / 2) — a frame that comes back, not an animation or a scene that moves
+ * — or did so in a run of up to MAX_RUN frames of one other picture (A-B-B-A: runOdd) away from the record's median
+ * picture (in A-A-B-A-A-B the A-As are a run between Bs too, but the usual picture)
  */
 export const ODD_PPM = 5000;
 /** the fixed rectangles' centres (fractions of the picture) */
@@ -104,13 +107,127 @@ export function gridAway(g, ref) {
  */
 export function gridAba(a, b, c, into = null) {
   if (!a || !c) return null;
+  return gridRun(a, [b], c, into);
+}
+
+// ---------------------------------------------------------------- irregular alternations (A-B-B-A, runs)
+// The owner's AotR pause menu with a building under construction (2026-11-18, RTX 4050): the darkening layer missing in
+// runs of 2-3 frames, present in the next 2-3 — A-A-B-B-B-A-A —, under command signatures that changed every frame. A
+// frame-to-frame A-B-A sees little of it (a run's frames agree with their neighbours inside the run), nor a still screen
+// of one signature. What does: a picture that leaves and comes back after a run of up to MAX_RUN frames of one other
+// picture, the two ends the same picture (a still camera: a scroll never comes back), again and again at the same place
+// (an object bouncing back and forth comes back once per turn, each turn elsewhere; flashes come and go at random places).
+/** an excursion's frames at most: A-B-A (1), A-B-B-A (2), A-B-B-B-A (3) */
+export const MAX_RUN = 3;
+/** an excursion of several frames counts between two ends that are the same picture but for this share (ppm) of the points: a still camera */
+export const ENDS_PPM = 20000;
+/**
+ * The flicker probe's alternation sample: SEQ_N consecutive presented frames (one grid each); RETURNS_MIN returns at the
+ * same place start the draw probe (16 frames hold 3 returns of the owner's runs of 3 and 3 frames whatever their phase)
+ */
+export const SEQ_N = 16, RETURNS_MIN = 3;
+
+/** ppm of the grid points of `a` and `b` apart by more than T */
+export function gridApart(a, b) {
   let n = 0;
+  for (let p = 0; p < GW * GH; p++) if (Math.abs(a[p] - b[p]) > T) n++;
+  return Math.round(n / (GW * GH) * 1e6);
+}
+/**
+ * A run of frames away from the picture it left and came back to: ppm of the points where the ends `a` and `c` agree
+ * (within T / 2) and every grid of `run` is away from both by more than T while agreeing with the run's first one
+ * (within T). One frame: its A-B-A. `into`: per point, the largest such difference seen (a variation map, or a mask).
+ */
+export function gridRun(a, run, c, into = null) {
+  let n = 0;
+  const r0 = run[0];
   for (let p = 0; p < GW * GH; p++) {
-    const ab = Math.abs(b[p] - a[p]), cb = Math.abs(b[p] - c[p]);
-    if (ab > T && cb > T && Math.abs(a[p] - c[p]) <= T / 2) { n++; if (into) { const d = Math.min(ab, cb); if (d > into[p]) into[p] = d; } }
+    const av = a[p], cv = c[p];
+    if (Math.abs(av - cv) > T / 2) continue;
+    let d = 255, ok = true;
+    for (let i = 0; i < run.length && ok; i++) {
+      const x = run[i][p], da = Math.abs(x - av), dc = Math.abs(x - cv);
+      if (da <= T || dc <= T || Math.abs(x - r0[p]) > T) ok = false; else d = Math.min(d, da, dc);
+    }
+    if (ok) { n++; if (into && d > into[p]) into[p] = d; }
   }
   return Math.round(n / (GW * GH) * 1e6);
 }
+/**
+ * A run of several frames between ends `a` and `c` that came back (gridRun `v` ppm) counts when the ends are the same
+ * picture (ENDS_PPM: a still camera) and the run is one other picture: its consecutive frames apart on less than half
+ * of what came back (an object that moves on inside the run — a bounce's turn — is not).
+ */
+function oneRun(a, run, c, v) {
+  if (run.length < 2) return true;
+  if (gridApart(a, c) > ENDS_PPM) return false;
+  for (let i = 1; i < run.length; i++) if (2 * gridApart(run[i - 1], run[i]) > v) return false;
+  return true;
+}
+/**
+ * How much frame `k` of the grids `P` (null: no picture) belongs to a run that came back: the largest gridRun over the
+ * runs of up to MAX_RUN frames holding it between two known ends (several frames: oneRun); null when no such run is
+ * known (the first and last frames, a neighbour without picture). With runs of one frame only, its A-B-A (gridAba).
+ * `into`: the variation map.
+ */
+export function runOdd(P, k, into = null) {
+  if (!P[k]) return null;
+  let best = null;
+  for (let s = Math.max(1, k - MAX_RUN + 1); s <= k; s++) {
+    for (let e = k; e <= Math.min(s + MAX_RUN - 1, P.length - 2); e++) {
+      const a = P[s - 1], c = P[e + 1], run = P.slice(s, e + 1);
+      if (!a || !c || run.some((g) => !g)) continue;
+      const m = e > s ? new Uint8Array(GW * GH) : into, v = gridRun(a, run, c, m);
+      if (e > s && !oneRun(a, run, c, v)) continue;
+      if (e > s && into) for (let p = 0; p < GW * GH; p++) if (m[p] > into[p]) into[p] = m[p];
+      if (best === null || v > best) best = v;
+    }
+  }
+  return best;
+}
+/**
+ * The returns in a sequence of consecutive presented frames' grids (the flicker probe's alternation sample): frame k
+ * the same picture again as frame k - j (j = 2 .. MAX_RUN + 1; away on ENDS_PPM of the points at most) after a run of
+ * j - 1 frames of one other picture (gridRun >= ODD_PPM, oneRun) — A-B-A, A-B-B-A, A-B-B-B-A —, one per frame k (its
+ * shortest run): [{ k, j, ppm, mask }] (mask: the points that came back).
+ */
+export function returnsOf(P) {
+  const out = [];
+  for (let k = 2; k < P.length; k++) {
+    if (!P[k]) continue;
+    for (let j = 2; j <= MAX_RUN + 1 && k - j >= 0; j++) {
+      const a = P[k - j], run = P.slice(k - j + 1, k);
+      if (!a || run.some((g) => !g) || gridApart(a, P[k]) > ENDS_PPM) continue;
+      const mask = new Uint8Array(GW * GH), v = gridRun(a, run, P[k], mask);
+      if (v >= ODD_PPM && oneRun(a, run, P[k], v)) { out.push({ k, j, ppm: v, mask }); break; }
+    }
+  }
+  return out;
+}
+/**
+ * The trigger rule: the largest set of returns (returnsOf) at the same place — each overlapping the set's first one on
+ * at least half of the smaller of their points — { returns, same, at: the set's frames }; it alternates when `same`
+ * reaches RETURNS_MIN. A still screen that alternates comes back at the same place again and again; a scroll or a scene
+ * that moves on does not come back (its ends differ), an object bouncing back and forth comes back once per turn and
+ * elsewhere at each end, flashes at random places.
+ */
+export function alternation(P) {
+  const ret = returnsOf(P), cnt = (m) => { let n = 0; for (let p = 0; p < m.length; p++) if (m[p]) n++; return n; }, sizes = ret.map((r) => cnt(r.mask));
+  let best = [];
+  for (let i = 0; i < ret.length; i++) {
+    const grp = [ret[i]];
+    for (let j = 0; j < ret.length; j++) {
+      if (j === i) continue;
+      let both = 0; const a = ret[i].mask, b = ret[j].mask;
+      for (let p = 0; p < a.length; p++) if (a[p] && b[p]) both++;
+      if (2 * both >= Math.min(sizes[i], sizes[j])) grp.push(ret[j]);
+    }
+    if (grp.length > best.length) best = grp;
+  }
+  return { returns: ret.length, same: best.length, at: best.map((r) => [r.k, r.j, r.ppm]).sort((x, y) => x[0] - y[0]) };
+}
+/** the trigger rule's answer (alternation): the picture came back RETURNS_MIN times at the same place */
+export const alternates = (P) => alternation(P).same >= RETURNS_MIN;
 /**
  * The rectangles where the grids varied most from `ref` (each point's largest difference over the frames, summed per
  * RECT x RECT block), at least 2 blocks apart, `k` of them; blocks that never varied are left out.
@@ -195,13 +312,13 @@ export function analyse(rec) {
     draws.push({ pos: x.pos, n: rows.length, kind, ratio: median(rts), ratioSpread: Math.max(0, ...cov.map((p) => p.ratioSpread)), beforeSpread: Math.max(0, ...perRect.map((p) => p.beforeSpread)),
       oddBefore: Math.max(0, ...perRect.map((p) => p.oddBefore)), oddAfter: Math.max(0, ...perRect.map((p) => p.oddAfter)), perRect,
       metas: new Set(rows.map((q) => q.e[1])).size, tms: new Set(rows.map((q) => q.e[3])).size, tfP: tf(0), tfM: tf(1), svBefore: tf(2), sent: tf(4),
-      odd: { tfP: set(odr, 0), tfM: set(odr, 1), sv: set(odr, 2), sent: set(odr, 4) }, normal: { tfP: set(nrm, 0), tfM: set(nrm, 1), sv: set(nrm, 2), sent: set(nrm, 4) } });
+      odd: { tfP: set(odr, 0), tfM: set(odr, 1), sv: set(odr, 2), sent: set(odr, 4), xf: set(odr, 6) }, normal: { tfP: set(nrm, 0), tfM: set(nrm, 1), sv: set(nrm, 2), sent: set(nrm, 4), xf: set(nrm, 6) } });
   }
   // (in drawing order — the farthest from the end first —: the first draw whose result moved in the odd frames while what it drew over did not)
   const order = [...draws].sort((a, b) => b.pos - a.pos), moved = order.filter((d) => d.perRect.some((p) => p.oddAfter >= 8 && p.oddBefore < 4));
   const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]), list = (a) => a.map(hex).join(' / ');
   let verdict;
-  if (!odd.length) verdict = 'no odd frame: no presented frame went A-B-A between its neighbours (the defect did not happen while the probe ran)';
+  if (!odd.length) verdict = 'no odd frame: no presented frame went A-B-A between its neighbours or came back after a run of frames (the defect did not happen while the probe ran)';
   else if (!oddP.length && oddC.length) verdict = 'odd frames only in the control phase: the copies between the draws hid the defect (GPU timing, or a hazard the copies break)';
   else if (!oddP.length) verdict = "odd frames, none with its draws' figures (pictures lost): nothing to compare";
   else if (!moved.length) verdict = order.length && order[0].oddBefore >= 4 ? `the picture under the probed draws already differed in the odd frames (by ${order[0].oddBefore.toFixed(0)} in luminance before draw ${order[0].pos} from the end): an earlier draw or the scene` : 'odd frames, but no probed draw changed its result in them: the difference comes after the draws (the present, the page) or from draws not probed';
@@ -210,7 +327,8 @@ export function analyse(rec) {
     if (!same(o.tfP, n.tfP)) verdict = `${what}: the game's own TEXTUREFACTOR changed with it (producer ${list(n.tfP)} in normal frames, ${list(o.tfP)} in odd ones) — the game's values`;
     else if (!same(o.tfM, n.tfM)) verdict = `${what}: the producer's TEXTUREFACTOR stayed ${list(n.tfP)} but the backend read ${list(o.tfM)} in the odd frames — the render worker's replay`;
     else if (!same(o.sv, n.sv) || !same(o.sent, n.sent)) verdict = `${what}: same TEXTUREFACTOR (${list(n.tfM)}) but the program's cached / sent value differed in the odd frames (cache ${list(o.sv)}, sent ${list(o.sent)}; normal: ${list(n.sv)}, ${list(n.sent)}) — Orthros' uniform cache`;
-    else if (top.tms > 1) verdict = `${what}: its texture matrices moved (${top.tms} sets) — an animated layer (a scroll going back and forth comes back A-B-A), not a fault`;
+    else if (o.xf.length && !same(o.xf, n.xf) && o.xf.some((x) => !n.xf.includes(x))) verdict = `${what}: same TEXTUREFACTOR (${list(n.tfM)}) but its world / view / projection matrices differed in the odd frames (${list(o.xf)} against ${list(n.xf)}) — the game's matrices or Orthros' handling of them, not GL`;
+    else if (top.tms > 1) verdict =`${what}: its texture matrices moved (${top.tms} sets) — an animated layer (a scroll going back and forth comes back A-B-A), not a fault`;
     else verdict = `${what} with the same values in every frame (TEXTUREFACTOR ${list(n.tfM)}, producer ${list(n.tfP)}, uniform last sent ${list(n.sent)}, ${top.metas} draw description${top.metas > 1 ? 's' : ''}) — what GL makes of the same commands and values`;
   }
   return { frames: frames.length, probed: probed.length, control: frames.length - probed.length, odd: odd.length, oddProbed: oddP.length, oddControl: oddC.length, normal: normal.length, draws, moved: moved.map((d) => d.pos), verdict };
