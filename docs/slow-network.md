@@ -972,7 +972,7 @@ Measured with headless Chromium on a local server (Playwright, every response's 
   (150 unique: each worker loads its graph again): 8313 KB of bodies at every visit before; 845 KB on a first visit
   (warm server), 0 on a return (every module a 304). The home: 500 KB, then 164, then 0. (A versioned, immutable
   `/src` would also save the ~380 conditional requests of a return; not done: the absolute `/src/` URLs of the pages
-  and workers would load a module twice under two URLs.)
+  and workers would load a module twice under two URLs. Done since 2026-11-18, every address relative: docs/builds.md.)
 - **Engine releases**: `tools/ops/engine-br.mjs <release>` writes `<file>.br` (brotli 11) beside each compressible file
   (not the archives, not `gamefiles/`, which the server lays over the game's files); the install and build scripts run
   it (`tools/goldsrc/install-engine.py`, `build-modules.sh`, `tools/re3/build.sh`). The server already sends a newer

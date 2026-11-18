@@ -161,6 +161,22 @@ ses comptes et ses cookies sous ce nom, et Google y revient : enregistrer aussi
 `{ "clientId": "…", "clientSecret": "…" }` dans `google.json`, à côté de la base des comptes (lisible par le service
 seulement) : le bouton « Continuer avec Google » apparaît sans redémarrage, et disparaît si le fichier est retiré.
 
+## Versions du code servies aux joueurs (builds figés)
+
+Chaque page charge tout son code depuis une seule version figée de l'arbre, `/b/<id>/src/...`, choisie à son
+chargement (docs/builds.md) : un déploiement pendant une partie (fusion dans l'arbre en service, redémarrage) ne mélange
+plus deux versions dans une même session. Le serveur range ces versions dans `--builds <dossier>` (par défaut
+`<learn>/../builds`, soit `/var/lib/orthros/builds` en production ; aucune sans `--learn`, ou avec `--builds off`), les
+sert immuables (mises en cache par le navigateur sans revalidation) et garde 7 jours celles qui servent encore.
+
+Le canal décide quelle version reçoivent les joueurs (`node tools/ops/build-channel.mjs <commande>`, sans redémarrage) :
+- `auto` (par défaut) : la dernière version de l'arbre, comme avant — chaque fusion arrive au chargement suivant ;
+- `restart` : la version de l'arbre au démarrage du serveur — une fusion arrive au prochain redémarrage ;
+- `promote [<id>]` : une version épinglée (« stable »), jusqu'à la promotion suivante ; `promote <id>` d'une version
+  gardée sert de retour arrière.
+`status` affiche le canal et les versions gardées. Avec `?channel=main` dans l'adresse (retenu par un cookie,
+`?channel=stable` pour revenir), une page reçoit la dernière version de l'arbre quel que soit le canal.
+
 ## Diagnostic (harnais `tools/headless.mjs <manifeste | dossier>`)
 
 - Scénarios : `--input "t:click:x,y;…"` (étapes `click`, `rclick`, `move`, `down`/`up`, `key`, `text`, `shot`, ancres

@@ -31,15 +31,17 @@ export GOMAXPROCS=${GOMAXPROCS:-4} # (a shared server: restic's hashing and comp
 HOST=orthros                       # (one name whatever the machine's: the retention and the parent snapshot by it)
 
 # What a snapshot holds. The repository's folder is whole but for the disposable (build/, node_modules/, generated
-# tests, agent worktrees) and the backups themselves; the services' state but for caches remade on demand and the
-# linked game trees their runners rebuild at each start.
+# tests, agent worktrees) and the backups themselves; the services' state but for caches remade on demand, the frozen
+# builds of the page's code (docs/builds.md: copies of the tree for the sessions in progress, the live one cut again at
+# the server's start — a restored stable pin goes back to auto) and the linked game trees their runners rebuild at each
+# start.
 SOURCES=("$ROOT" /var/lib/private/orthros /var/lib/private/orthros-goldsrc /var/lib/orthros-openmw /etc/orthros-openmw.env
   /etc/systemd/system/orthros.service /etc/systemd/system/orthros-snapshot-jobs.service
   /etc/systemd/system/orthros-goldsrc@.service /etc/systemd/system/orthros-openmw@.service
   /etc/systemd/system/orthros-backup.service /etc/systemd/system/orthros-backup.timer)
 EXCLUDES=("$ROOT/build" "$ROOT/node_modules" "$ROOT/tests/generated" "$ROOT/.claude/worktrees"
   "$ROOT/backups/restic" "$ROOT/backups/cache" "$ROOT/backups/mnt" "$ROOT/backups/restore-*" "$ROOT/backups/restic-password"
-  /var/lib/private/orthros/brcache /var/lib/private/orthros/covers
+  /var/lib/private/orthros/brcache /var/lib/private/orthros/covers /var/lib/private/orthros/builds
   '/var/lib/private/orthros-goldsrc/*/game' '/var/lib/orthros-openmw/*/gamedata')
 # Retention: every snapshot of the last 14 days, then one a week for 8 weeks, one a month for 2 years; the manual ones
 # and those taken before a restore, always.

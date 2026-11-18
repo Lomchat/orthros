@@ -13,7 +13,7 @@ import { gpuInfo, gpuShortName } from './gpu-class.js';
 import { accountState, signIn, onAccountChange, googleSignIn, googleText, GOOGLE_G } from './account.js';
 import { REPORT_GAP_MS } from '../shared/display-report.js';
 
-const LOGO = '/src/web/orthros_logo.png';
+const LOGO = new URL('./orthros_logo.png', import.meta.url).href;
 const STRINGS = {
   en: {
     games: '☰ Games', gamesTitle: 'quit the game and return to the game list', fullscreen: '⛶ Full screen', fullscreenTitle: 'full screen: only the game, the mouse captured (hold Esc to leave)',

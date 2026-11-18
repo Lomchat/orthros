@@ -13,7 +13,8 @@
 // copy of the tree whose page carries the tags (tools/bench/page-weight.mjs --preload-html) — not page.route, which turns
 // the browser's cache off (no 304 left to measure).
 // Besides the paint times: config (when /api/config was asked — the library's data, after the whole graph ran), the
-// /src/ requests and how many of them were 304s.
+// requests of the page's code (/src/, or a frozen build's /b/<id>/src/ — docs/builds.md: immutable, none on a return)
+// and how many of them were 304s.
 import { chromium } from 'playwright';
 
 const args = process.argv.slice(2);
@@ -23,6 +24,7 @@ const kbps = Number(arg('--kbps', 85)), rtt = Number(arg('--rtt', 80)), runs = N
 const pages = arg('--pages', '/').split(',');
 const limitMs = Number(arg('--timeout', 60000));
 const warm = args.includes('--warm');
+const isCode = (u) => /^\/(b\/[0-9a-f]{16}\/)?src\//.test(new URL(u).pathname);
 
 const browser = await chromium.launch({ args: ['--enable-features=SharedArrayBuffer'] });
 const results = {};
@@ -46,16 +48,18 @@ try {
         await p.goto(base + page, { waitUntil: 'load', timeout: limitMs });
         await p.waitForTimeout(2000);
       }
-      const reqs = new Map(); let bytes = 0, covers = 0, coverBytes = 0, lastEnd = 0, srcRequests = 0, src304 = 0, docTs = null, configTs = null;
+      const reqs = new Map(); let bytes = 0, covers = 0, coverBytes = 0, lastEnd = 0, srcRequests = 0, src304 = 0, srcCached = 0, docTs = null, configTs = null;
       const t0 = Date.now();
       cdp.on('Network.requestWillBeSent', (e) => {
         reqs.set(e.requestId, e.request.url);
         const u = new URL(e.request.url);
         if (docTs === null && e.type === 'Document') docTs = e.timestamp;
         if (configTs === null && u.pathname === '/api/config') configTs = e.timestamp;
-        if (u.pathname.startsWith('/src/')) srcRequests++;
+        if (isCode(e.request.url)) srcRequests++;
       });
-      cdp.on('Network.responseReceived', (e) => { if (e.response.status === 304 && new URL(e.response.url).pathname.startsWith('/src/')) src304++; });
+      cdp.on('Network.responseReceived', (e) => { if (e.response.status === 304 && isCode(e.response.url)) src304++; });
+      // (from the browser's cache, no request on the link: the memory cache's, then the disk cache's)
+      cdp.on('Network.requestServedFromCache', (e) => { if (isCode(reqs.get(e.requestId) ?? 'http://x/')) srcCached++; });
       cdp.on('Network.loadingFinished', (e) => {
         bytes += e.encodedDataLength; lastEnd = Date.now() - t0;
         if (/\/api\/cover\//.test(reqs.get(e.requestId) ?? '')) { covers++; coverBytes += e.encodedDataLength; }
@@ -78,7 +82,7 @@ try {
       const paint = await p.evaluate(() => window.__paint);
       // (config: from the page's request to /api/config's, the CDP clock — the same one for both)
       const config = docTs !== null && configTs !== null ? (configTs - docTs) * 1000 : null;
-      all.push({ fcp: paint['first-contentful-paint'] ?? null, config, drawn, coversShown, quietMs: lastEnd, KB: bytes / 1024, requests: reqs.size, src: srcRequests, src304, covers, coverKB: coverBytes / 1024 });
+      all.push({ fcp: paint['first-contentful-paint'] ?? null, config, drawn, coversShown, quietMs: lastEnd, KB: bytes / 1024, requests: reqs.size, src: srcRequests, src304, srcCached, covers, coverKB: coverBytes / 1024 });
       await ctx.close();
     }
     const med = (k) => { const a = all.map((x) => x[k]).filter((x) => x !== null).sort((x, y) => x - y); return a.length ? +a[a.length >> 1].toFixed(k.endsWith('KB') ? 1 : 0) : null; };
@@ -86,4 +90,4 @@ try {
   }
 } finally { await browser.close(); }
 if (args.includes('--json')) console.log(JSON.stringify({ kbps, rtt, runs, warm, results }));
-else for (const [pg, r] of Object.entries(results)) console.log(`${pg} @ ${kbps ? kbps + ' KB/s' : 'no bandwidth limit'}, ${rtt} ms${warm ? ', warm' : ''} (median of ${runs}): first paint ${r.fcp} ms, /api/config asked at ${r.config ?? '-'} ms, library drawn ${r.drawn ?? '-'} ms, covers in view ${r.coversShown ?? '-'} ms, quiet at ${r.quietMs} ms; ${r.KB} KiB in ${r.requests} requests (/src/ ${r.src}, ${r.src304} of them 304; covers ${r.covers}, ${r.coverKB} KiB)`);
+else for (const [pg, r] of Object.entries(results)) console.log(`${pg} @ ${kbps ? kbps + ' KB/s' : 'no bandwidth limit'}, ${rtt} ms${warm ? ', warm' : ''} (median of ${runs}): first paint ${r.fcp} ms, /api/config asked at ${r.config ?? '-'} ms, library drawn ${r.drawn ?? '-'} ms, covers in view ${r.coversShown ?? '-'} ms, quiet at ${r.quietMs} ms; ${r.KB} KiB in ${r.requests} requests (code ${r.src}, ${r.src304} of them 304, ${r.srcCached} from the browser's cache; covers ${r.covers}, ${r.coverKB} KiB)`);

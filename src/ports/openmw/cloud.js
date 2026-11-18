@@ -103,7 +103,7 @@
     let firstRow = null;
     /** 'adopt' (the account's copy is this profile's newer state) or 'merge' — this browser's merge of the versions' copies, its record of each. */
     async function firstShared() {
-      const { mergedMarker } = await import('/src/vfs/profile-share.js');
+      const { mergedMarker } = await import('../../vfs/profile-share.js'); // (this script's build: docs/builds.md)
       const marker = mergedMarker(game, scope), sources = (marker?.sources ?? []).filter((s) => s.files > 0);
       if (!marker) return 'merge';
       if (!sources.length) return 'adopt';
@@ -114,7 +114,7 @@
     }
     /** This profile and the account's copy merged (profile-merge.js), put in place, then sent over the account's head. */
     async function mergeWithAccount(remote) {
-      const { mergeProfiles } = await import('/src/vfs/profile-merge.js');
+      const { mergeProfiles } = await import('../../vfs/profile-merge.js');
       const doc = JSON.parse(new TextDecoder().decode(await transform(remote, true)));
       if (doc.format !== 'orthros-profile' || doc.game !== game || !Array.isArray(doc.files)) throw new Error('Sauvegarde en ligne invalide.');
       for (const f of doc.files) if (typeof f.path !== 'string' || f.path.startsWith('/') || f.path.includes('\\') || f.path.split('/').some((p) => !p || p === '.' || p === '..')) throw new Error('Chemin de sauvegarde invalide.');

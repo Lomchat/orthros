@@ -91,7 +91,7 @@ export function mountDropGame(anchor, { lang, onPlay }) {
   /** The files into the game's store, by the download worker (OPFS sync handles: a dedicated worker's); the time taken. */
   function copy(id, files) {
     return new Promise((resolve, reject) => {
-      const w = new Worker('/src/web/download-worker.js', { type: 'module' });
+      const w = new Worker(new URL('./download-worker.js', import.meta.url), { type: 'module' });
       let end = null;
       w.onmessage = (e) => {
         const m = e.data;

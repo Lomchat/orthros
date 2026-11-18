@@ -34,7 +34,8 @@ function page(search, answer, { fetchFails = false } = {}) {
   const WA = { Module: WebAssembly.Module, Instance: WebAssembly.Instance, instantiate: WebAssembly.instantiate.bind(WebAssembly), compileStreaming() {},
     instantiateStreaming: (source, imports) => Promise.resolve(source).then((r) => { streamed.push(r); return WebAssembly.instantiate(EMPTY, imports); }) };
   const window = { location: { search, href: 'http://x/ports/openmw/m/app/index.html' + search }, Module: { locateFile: (p) => '/engines/_c/abc/' + p, onAbort: (w) => aborted.push(w) } };
-  const context = vm.createContext({ window, location: window.location, WebAssembly: WA, Worker: FakeWorker, URL, Promise, Error, setTimeout, decodeURIComponent, console: { warn() {}, error() {} },
+  const document = { currentScript: { src: 'http://x/b/0123456789abcdef/src/ports/openmw/wasm-code-cache.js' } };
+  const context = vm.createContext({ window, document, location: window.location, WebAssembly: WA, Worker: FakeWorker, URL, Promise, Error, setTimeout, decodeURIComponent, console: { warn() {}, error() {} },
     fetch: (url, o) => { fetched.push({ url, o }); return fetchFails ? Promise.reject(new TypeError('Failed to fetch')) : Promise.resolve(new Response(EMPTY, { headers: { 'content-type': 'application/wasm' } })); } });
   vm.runInContext(SCRIPT, context);
   return { window, workers, fetched, streamed, aborted };
@@ -62,7 +63,7 @@ test("the worker's module, compiled from the engine's URL, instantiated here; th
   assert.equal(p.workers.length, 1); assert.equal(p.workers[0].posted, undefined); // (made as the script ran, before the glue asks)
   const r = await instantiate(p);
   assert.equal(p.workers.length, 1);
-  assert.equal(p.workers[0].src, '/src/ports/openmw/wasm-compile-worker.js');
+  assert.equal(String(p.workers[0].src), 'http://x/b/0123456789abcdef/src/ports/openmw/wasm-compile-worker.js'); // (beside the script: its build's)
   assert.deepEqual(Object.keys(p.workers[0].posted), ['url']); assert.equal(p.workers[0].posted.url, 'http://x/engines/_c/abc/openmw.wasm');
   assert.equal(r.module, module); assert.ok(r.instance instanceof WebAssembly.Instance);
   assert.equal(p.workers[0].terminated, false);

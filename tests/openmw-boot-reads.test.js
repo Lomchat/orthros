@@ -8,7 +8,7 @@ import vm from 'node:vm';
 import { bootReads, vfsName, BOOT_FILE_MAX } from '../src/ports/openmw/boot-reads.js';
 
 const SRC = fs.readFileSync(new URL('../src/ports/openmw/streamfs.js', import.meta.url), 'utf8')
-  .replaceAll("import('/src/", `import('${new URL('../src/', import.meta.url).href}`);
+  .replaceAll("import('../../", `import('${new URL('../src/', import.meta.url).href}`).replaceAll("import('./", `import('${new URL('../src/ports/openmw/', import.meta.url).href}`);
 
 test('vfsName: a data folder\'s file by the name the engine resolves', () => {
   assert.equal(vfsName('/mwdata/Scripts/A.lua'), 'scripts/a.lua');

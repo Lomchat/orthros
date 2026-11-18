@@ -12,7 +12,7 @@ const downloads = new Downloads();
 const $ = (id) => document.getElementById(id);
 /** the stores' probe after the library is drawn (download.js `probe`): its covers' requests first */
 const PROBE_DELAY_MS = 1500;
-const LOGO = '/src/web/orthros_logo.png';
+const LOGO = new URL('./orthros_logo.png', import.meta.url).href;
 
 const STRINGS = {
   en: {

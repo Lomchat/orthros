@@ -20,7 +20,8 @@
   /** @type {Promise<WebAssembly.Module>} the worker's answer */
   let answer;
   try {
-    const w = worker = new Worker('/src/ports/openmw/wasm-compile-worker.js');
+    // (beside this script: its build's — docs/builds.md)
+    const w = worker = new Worker(new URL('wasm-compile-worker.js', (typeof document === 'object' && document.currentScript?.src) || location.href));
     answer = new Promise((resolve, reject) => {
       w.onmessage = (e) => (e.data && e.data.module instanceof WebAssembly.Module ? resolve(e.data.module) : reject(new Error((e.data && e.data.error) || 'no module')));
       w.onerror = (e) => { e.preventDefault(); reject(new Error(e.message || 'worker failed')); };

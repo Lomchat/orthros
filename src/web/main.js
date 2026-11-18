@@ -28,6 +28,7 @@ import { compatKey } from '../core/compat-stats.js';
 import { fetchSharedSnapshot, dropPieces } from './snapshot-fetch.js';
 import { ScreenRecorder } from './screen-report.js';
 import { DISPLAY_REPORT_VERSION } from '../shared/display-report.js';
+import { withBuild } from '../shared/build-path.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -163,7 +164,7 @@ function missingFeature() {
 async function main() {
   const missing = missingFeature();
   if (missing) { $('menu').classList.add('hidden'); showStatus(TEXT.cannotRun, missing, null, true); return; }
-  const config = await fetch('/api/config').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  const config = await fetch(withBuild('/api/config')).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   state.telemetry = !!config.telemetry && !headless;
   state.version = config.version ?? null; // (the served build: telemetry is read with it)
   state.encodedRanges = !!config.encodedRanges && params.get('encoded') !== '0';
@@ -231,7 +232,8 @@ async function start(name, language = null) {
   const local = name.startsWith('local-') ? await import('../vfs/local-games.js').then((L) => L.loadLocal(name)) : null;
   if (name.startsWith('local-') && !local?.complete) { state.status = 'menu'; showStatus(TEXT.cannotRun, local ? TEXT.localPartial : TEXT.localGone, null, true); return; }
   if (local) state.telemetry = false;
-  const sourcesReq = snapshotsOn() && !local ? fetch('/api/snapshot-sources').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
+  // (the sources of the build this page runs: a snapshot of its own machine's — docs/builds.md)
+  const sourcesReq = snapshotsOn() && !local ? fetch(withBuild('/api/snapshot-sources')).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
   const manifest = local ? local.manifest : await (await fetch(`/api/manifest/${name}`)).json();
   // (the player's profile: the game's, shared by its versions unless this one keeps its own — docs/profiles.md)
   state.gameManifest = manifest; state.profileKey = profileKeyOf(manifest) ?? name;
@@ -283,7 +285,8 @@ async function start(name, language = null) {
   resizeTo(manifest.display.width, manifest.display.height);
   const ctlSab = new SharedArrayBuffer(CTL.SIZE * 4), inputSab = new SharedArrayBuffer(IN_RING * 4), audioSab = new SharedArrayBuffer(AUDIO_RING_FRAMES * 2 * 4);
   state.ctl = new Int32Array(ctlSab); state.inputRing = new Int32Array(inputSab);
-  const worker = new Worker('/src/web/worker.js', { type: 'module' });
+  // (beside this module: the page's build — docs/builds.md —, whatever was deployed since the page loaded)
+  const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   state.worker = worker;
   worker.onmessage = (e) => { if (!state.workerAlive) { state.workerAlive = true; try { sessionStorage.removeItem(STALE_RELOAD); } catch { /* storage off */ } } onWorkerMessage(e.data); };
   // (the worker's script failing to load before its first message — a page opened before a deploy that moved or changed
@@ -1016,7 +1019,7 @@ async function setupAudio(audioSab, ctlSab) {
   });
   if ($('soundHint')) $('soundHint').onclick = () => ctx.resume().then(updateSoundHint, () => {}); // (the gesture listeners resume too: this one hides the button at once)
   ctx.addEventListener('error', (e) => { const why = e.error?.message ?? e.message ?? 'output device'; state.audioStats.noteError(`context error: ${why}`); log('warn', `audio output error: ${why}`); }); // (Chrome: the output device failed)
-  await ctx.audioWorklet.addModule('/src/web/audio-worklet.js');
+  await ctx.audioWorklet.addModule(new URL('./audio-worklet.js', import.meta.url));
   const node = new AudioWorkletNode(ctx, 'orthros-output', { outputChannelCount: [2], processorOptions: { audio: audioSab, ctl: ctlSab, frames: AUDIO_RING_FRAMES, write: CTL.AUDIO_WRITE, read: CTL.AUDIO_READ, underruns: CTL.AUDIO_UNDERRUNS } });
   node.onprocessorerror = () => { state.audioStats.noteError('worklet processor error'); log('warn', 'audio unavailable: the AudioWorklet processor failed'); };
   node.connect(ctx.destination);

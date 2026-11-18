@@ -1,7 +1,7 @@
 // Development/serving host: static files (the page, the ES modules of the emulator), manifests,
 // and the game folder served read-only with HTTP range requests + a JSON directory listing.
 // Sends the COOP/COEP headers required for SharedArrayBuffer and Atomics.wait in the page.
-// Usage: node src/server/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--covers <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue] [--no-learn-borrow] [--no-code-share]
+// Usage: node src/server/server.js [--port 8080] [--manifests <dir>] [--games-dir <dir>] [--engines-dir <dir>] [--default <manifest>] [--telemetry <dir>] [--learn <dir>] [--br-cache <dir>|off] [--covers <dir>|off] [--br-cache-bytes N] [--accounts <dir>] [--mmo <dir>] [--profile-seed-quorum N] [--snapshot-jobs | --snapshot-queue] [--no-learn-borrow] [--no-code-share] [--builds <dir>|off]
 //   --engines-dir: the installed engine releases of the browser ports (default data/engines/, docs/browser-ports.md)
 //   --default: the page starts that game directly (the picker stays reachable with ?menu)
 //   --telemetry: the page's per-second measurements (frame rate, frame times, emulated CPU) are appended to
@@ -27,6 +27,10 @@
 //            then a learn session for a version with no learned list (warm-jobs.js); --warm-langs <l,...>: those languages
 //            first, wherever a version declares them; --warm-only <manifest,...>: only those versions; --warm-delay <s> (20)
 //            before the first look, --warm-every <s> (600) between looks, --warm-poll <s> (60) while a job runs
+//   --builds: where the frozen builds of the page's code are kept (build-store.js, docs/builds.md: every page loads all
+//            its code from one immutable build, /b/<id>/src/..., picked at its load — the live tree's latest, or the
+//            stable one tools/ops/build-channel.mjs pinned); default <learn>/../builds, none without --learn (`off`: none,
+//            the pages load the live tree's /src/ as they are)
 //   --mmo: where the shared worlds of the versions with an `mmo` entry keep their characters and world state
 //            (default <accounts>/mmo; without --accounts there is no shared world: the Orthros account is its identity)
 import http from 'node:http';
@@ -66,6 +70,8 @@ import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64, see
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { CodeShare, servedHeat, servedRegions } from './code-share.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
+import { BuildStore, pageInBuild } from './build-store.js';
+import { BUILD_ID, buildOf, buildUrl } from '../shared/build-path.js';
 import { ContentTwins, treePlaces } from './content-twins.js';
 import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY, publishMode } from './snapshot-store.js';
 import { Warmer, LearnedScenarios, ModeUse, learnScenarios } from './warm-jobs.js';
@@ -126,12 +132,12 @@ const DISPLAY_REPORTS_PER_DAY = 60, DISPLAY_REPORTS_PER_CLIENT = 4;
 /**
  * The build the server serves, for telemetry: the git commit of the tree, '+' when tracked files under src/ differ
  * from it, and the newest modification time of the runtime's files (the page loads src/ directly: an edited tree
- * serves new code without a new commit). Recomputed at most once a minute.
+ * serves new code without a new commit). Recomputed at most once a minute (`maxAgeMs`: a frozen build's, at its cut).
  */
 let versionCache = null;
-export function buildVersion(root = ROOT) {
+export function buildVersion(root = ROOT, maxAgeMs = 60000) {
   const now = Date.now();
-  if (versionCache && versionCache.root === root && now - versionCache.at < 60000) return versionCache.value;
+  if (versionCache && versionCache.root === root && now - versionCache.at < maxAgeMs) return versionCache.value;
   let commit = 'nogit', dirty = false, newest = 0;
   // (--no-optional-locks: the status never writes the index nor takes its lock — the tree may be edited meanwhile)
   const vcs = (...a) => execFileSync('git', ['--no-optional-locks', ...a], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
@@ -327,7 +333,7 @@ export function createServer(opts = {}) {
   const sendFile = (req, res, file, mime, extra = {}) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
     if (!st.isFile()) return send(res, 404, 'not found');
-    const range = req.headers.range, etag = etagOf(st);
+    const range = req.headers.range, etag = extra.ETag ?? etagOf(st); // (a frozen build's file: its content's, sendSource)
     const h = headers({ 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Last-Modified': st.mtime.toUTCString(), 'ETag': etag, ...extra });
     if (!range && notModified(req, st, etag)) return sendNotModified(res, h);
     if (range) {
@@ -381,9 +387,10 @@ export function createServer(opts = {}) {
    * file sent brotli 11 once made — 0.90 MB for the Win32 page's 3.26 MB of modules where the reverse proxy's gzip
    * makes 1.03 MB (measured, docs/slow-network.md). Made in the background at its first request (brotli 11: a few
    * hundred ms of a core for the largest modules, on libuv's pool), that one sent as it is; kept in memory by the
-   * file's size and mtime (the tree's text is ~4 MB, its brotli ~1 MB), checked again once made.
+   * file's size and mtime (the tree's text is ~4 MB, its brotli ~1 MB), checked again once made. A frozen build's file
+   * under its content's key (`key`, '#<hash>'): made once for every build that holds those bytes.
    */
-  const srcBr = new Map(); // file -> { size, mtimeMs, br (Buffer | null: not worth it | undefined: being made) }
+  const srcBr = new Map(); // key (file | '#<hash>') -> { size, mtimeMs, br (Buffer | null: not worth it | undefined: being made) }
   let srcBrBytes = 0;
   const SRC_BR_MAX = 64 << 20;
   // (at most SRC_BR_JOBS made at once: a first load's ~150 modules would otherwise fill libuv's 4-thread pool, the game
@@ -397,19 +404,19 @@ export function createServer(opts = {}) {
       srcBrJobs.shift()(() => { if (once) return; once = true; srcBrRunning--; srcBrPump(); });
     }
   };
-  const srcBrotli = (file, st) => {
-    const c = srcBr.get(file);
+  const srcBrotli = (file, st, key = file) => {
+    const c = srcBr.get(key);
     if (c && c.size === st.size && c.mtimeMs === st.mtimeMs) return c.br ?? null;
-    if (c) { srcBrBytes -= c.br?.length ?? 0; srcBr.delete(file); }
+    if (c) { srcBrBytes -= c.br?.length ?? 0; srcBr.delete(key); }
     if (st.size > 8 << 20 || st.size < 512) return null; // (small: brotli's gain under a header's size)
     const e = { size: st.size, mtimeMs: st.mtimeMs, br: undefined };
-    srcBr.set(file, e);
+    srcBr.set(key, e);
     srcBrJobs.push((done) => fs.readFile(file, (err, buf) => {
-      if (err || buf.length !== st.size) { if (srcBr.get(file) === e) srcBr.delete(file); return done(); }
+      if (err || buf.length !== st.size) { if (srcBr.get(key) === e) srcBr.delete(key); return done(); }
       zlib.brotliCompress(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11, [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length } }, (err2, out) => {
         done();
         let now = null; try { now = fs.statSync(file); } catch { /* gone */ }
-        if (err2 || srcBr.get(file) !== e || !now || now.size !== e.size || now.mtimeMs !== e.mtimeMs) { if (srcBr.get(file) === e) srcBr.delete(file); return; }
+        if (err2 || srcBr.get(key) !== e || !now || now.size !== e.size || now.mtimeMs !== e.mtimeMs) { if (srcBr.get(key) === e) srcBr.delete(key); return; }
         e.br = out.length <= buf.length * 0.92 ? out : null;
         srcBrBytes += e.br?.length ?? 0;
         for (const [k, v] of srcBr) { if (srcBrBytes <= SRC_BR_MAX) break; if (v.br) { srcBrBytes -= v.br.length; srcBr.delete(k); } } // (oldest out)
@@ -418,18 +425,53 @@ export function createServer(opts = {}) {
     srcBrPump();
     return null;
   };
-  // (opts.prewarmSrc: every text file of src/ made at start, in the background two at a time — after a deployment, a
-  // restart, the first visitors got the page's modules as they are: the Win32 page's 5.0 MB instead of ~0.85 MB in
-  // brotli, measured; the ports' 0.8 MB)
+  /**
+   * The frozen builds of the page's code (build-store.js, docs/builds.md; opts.buildsDir — null: none, the pages load the
+   * live tree's /src/ as they are): every page picks one at its load and loads all its code from it, /b/<id>/src/...,
+   * immutable. opts.buildRoot: the tree they are cut from (this server's own; a test's), opts.buildsOptions: the
+   * store's (keepMs, settleMs, checkMs...). A store that cannot be made (its folder not writable…) leaves the pages on
+   * the live tree, as without one: the server starts all the same.
+   */
+  let builds = null;
+  if (opts.buildsDir) {
+    try { builds = new BuildStore({ root: opts.buildRoot ?? ROOT, dir: opts.buildsDir, version: () => buildVersion(opts.buildRoot ?? ROOT, 0), log: opts.buildsLog ?? ((m) => console.log(`orthros: ${m}`)), ...opts.buildsOptions }); } catch (e) { console.warn(`orthros: no frozen builds (${opts.buildsDir}): ${e.message}`); }
+  }
+  if (builds) setInterval(() => { try { builds.prune(); } catch (e) { console.warn(`orthros: builds: ${e.message}`); } }, 3600e3).unref();
+  /** The channel a page asks: ?channel=main (kept in a cookie for the next pages) or ?channel=stable, else the cookie's — 'main' or null (the default). */
+  const channelOf = (req, url) => {
+    const q = url.searchParams.get('channel');
+    if (q === 'main' || q === 'stable') return q === 'main' ? 'main' : null;
+    return /(?:^|;\s*)orthros_channel=main(?:;|$)/.test(String(req.headers.cookie ?? '')) ? 'main' : null;
+  };
+  const channelCookie = (url) => {
+    const q = url.searchParams.get('channel');
+    return q === 'main' ? { 'Set-Cookie': 'orthros_channel=main; Path=/; Max-Age=2592000; SameSite=Lax' } : q === 'stable' ? { 'Set-Cookie': 'orthros_channel=; Path=/; Max-Age=0; SameSite=Lax' } : {};
+  };
+  /** The build a page loaded now runs (null without builds). */
+  const pageBuild = (req, url) => builds?.served(channelOf(req, url)) ?? null;
+  /** The build an /api/ request names (`build=`, src/shared/build-path.js withBuild): undefined when none, null when not kept. */
+  const namedBuild = (url) => (!builds || !url.searchParams.has('build') ? undefined : builds.get(url.searchParams.get('build')));
+  /** The state-owning sources' hash (/api/snapshot-sources) of build `b` (fixed: computed once), or of the live tree. */
+  const sourcesOf = (b) => (b ? (b.sources ??= snapshotSourcesHash(b.dir)) : snapshotSourcesHash(ROOT));
+  const IMMUTABLE = 'public, max-age=31536000, immutable';
+  // (opts.prewarmSrc: every text file of src/ — of the build pages pick — made at start, in the background two at a time
+  // — after a deployment, a restart, the first visitors got the page's modules as they are: the Win32 page's 5.0 MB
+  // instead of ~0.85 MB in brotli, measured; the ports' 0.8 MB)
   if (opts.prewarmSrc) setImmediate(() => {
+    if (builds) {
+      const b = builds.served();
+      for (const [rel, hash] of b.files) if (SRC_TEXT.test(rel)) { const f = path.join(b.dir, rel); try { srcBrotli(f, fs.statSync(f), '#' + hash); } catch { /* gone */ } }
+      return;
+    }
     const walk = (dir) => { let names = []; try { names = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; } for (const d of names) { const f = path.join(dir, d.name); if (d.isDirectory()) walk(f); else if (SRC_TEXT.test(d.name)) { try { srcBrotli(f, fs.statSync(f)); } catch { /* gone */ } } } };
     walk(path.join(ROOT, 'src'));
   });
-  const sendSource = (req, res, file, mime) => {
+  /** A file of the page's code: `extra` headers over sendFile's, `key` its brotli's (srcBrotli: a build's file by its content). */
+  const sendSource = (req, res, file, mime, extra = {}, key = file) => {
     let st; try { st = fs.statSync(file); } catch { return send(res, 404, 'not found'); }
-    if (!st.isFile() || req.headers.range || !SRC_TEXT.test(file)) return sendFile(req, res, file, mime);
-    const etag = etagOf(st), vary = { 'Vary': 'Accept-Encoding' };
-    const br = /\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !notModified(req, st, etag) ? srcBrotli(file, st) : null;
+    if (!st.isFile() || req.headers.range || !SRC_TEXT.test(file)) return sendFile(req, res, file, mime, extra);
+    const etag = extra.ETag ?? etagOf(st), vary = { 'Vary': 'Accept-Encoding', ...extra };
+    const br = /\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')) && !notModified(req, st, etag) ? srcBrotli(file, st, key) : null;
     if (!br) return sendFile(req, res, file, mime, vary);
     res.writeHead(200, headers({ 'Content-Type': mime, 'Content-Encoding': 'br', 'Content-Length': br.length, 'Last-Modified': st.mtime.toUTCString(), 'ETag': etag, ...vary }));
     res.end(req.method === 'HEAD' ? undefined : br);
@@ -447,24 +489,52 @@ export function createServer(opts = {}) {
    */
   let home = null; // { stamp, files, body, br, etag, mtimeMs }
   const homeStamp = (files) => files.map((f) => { try { const s = fs.statSync(f); return `${s.size}:${s.mtimeMs}`; } catch { return '-'; } }).join(',');
+  const pageBody = (text, mtimeMs) => {
+    const body = Buffer.from(text), br = zlib.brotliCompressSync(body, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11, [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT } });
+    return { body, br, etag: `W/"h${crypto.createHash('sha1').update(body).digest('hex').slice(0, 20)}"`, mtimeMs };
+  };
   const homePage = () => {
     if (home && homeStamp(home.files) === home.stamp) return home;
     const file = path.join(ROOT, 'src/web/index.html'), g = moduleGraph(ROOT, file), files = [file, ...g.level.keys()];
-    const stamp = homeStamp(files), body = Buffer.from(withPreloads(ROOT, g.text, g.level));
-    const br = zlib.brotliCompressSync(body, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11, [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT } });
-    const mtimeMs = Math.max(...files.map((f) => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } }));
-    home = { stamp, files, body, br, etag: `W/"h${crypto.createHash('sha1').update(body).digest('hex').slice(0, 20)}"`, mtimeMs };
+    const stamp = homeStamp(files), mtimeMs = Math.max(...files.map((f) => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } }));
+    home = { stamp, files, ...pageBody(withPreloads(ROOT, g.text, g.level), mtimeMs) };
     return home;
   };
-  const sendHome = (req, res) => {
-    const file = path.join(ROOT, 'src/web/index.html');
-    if (opts.homePreload === false || req.headers.range) return sendSource(req, res, file, MIME['.html']);
-    let h; try { h = homePage(); } catch { return sendSource(req, res, file, MIME['.html']); }
+  /**
+   * A frozen build's page `rel` (its home with its preloads, a port's page, a legal page), its code's addresses in the
+   * build (pageInBuild): made once per build (the last 32 kept).
+   */
+  const builtPages = new Map(); // `${id}|${rel}` -> { body, br, etag, mtimeMs }
+  const builtPage = (b, rel) => {
+    const k = `${b.id}|${rel}`;
+    let pg = builtPages.get(k);
+    if (!pg) {
+      const file = path.join(b.dir, rel), isHome = rel === 'src/web/index.html' && opts.homePreload !== false;
+      const g = isHome ? moduleGraph(b.dir, file) : null, text = g ? withPreloads(b.dir, g.text, g.level) : fs.readFileSync(file, 'utf8');
+      builtPages.set(k, pg = pageBody(pageInBuild(text, b.id), Date.parse(b.at) || 0));
+      if (builtPages.size > 32) builtPages.delete(builtPages.keys().next().value);
+    }
+    return pg;
+  };
+  const sendPageBody = (req, res, h, extra = {}) => {
     const br = /\bbr\b/.test(String(req.headers['accept-encoding'] ?? '')), body = br ? h.br : h.body;
-    const hd = headers({ 'Content-Type': MIME['.html'], 'Last-Modified': new Date(h.mtimeMs).toUTCString(), 'ETag': h.etag, 'Vary': 'Accept-Encoding', ...(br ? { 'Content-Encoding': 'br' } : {}) });
+    const hd = headers({ 'Content-Type': MIME['.html'], 'Last-Modified': new Date(h.mtimeMs).toUTCString(), 'ETag': h.etag, 'Vary': 'Accept-Encoding', ...extra, ...(br ? { 'Content-Encoding': 'br' } : {}) });
     if (notModified(req, { mtimeMs: h.mtimeMs }, h.etag)) return sendNotModified(res, hd);
     res.writeHead(200, { ...hd, 'Content-Length': body.length });
     res.end(req.method === 'HEAD' ? undefined : body);
+  };
+  /** A page of the tree (`rel`, 'src/...'): build `b`'s (null: the live tree's, as it is), `extra` headers. */
+  const sendPage = (req, res, rel, b, extra = {}) => {
+    if (!b) return sendSource(req, res, path.join(ROOT, rel), MIME['.html'], extra);
+    if (!b.files.has(rel)) return send(res, 404, 'not found');
+    return sendPageBody(req, res, builtPage(b, rel), extra);
+  };
+  const sendHome = (req, res, b = null, extra = {}) => {
+    if (b) return sendPage(req, res, 'src/web/index.html', b, extra);
+    const file = path.join(ROOT, 'src/web/index.html');
+    if (opts.homePreload === false || req.headers.range) return sendSource(req, res, file, MIME['.html'], extra);
+    let h; try { h = homePage(); } catch { return sendSource(req, res, file, MIME['.html'], extra); }
+    return sendPageBody(req, res, h, extra);
   };
   /**
    * An engine release's file, or its precompressed sibling (<file>.br, as releases ship them: OpenMW's 204 MB package is
@@ -1924,9 +1994,21 @@ export function createServer(opts = {}) {
         accountApi(req, res).catch((e) => { console.error('account API:', e); if (!res.headersSent) send(res, e.status ?? 500, 'account API error'); else res.destroy(); });
         return;
       }
-      if (p === '/api/config') return send(res, 200, JSON.stringify({ version: buildVersion(), defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, google: !!accountApi?.googleEnabled(), mmo: !!mmoDir, encodedRanges: true, prefetch: true, programCache: true, regionCache: true, profileSeed: true }), { 'Content-Type': 'application/json' });
-      // (the sources snapshots depend on, docs/snapshot.md: a page keeps its snapshot of a game only while they are the same)
-      if (p === '/api/snapshot-sources') return send(res, 200, JSON.stringify(snapshotSourcesHash(ROOT)), { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+      // (the version: of the build the page names — withBuild —, else of the one a page loaded now gets; `build` its id)
+      if (p === '/api/config') { const b = namedBuild(url) ?? pageBuild(req, url); return send(res, 200, JSON.stringify({ version: b ? `${b.version ?? '?'}/${b.id}` : buildVersion(), build: b?.id ?? null, defaultManifest: opts.defaultManifest ?? null, telemetry: !!opts.telemetryDir, accounts: !!accountApi, google: !!accountApi?.googleEnabled(), mmo: !!mmoDir, encodedRanges: true, prefetch: true, programCache: true, regionCache: true, profileSeed: true }), { 'Content-Type': 'application/json' }); }
+      // (the sources snapshots depend on, docs/snapshot.md: a page keeps its snapshot of a game only while they are the same
+      // — the sources of the build it runs, `build=`: a page of a build no longer kept gets none, no snapshot of another
+      // version's machine restored)
+      if (p === '/api/snapshot-sources') {
+        const named = namedBuild(url);
+        if (named === null) return send(res, 410, 'build no longer served', { 'Cache-Control': 'no-store' });
+        return send(res, 200, JSON.stringify(sourcesOf(named ?? pageBuild(req, url))), { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+      }
+      // (the build a page loaded now gets, the live tree's and the stable pin: tools/ops/build-channel.mjs, docs/builds.md)
+      if (p === '/api/build') {
+        const b = pageBuild(req, url);
+        return send(res, 200, JSON.stringify(b ? { build: b.id, version: b.version, live: builds.live.id, start: builds.startBuild.id, stable: builds.pin.stable, mode: builds.pin.mode, channel: channelOf(req, url) ?? 'default' } : { build: null, version: buildVersion() }), { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      }
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         // (256 KB per batch; a flicker capture — one per session, src/shared/flicker-record.js — up to CAPTURE_POST_MAX_BYTES,
@@ -1998,9 +2080,10 @@ export function createServer(opts = {}) {
         });
         return;
       }
-      if (p === '/' || p === '/index.html') return sendHome(req, res);
+      // (a page picks its build at its load — the stable one, or with ?channel=main the live tree's: docs/builds.md)
+      if (p === '/' || p === '/index.html') return sendHome(req, res, pageBuild(req, url), channelCookie(url));
       // (the privacy policy and the terms of use, at public addresses: the home screen, the account window and Google's sign-in link to them)
-      if (p === '/privacy' || p === '/terms') return sendFile(req, res, path.join(ROOT, `src/web/${p.slice(1)}.html`), MIME['.html']);
+      if (p === '/privacy' || p === '/terms') return sendPage(req, res, `src/web/${p.slice(1)}.html`, pageBuild(req, url));
       if (p === '/api/manifests') {
         refreshCatalog();
         const memo = listings, ok = new Map(); // (the folders' listings, the OpenMW versions' checks: shared by the versions)
@@ -2345,6 +2428,10 @@ export function createServer(opts = {}) {
             // (under the profile's key; the versions it takes, for its first sync — cloud.js)
             page = page.replace("FS.mount(IDBFS, {}, '/userdata');", `FS.mount(IDBFS, {}, '/userdata');window.orthrosCloudInstall(FS, ${JSON.stringify(key)}, ${JSON.stringify(scope)}, ${JSON.stringify({ shared: sources.some((s) => s.name !== key), settings: man.profileSettings ?? [] })});`);
           }
+          // (Orthros' code in it from the build of the Orthros page around it — ?b=, play.js —, else from the one a page
+          // loaded now gets)
+          const b = builds ? builds.get(url.searchParams.get('b')) ?? pageBuild(req, url) : null;
+          if (b) { builds.touch(b); page = pageInBuild(page, b.id); }
           return send(res, 200, page, { 'Content-Type': MIME[path.extname(asset)], 'Cache-Control': 'private, no-store', 'Vary': 'Cookie' });
         }
         // (e/<hash>/: the engine build's own content-versioned directory)
@@ -2358,7 +2445,7 @@ export function createServer(opts = {}) {
         return sendEngineFile(req, res, f, cache);
       }
       m = /^\/ports\/([a-z0-9]+)\/([^/]+)\/$/.exec(p);
-      if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendSource(req, res, path.join(ROOT, 'src/ports', m[1], 'play.html'), MIME['.html']); }
+      if (m) { const man = getManifest(m[2]); if (!man || runtimeOf(man) !== m[1] || m[1] === 'win32') return send(res, 404, 'no such port'); return sendPage(req, res, `src/ports/${m[1]}/play.html`, pageBuild(req, url), channelCookie(url)); }
       // (an engine file by its content — engine-content.js: every release with those bytes shares its address —, or an
       // OpenMW engine package's lean copy, made by this server and keyed by the package's content — openmw-lean.js)
       m = p.startsWith(CONTENT_PREFIX) && /^\/engines\/_c\/([^/]+)\/(.+)$/.exec(p);
@@ -2382,6 +2469,24 @@ export function createServer(opts = {}) {
         if (leanFile) return sendLean(req, res, leanFile, lean.decoded(m[1]));
         const file = engineFile(enginesDir, m[1], m[2]); if (!file) return send(res, 404, 'not found');
         return sendEngineFile(req, res, file, 'public, max-age=31536000, immutable');
+      }
+      // (a frozen build's file: its bytes for ever — immutable —; a build no longer kept: 410, never another version's file)
+      m = /^\/b\/([^/]+)\/(src\/.+)$/.exec(p);
+      if (m) {
+        const b = builds?.get(m[1]);
+        if (!b) return send(res, builds && BUILD_ID.test(m[1]) ? 410 : 404, 'this version of Orthros is no longer served: reload the page', { 'Cache-Control': 'no-store' });
+        const hash = b.files.get(m[2]);
+        if (!hash) return send(res, 404, 'not found');
+        builds.touch(b);
+        if (m[2].endsWith('.html')) return sendPageBody(req, res, builtPage(b, m[2]), { 'Cache-Control': IMMUTABLE });
+        const file = path.join(b.dir, m[2]);
+        return sendSource(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream', { 'Cache-Control': IMMUTABLE, 'ETag': `"${hash}"` }, '#' + hash);
+      }
+      // (the live tree's code asked by a frozen build's own — a module or worker of /b/<id>/ naming an absolute /src/
+      // address: the Referer says its build —: answered from that build, a session never mixes two versions' code)
+      if (p.startsWith('/src/') && builds) {
+        const b = builds.get(buildOf(req.headers.referer));
+        if (b?.files.has(p.slice(1))) { res.writeHead(307, headers({ Location: `/b/${b.id}${url.pathname}${url.search}`, 'Cache-Control': 'no-store' })); return res.end(); }
       }
       if (p.startsWith('/src/') || p.startsWith('/tools/') || p.startsWith('/tests/')) {
         // (under the tree's own top directory, its real path too: no symlink out of it)
@@ -2412,7 +2517,8 @@ export function createServer(opts = {}) {
       ...(typeof opts.warmJobs === 'object' ? { everyMs: opts.warmJobs.everyMs, delayMs: opts.warmJobs.delayMs, pollMs: opts.warmJobs.pollMs } : {}),
       versions: () => { refreshCatalog(); return [...manifests].filter(([n, m]) => (!opts.warmJobs.only || opts.warmJobs.only.includes(n)) && runtimeOf(m) === 'win32' && !m.hidden && m.exe && fs.existsSync(m.folder)).map(([name, man]) => ({ name, man })); },
       fetchVersion: async (name) => ({ manifest: await get(`/api/manifest/${name}`), tree: await get(`/api/tree/${name}`) }),
-      sources: () => snapshotSourcesHash(ROOT),
+      // (the sources of the build players get: their pages' snapshot keys)
+      sources: () => sourcesOf(builds?.served() ?? null),
       snapshotReady: (name, lang, key) => { const f = snapshots.meta(name, lang, key); return !!f && (f.seed ?? null) === (getManifest(name)?.profileSeed === false ? null : (seedFor(name, lang).key ?? null)); },
       hasLearned: (name) => learnedOf(name).size > 0,
       scenariosLearned: (name) => learnScenarios(ROOT, name).every((sc) => !sc.required || learnedScenarios.done(name, sc.id)),
@@ -2466,7 +2572,9 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   // (--no-home-preload: the home without its modulepreload links — a trial's other arm, sendHome)
   // (--br-cache-frozen: the units served as they are, none made — a measurement's copy of another server's)
   const brCacheOptions = args.includes('--br-cache-frozen') ? { generate: false } : undefined;
-  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), warmJobs: args.includes('--warm-jobs') ? { ...(arg('--warm-only') ? { only: arg('--warm-only').split(',') } : {}), ...(arg('--warm-delay') ? { delayMs: Number(arg('--warm-delay')) * 1000 } : {}), ...(arg('--warm-every') ? { everyMs: Number(arg('--warm-every')) * 1000 } : {}), ...(arg('--warm-poll') ? { pollMs: Number(arg('--warm-poll')) * 1000 } : {}), ...(arg('--warm-langs') ? { langs: arg('--warm-langs').split(',').filter(Boolean) } : {}) } : false, learnBorrow: !args.includes('--no-learn-borrow'), codeShare: !args.includes('--no-code-share'), homePreload: !args.includes('--no-home-preload'),
+  // (--builds <dir>: the frozen builds of the page's code, default <learn>/../builds — off without --learn, or with `off`)
+  const buildsArg = arg('--builds'), buildsDir = buildsArg === 'off' ? null : buildsArg ?? (learnDir ? path.join(learnDir, '..', 'builds') : null);
+  const server = createServer({ prewarmSrc: true, buildsDir, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), warmJobs: args.includes('--warm-jobs') ? { ...(arg('--warm-only') ? { only: arg('--warm-only').split(',') } : {}), ...(arg('--warm-delay') ? { delayMs: Number(arg('--warm-delay')) * 1000 } : {}), ...(arg('--warm-every') ? { everyMs: Number(arg('--warm-every')) * 1000 } : {}), ...(arg('--warm-poll') ? { pollMs: Number(arg('--warm-poll')) * 1000 } : {}), ...(arg('--warm-langs') ? { langs: arg('--warm-langs').split(',').filter(Boolean) } : {}) } : false, learnBorrow: !args.includes('--no-learn-borrow'), codeShare: !args.includes('--no-code-share'), homePreload: !args.includes('--no-home-preload'),
     // (--no-content-twins: files identical by content not looked for, /api/twins empty)
     contentTwins: !args.includes('--no-content-twins') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));

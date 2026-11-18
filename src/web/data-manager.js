@@ -379,7 +379,7 @@ const brandTitle = h('strong', { id: 'dmTitle' }), brandSub = h('span'), sideNot
 const winPage = !!document.getElementById('dmParking');
 const parking = document.getElementById('dmParking') ?? document.body.appendChild(h('div', { id: 'dmParking', hidden: true }, h('input', { type: 'checkbox', id: 'offlineToggle' }), h('input', { type: 'checkbox', id: 'logToggle' })));
 dialog.append(h('div', { class: 'dm-shell' },
-  h('aside', { class: 'dm-side' }, h('div', { class: 'dm-brand' }, h('img', { src: '/src/web/orthros_logo.png', alt: '', width: 140, height: 143 }), h('div', {}, brandTitle, brandSub)), nav, sideNote),
+  h('aside', { class: 'dm-side' }, h('div', { class: 'dm-brand' }, h('img', { src: new URL('./orthros_logo.png', import.meta.url).href, alt: '', width: 140, height: 143 }), h('div', {}, brandTitle, brandSub)), nav, sideNote),
   h('section', { class: 'dm-main' }, closeBtn, content, status, asking)));
 closeBtn.append(icon('close'));
 document.body.append(dialog);
