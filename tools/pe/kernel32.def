@@ -105,3 +105,11 @@ CreateEventExA@16
 CreateMutexExA@16
 InitializeCriticalSectionEx@12
 OrthrosNoSuchFunction@0
+CreateWaitableTimerA@12
+SetWaitableTimer@24
+CancelWaitableTimer@4
+SleepEx@8
+WaitForSingleObjectEx@12
+QueueUserAPC@12
+GetSystemTimeAsFileTime@4
+GetCurrentThread@0

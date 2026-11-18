@@ -4,7 +4,7 @@ import { snapKnown } from '../core/snapshot.js';
 import { SIGNATURES } from './signatures.js';
 import { E } from './errors.js';
 import { TS, PEB_ADDR, TEB_TLS_SLOTS } from './process.js';
-import { INFINITE, WAIT_OBJECT_0, WAIT_ABANDONED, WAIT_TIMEOUT, WAIT_FAILED, PARK } from '../core/sched.js';
+import { INFINITE, WAIT_OBJECT_0, WAIT_ABANDONED, WAIT_IO_COMPLETION, WAIT_TIMEOUT, WAIT_FAILED, PARK } from '../core/sched.js';
 import { MEM_COMMIT, MEM_RESERVE, MEM_DECOMMIT, MEM_RELEASE, PAGE_READWRITE, PAGE_NOACCESS, MEM_TOP_DOWN } from './vmem.js';
 import { findResource } from '../loader/pe.js';
 import { registerKernel32File } from './kernel32-file.js';
@@ -44,6 +44,81 @@ export class Mutex {
   close() { if (!this.stateAddr) return; const w = this.w.slice(this.i, this.i + 4); this.states.release(this.stateAddr); this.stateAddr = 0; this.w = w; this.i = 0; }
 }
 
+/**
+ * A waitable timer (CreateWaitableTimer(Ex), SetWaitableTimer(Ex)). Set, it expires at `due` (VM clock ms): the first
+ * clock interrupt at or after its due time (core/timer-res.js, as the kernel checks its timers; exactly at it for a
+ * high-resolution timer, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION), at once for a due time already past (KeSetTimer). The
+ * expiry is evaluated where it can be observed — a wait or a poll of the timer (isSignaled), every scheduling pass
+ * (Scheduler.expireTimers: a thread parked on it, or in an alertable wait for its completion routine) — so that the
+ * guest sees it as if it happened at its time. Then the timer is signaled (a manual-reset one until it is set again, a
+ * synchronization one until a wait takes it), its completion routine is queued as an APC to the thread that set it (one
+ * at a time: Windows' timer holds a single APC object; it runs when that thread waits alertably, with the time of the
+ * expiry as a FILETIME), and a periodic one is armed again `period` ms after its previous due time — the periods missed
+ * while nothing could observe it make one expiry, as on a busy single processor. Armed, it is in its process's `timers`
+ * (`kind` 'waitable': the scheduler's next wake-up). Before 2026-11-18 SetWaitableTimer recorded the due time and
+ * nothing ever signaled the timer: a wait on one never ended (or timed out).
+ */
+export class WaitableTimer {
+  /** @param {boolean} manual @param {boolean} hires */
+  constructor(manual, hires) {
+    this.type = 'timer'; this.kind = 'waitable';
+    this.manual = manual; this.hires = hires; this.signaled = false;
+    this.due = Infinity; this.next = 0; this.period = 0; // (the expiry on the VM clock; the nominal due time; ms)
+    this.apc = 0; this.apcArg = 0; this.apcThread = null; this.apcQueued = false; // (the completion routine and its thread)
+    this.armedIn = null; // (the process whose `timers` hold it while it is set)
+    this.refs = 0; this.name = undefined; this.handle = undefined;
+  }
+  /** expire it if due at VM clock time `now` (see above) */
+  expire(vm, now) {
+    if (!(this.due <= now)) return;
+    const t = this.apcThread;
+    if (this.apc && t?.state === TS.DONE) { this.cancel(); return; } // (the thread that set it has ended: Windows cancels such a timer)
+    this.signaled = true;
+    if (this.apc && t && !this.apcQueued) {
+      this.apcQueued = true;
+      const ft = msToFiletime(vm.clock.wall() - vm.clock.now() + this.due);
+      t.apcQueue.push({ fn: this.apc, args: [this.apcArg, Number(ft & 0xffffffffn), Number(ft >> 32n)], timer: this });
+    }
+    if (this.period > 0) {
+      this.next += this.period * (Math.floor((now - this.next) / this.period) + 1);
+      this.due = this.hires || !vm.timerRes ? this.next : vm.timerRes.tickAt(this.next);
+    } else this.disarm();
+  }
+  /** set: due at VM clock time `at` (nominal), every `period` ms; `apc` queued to `thread` at each expiry */
+  arm(vm, proc, at, period, apc, apcArg, thread) {
+    this.cancel();
+    const now = vm.clock.now();
+    this.signaled = false; this.next = at; this.period = period;
+    this.due = at <= now ? now : this.hires || !vm.timerRes ? at : vm.timerRes.tickAt(at);
+    this.apc = apc; this.apcArg = apcArg; this.apcThread = apc ? thread : null;
+    this.armedIn = proc; proc.timers.push(this); proc.waitableArmed++;
+  }
+  /** stopped (CancelWaitableTimer, set again, its last handle closed): its signaled state kept, its queued APC withdrawn */
+  cancel() {
+    this.disarm();
+    if (this.apcQueued) { const q = this.apcThread?.apcQueue ?? [], i = q.findIndex((a) => a.timer === this); if (i >= 0) q.splice(i, 1); this.apcQueued = false; }
+  }
+  disarm() {
+    this.due = Infinity;
+    const p = this.armedIn; if (!p) return;
+    this.armedIn = null; p.waitableArmed--;
+    const i = p.timers.indexOf(this); if (i >= 0) p.timers.splice(i, 1);
+  }
+  /** its last handle closed: the timer object is deleted (Windows cancels it) */
+  close() { this.cancel(); }
+}
+
+/**
+ * An alertable wait ended for the user APCs queued to `thread` (QueueUserAPC, a waitable timer's completion routine):
+ * they run, in order, on that thread (the wait returns WAIT_IO_COMPLETION). A timer's APC object is free again once its
+ * routine is called.
+ */
+export function runUserApcs(vm, thread) {
+  while (thread.apcQueue.length) { const a = thread.apcQueue.shift(); if (a.timer) a.timer.apcQueued = false; vm.callGuest(thread, a.fn, a.args); }
+}
+/** `t` has user APCs queued, the waitable timers due by now having queued theirs: an alertable wait's first test */
+export function userApcsDue(vm, t) { vm.sched.expireTimers(vm.clock.now()); return t.apcQueue.length > 0; }
+
 /** Object signaled state for waits. */
 export function isSignaled(obj, thread) {
   switch (obj.type) {
@@ -52,7 +127,7 @@ export function isSignaled(obj, thread) {
     case 'semaphore': return obj.count > 0;
     case 'thread': return obj.state === TS.DONE;
     case 'process': return obj.exited;
-    case 'timer': return obj.signaled;
+    case 'timer': if (obj.due !== Infinity) obj.expire(thread.vm, thread.vm.clock.now()); return obj.signaled; // (an expiry not yet seen: WaitableTimer)
     case 'file': return true;
     default: return true;
   }
@@ -422,8 +497,20 @@ export function registerKernel32(api, vm) {
   const paceWoke = (t, st) => { st.paceLast = vm.clock.now(); st.paceApi = t.apiCalls; };
   function NEVER() { return false; } // (a sleep's wake condition: the timeout alone)
   K.Sleep = [1, (c) => sleep(c, c.arg(0))]; // (undefined, or PARK: the thread parks)
-  K.SleepEx = [2, (c) => (sleep(c, c.arg(0)) === PARK ? PARK : 0)];
-  K.QueueUserAPC = [3, (c) => { const t = c.proc.handles.getAs(c.arg(1), 'thread'); if (!t) return 0; t.apcQueue.push({ fn: c.arg(0), arg: c.arg(2) }); return 1; }];
+  // SleepEx(ms, bAlertable): alertable, the thread's queued APCs (QueueUserAPC, a waitable timer's completion routine)
+  // end the sleep — those queued before it at once — and run in it: WAIT_IO_COMPLETION. (Before 2026-11-18 it was Sleep:
+  // no APC ever ran in it.)
+  K.SleepEx = [2, (c) => {
+    const t = c.thread, ms = c.arg(0);
+    if (!c.arg(1)) return sleep(c, ms) === PARK ? PARK : 0;
+    if (t.wakeResult === undefined && apcsDue(t)) { runApcs(c); return WAIT_IO_COMPLETION; }
+    if (ms === 0) return sleep(c, 0) === PARK ? PARK : 0; // (a yield, as Sleep(0); its re-executed call comes here too)
+    const r = vm.sched.park(t, () => t.apcQueue.length > 0, ms === INFINITE ? INFINITE : ms, 'sleep', undefined, true);
+    if (r === PARK) return PARK;
+    if (r && t.apcQueue.length) { runApcs(c); return WAIT_IO_COMPLETION; }
+    return 0;
+  }];
+  K.QueueUserAPC = [3, (c) => { const t = (c.arg(1) >>> 0) === 0xfffffffe ? c.thread : c.proc.handles.getAs(c.arg(1), 'thread'); if (!t) return c.fail(E.INVALID_HANDLE); t.apcQueue.push({ fn: c.arg(0), args: [c.arg(2)], timer: null }); return 1; }]; // (GetCurrentThread's pseudo handle too)
 
   // TLS
   K.TlsAlloc = [0, (c) => {
@@ -511,16 +598,31 @@ export function registerKernel32(api, vm) {
   K.OpenSemaphoreA = [3, (c) => openNamed(c, c.str(2), 'semaphore')];
   K.OpenSemaphoreW = [3, (c) => openNamed(c, c.wstr(2), 'semaphore')];
   K.ReleaseSemaphore = [3, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'semaphore'); if (!o) return c.fail(E.INVALID_HANDLE); c.out32(2, o.count); if (o.count + c.sarg(1) > o.max) return c.fail(298); o.count += c.sarg(1); signalAll(); return 1; }];
-  K.CreateWaitableTimerA = [3, (c) => createNamed(c, c.str(2), () => ({ type: 'timer', manual: c.arg(1) !== 0, signaled: false, due: Infinity, period: 0 }))];
-  K.SetWaitableTimer = [6, (c) => {
+  // Waitable timers (WaitableTimer above). CreateWaitableTimer(sa, bManualReset, name); the Ex form's flags:
+  // CREATE_WAITABLE_TIMER_MANUAL_RESET 1, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 2.
+  K.CreateWaitableTimerA = [3, (c) => createNamed(c, c.str(2), () => new WaitableTimer(c.arg(1) !== 0, false), c.arg(0))];
+  K.CreateWaitableTimerW = [3, (c) => createNamed(c, c.wstr(2), () => new WaitableTimer(c.arg(1) !== 0, false), c.arg(0))];
+  K.CreateWaitableTimerExA = [4, (c) => createNamed(c, c.str(1), () => new WaitableTimer((c.arg(2) & 1) !== 0, (c.arg(2) & 2) !== 0), c.arg(0))];
+  K.CreateWaitableTimerExW = [4, (c) => createNamed(c, c.wstr(1), () => new WaitableTimer((c.arg(2) & 1) !== 0, (c.arg(2) & 2) !== 0), c.arg(0))];
+  K.OpenWaitableTimerA = [3, (c) => openNamed(c, c.str(2), 'timer')];
+  K.OpenWaitableTimerW = [3, (c) => openNamed(c, c.wstr(2), 'timer')];
+  /**
+   * SetWaitableTimer(h, pDueTime, lPeriod, pfnCompletionRoutine, lpArg, fResume) (Ex: WakeContext, TolerableDelay instead
+   * of fResume): a due time below zero is relative, in 100 ns units; zero or above, an absolute UTC FILETIME (the system
+   * time GetSystemTimeAsFileTime reads). The timer is stopped first and left non-signaled, its queued APC withdrawn.
+   */
+  const setTimer = (c) => {
     const o = c.proc.handles.getAs(c.arg(0), 'timer'); if (!o) return c.fail(E.INVALID_HANDLE);
-    const due = mem.dv.getBigInt64(c.arg(1), true); const now = vm.clock.now();
-    o.due = due < 0n ? now + Number(-due) / 10000 : filetimeToMs(due) - vm.clock.wall() + now;
-    o.period = c.sarg(2); o.signaled = false;
-    c.proc.timers.push({ due: o.due, timer: o, kind: 'waitable' });
+    const period = c.sarg(2);
+    if (!c.arg(1) || period < 0) return c.fail(E.INVALID_PARAMETER);
+    const due = mem.dv.getBigInt64(c.arg(1), true), now = vm.clock.now();
+    o.arm(vm, c.proc, due < 0n ? now + Number(-due) / 10000 : filetimeToMs(due) - vm.clock.wall() + now, period, c.arg(3), c.arg(4), c.thread);
+    c.setLastError(0);
     return 1;
-  }];
-  K.CancelWaitableTimer = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'timer'); if (!o) return c.fail(E.INVALID_HANDLE); o.due = Infinity; c.proc.timers = c.proc.timers.filter((t) => t.timer !== o); return 1; }];
+  };
+  K.SetWaitableTimer = [6, setTimer];
+  K.SetWaitableTimerEx = [7, setTimer];
+  K.CancelWaitableTimer = [1, (c) => { const o = c.proc.handles.getAs(c.arg(0), 'timer'); if (!o) return c.fail(E.INVALID_HANDLE); o.cancel(); return 1; }];
 
   // Waits claim their object at wake-up time (sched.block `claim`): a released mutex goes to the parked waiter
   // before the releasing thread can take it back, and never to a second thread in between.
@@ -536,17 +638,20 @@ export function registerKernel32(api, vm) {
     // the common case, an object already available (an uncontended mutex): taken at once, no wait record (block's
     // own first test, without the closures it needs to park the thread)
     // (a poll, timeout 0, of an object not signaled: WAIT_TIMEOUT at once, likewise)
-    if (t.wakeResult === undefined && !(alertable && t.apcQueue.length)) { if (isSignaled(o, t)) return consumeSignal(o, t); if (ms === 0) return WAIT_TIMEOUT; }
+    if (t.wakeResult === undefined && !(alertable && apcsDue(t))) { if (isSignaled(o, t)) return consumeSignal(o, t); if (ms === 0) return WAIT_TIMEOUT; }
     const to = ms === INFINITE ? INFINITE : ms;
     if (o.type === 'mutex' && t.wakeResult === undefined) o.waiters = true; // (about to park: releases go through JavaScript)
     const ok = vm.sched.park(t, () => isSignaled(o, t) || (alertable && t.apcQueue.length > 0), to, o.waitReason ??= `wait:${o.type} 0x${(o.handle ?? 0).toString(16)}`,
-      () => (isSignaled(o, t) ? consumeSignal(o, t) : 0xc0), true);
+      () => (isSignaled(o, t) ? consumeSignal(o, t) : WAIT_IO_COMPLETION), true);
     if (ok === PARK) return PARK; // (the thread parks: the handlers return it to the dispatcher)
-    if (alertable && t.apcQueue.length) runApcs(c);
     if (!ok) return WAIT_TIMEOUT;
+    if (t.wakeValue === WAIT_IO_COMPLETION) runApcs(c);
     return t.wakeValue;
   };
-  const runApcs = (c) => { while (c.thread.apcQueue.length) { const a = c.thread.apcQueue.shift(); vm.callGuest(c.thread, a.fn, [a.arg]); } };
+  // (the APCs run when the wait ends for them; an object signaled as well wins — Windows tests the objects first —
+  // and the APCs stay queued for the next alertable wait)
+  const runApcs = (c) => runUserApcs(vm, c.thread);
+  const apcsDue = (t) => userApcsDue(vm, t);
   K.WaitForSingleObject = [2, (c) => waitOne(c, c.arg(0), c.arg(1), false)];
   K.WaitForSingleObjectEx = [3, (c) => waitOne(c, c.arg(0), c.arg(1), c.arg(2) !== 0)];
   const waitMany = (c, n, ph, all, ms, alertable) => {
@@ -557,14 +662,15 @@ export function registerKernel32(api, vm) {
     // (plain loops: the condition is evaluated at every scheduling pass while the thread is parked)
     const ready = () => { if (all) { for (let i = 0; i < objs.length; i++) if (!isSignaled(objs[i], t)) return false; return true; } for (let i = 0; i < objs.length; i++) if (isSignaled(objs[i], t)) return true; return false; };
     const claim = () => {
-      if (!ready()) return 0xc0; // alertable wake-up for APCs
+      if (!ready()) return WAIT_IO_COMPLETION; // alertable wake-up for APCs
       if (all) { let r = WAIT_OBJECT_0; for (const o of objs) { const rr = consumeSignal(o, t); if (rr === WAIT_ABANDONED) r = WAIT_ABANDONED; } return r; }
       let i = 0; while (!isSignaled(objs[i], t)) i++;
       return consumeSignal(objs[i], t) + i;
     };
+    if (alertable && t.wakeResult === undefined) apcsDue(t); // (the waitable timers due by now: their APCs queued)
     const ok = vm.sched.block(t, () => ready() || (alertable && t.apcQueue.length > 0), ms === INFINITE ? INFINITE : ms, 'waitmany', claim, true);
-    if (alertable && t.apcQueue.length) runApcs(c);
     if (!ok) return WAIT_TIMEOUT;
+    if (t.wakeValue === WAIT_IO_COMPLETION) runApcs(c);
     return t.wakeValue;
   };
   K.WaitForMultipleObjects = [4, (c) => waitMany(c, c.arg(0), c.arg(1), c.arg(2) !== 0, c.arg(3), false)];
@@ -936,7 +1042,6 @@ export function registerKernel32(api, vm) {
   K.CreateMutexExW = [4, (c) => createNamed(c, c.wstr(1), () => new Mutex(mutexStates, c.arg(2) & 1 ? c.thread.id : 0), c.arg(0))];
   K.CreateSemaphoreExA = [6, (c) => createNamed(c, c.str(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }), c.arg(0))];
   K.CreateSemaphoreExW = [6, (c) => createNamed(c, c.wstr(3), () => ({ type: 'semaphore', count: c.sarg(1), max: c.sarg(2) }), c.arg(0))];
-  K.CreateWaitableTimerExW = [4, (c) => createNamed(c, c.wstr(1), () => ({ type: 'timer', manual: (c.arg(2) & 1) !== 0, signaled: false, due: Infinity, period: 0 }))];
   K.InitializeCriticalSectionEx = [3, (c) => { K.InitializeCriticalSection[1](c); mem.write32(c.arg(0) + 20, c.arg(1) & 0xffffff); return 1; }];
   // Encode/DecodePointer: the pointer XORed with a per-process cookie and rotated right by its low 5 bits, as Windows
   // does; the cookie is fixed per process id here (a run repeats itself; Windows draws it at random)

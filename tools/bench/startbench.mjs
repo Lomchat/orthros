@@ -258,7 +258,7 @@ const report = (why) => {
   { const u = [...(vm.proc?.unknownImports ?? [])]; if (u.length) console.log(`[unknown] ${u.length} unimplemented imports; called: ${u.filter(([, v]) => v.calls).sort((a, b) => b[1].calls - a[1].calls).map(([k, v]) => `${k} x${v.calls} (${v.from})`).join(', ') || 'none'}`); }
   if (vm.sleepSites) console.log(`[sleeps] Sleep(0) call sites: ${[...vm.sleepSites].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(', ')}`);
   if (args.includes('--sleeps')) console.log(`[sleeps] threads: ${(vm.proc?.threads ?? []).map((t) => `t${t.id} prio ${t.priority ?? 0} ${['ready', 'running', 'blocked', 'suspended', 'done'][t.state] ?? t.state}${t.blockReason ? ` [${typeof t.blockReason === 'function' ? t.blockReason() : t.blockReason}]` : ''}`).join(', ')}`);
-  for (const t of vm.proc?.threads ?? []) if (t.peekIdle) { const s = t.peekIdle; console.log(`[peekidle] t${t.id}: ${s.parks} waits (${s.longParks} long), polling ended ${s.ends} times (${s.cut} right after a wait), wait overshoot ${s.over.toFixed(2)} ms, interval min ${s.ivs.length ? Math.min(...s.ivs).toFixed(2) : '-'} of [${s.ivs.map((x) => x.toFixed(1)).join(' ')}] ms, spins near the expected end ${s.near}, ends after it ${s.late} (by ${(s.lateMs / Math.max(1, s.late)).toFixed(2)} ms), streaks broken by guest work ${s.loose}${s.hist ? `, guest instructions between calls (log2 histogram) ${s.hist.map((n, i) => n ? `2^${i}:${n}` : '').filter(Boolean).join(' ')}` : ''}`); }
+  for (const t of vm.proc?.threads ?? []) if (t.pollIdle) { const s = t.pollIdle; console.log(`[pollidle] t${t.id}: ${s.parks} waits (${s.longParks} long), polling ended ${s.ends} times (${s.cut} right after a wait), wait overshoot ${s.over.toFixed(2)} ms, interval min ${s.ivs.length ? Math.min(...s.ivs).toFixed(2) : '-'} of [${s.ivs.map((x) => x.toFixed(1)).join(' ')}] ms, spins near the expected end ${s.near}, ends after it ${s.late} (by ${(s.lateMs / Math.max(1, s.late)).toFixed(2)} ms), streaks broken by guest work ${s.loose}, no wait for a ready thread of its priority ${s.busy ?? 0}${s.hist ? `, guest instructions between calls (log2 histogram) ${s.hist.map((n, i) => n ? `2^${i}:${n}` : '').filter(Boolean).join(' ')}` : ''}`); }
   for (const l of vm.peekReport()) console.log(l);
   // (--bg: the background translator's work — the learned regions translated ahead, as the page's "regions:" line)
   for (const v of vm.group?.vms ?? [vm]) if (v.jit?.bg) { const b = v.jit.bg; console.log(`[bg] ${v.proc?.exe?.name ?? '?'}: ${b.sent} sent, ${b.installed} installed, ${b.rejected} dropped, ${b.covered} skipped; ${Math.round(b.bgMs)} ms there (${Math.round(b.translateMs)} translating, ${Math.round(b.compileMs)} compiling); misses here ${v.jit.stats.misses}, ${v.jit.stats.regions} regions translated here in ${Math.round(v.jit.stats.translateMs)} ms`); }
@@ -307,12 +307,14 @@ const stallTick = (t, th) => {
   console.log(`[stall] ${vm.threadsReport().split('\nsync objects')[0].replace(/\n/g, '\n[stall]   ')}`);
   s.hist.clear(); s.g0 = vm.guestInsns; s.lastAt = now;
 };
-// --threads: guest instructions per thread (nested runs charged to the outermost), with the report
+// --threads: guest instructions per thread (nested runs charged to the outermost), with the report (with --child, the
+// child processes' threads too)
 const threadInsns = args.includes('--threads') ? new Map() : null;
-if (threadInsns) {
-  const runThread = vm.runThread.bind(vm);
-  vm.runThread = (t, o) => { const g0 = vm.guestInsns; try { return runThread(t, o); } finally { if (t.onStack === 0) threadInsns.set(t.id, (threadInsns.get(t.id) ?? 0) + vm.guestInsns - g0); } };
-}
+const countThreads = (v) => {
+  const runThread = v.runThread.bind(v);
+  v.runThread = (t, o) => { const g0 = v.guestInsns; try { return runThread(t, o); } finally { if (t.onStack === 0) threadInsns.set(t.id, (threadInsns.get(t.id) ?? 0) + v.guestInsns - g0); } };
+};
+if (threadInsns) countThreads(vm);
 const dispatch = (v, t, i) => Vm.prototype.dispatchThunk.call(v, t, i);
 let apiSeq = opt('api-seq') ? (([n, at]) => ({ n: Number(n), at: Number(at ?? 0), list: [], fast: 0 }))(opt('api-seq').split('@')) : null;
 let d3dLog = 0; // (--d3d-log: Direct3D frames and draws every 5 s)
@@ -466,6 +468,7 @@ if (args.includes('--child')) {
     vm = c; globalThis.__vm = c; jitSetup(c); heatModules = -1; // (the scenario follows the foreground process by itself)
     if (bgWanted && c.jit) attachBg(c); // (its own background translator, fed the learned regions of its modules)
     c.dispatchThunk = (t, i) => onThunk(c, t, i);
+    if (threadInsns) countThreads(c);
     console.log(`[child] following ${o?.exePath ?? 'a child process'}`);
     return c;
   };

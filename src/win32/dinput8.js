@@ -5,8 +5,10 @@ import { snapClass } from '../core/snapshot.js';
 import { Com, readGuid, writeGuid, S_OK, S_FALSE, E_NOTIMPL, E_POINTER, E_INVALIDARG } from './com.js';
 import { wmOf } from './user32.js';
 import { TICK_BASE } from '../cpu/jit/runtime.js';
+import { PARK } from '../core/sched.js';
+import { pollWait, pollFound } from './poll-idle.js';
 
-const DI_OK = 0, DI_NOTATTACHED = 1, DI_BUFFEROVERFLOW = 1, DIERR_INPUTLOST = 0x8007001e, DIERR_NOTACQUIRED = 0x8007000c, DIERR_NOTINITIALIZED = 0x80070015, DIERR_INVALIDPARAM = 0x80070057, DIERR_DEVICENOTREG = 0x80040154, DIERR_UNSUPPORTED = 0x80004001, DIERR_ACQUIRED = 0x800700aa, DIERR_OTHERAPPHASPRIO = 0x80070005;
+const DI_OK = 0, DI_NOTATTACHED = 1, DI_BUFFEROVERFLOW = 1, DI_NOEFFECT = 1, DIERR_INPUTLOST = 0x8007001e, DIERR_NOTACQUIRED = 0x8007000c, DIERR_NOTINITIALIZED = 0x80070015, DIERR_INVALIDPARAM = 0x80070057, DIERR_DEVICENOTREG = 0x80040154, DIERR_UNSUPPORTED = 0x80004001, DIERR_ACQUIRED = 0x800700aa, DIERR_OTHERAPPHASPRIO = 0x80070005;
 const GUID_SysKeyboard = '6f1d2b61-d5a0-11cf-bfc7-444553540000', GUID_SysMouse = '6f1d2b60-d5a0-11cf-bfc7-444553540000';
 const GUID_XAxis = 'a36d02e0-c9f3-11cf-bfc7-444553540000', GUID_YAxis = 'a36d02e1-c9f3-11cf-bfc7-444553540000', GUID_ZAxis = 'a36d02e2-c9f3-11cf-bfc7-444553540000', GUID_Button = 'a36d02f0-c9f3-11cf-bfc7-444553540000', GUID_Key = '55728220-d33c-11cf-bfc7-444553540000';
 const IID_IDirectInput8A = 'bf798030-483a-4da2-aa99-5d64ed369700', IID_IDirectInput8W = 'bf798031-483a-4da2-aa99-5d64ed369700';
@@ -50,6 +52,9 @@ export function registerDirectInput(api, vm) {
       this.keys = new Uint8Array(256); // DIK state (0x80 = down)
       this.mouse = { x: 0, y: 0, z: 0, buttons: new Uint8Array(8), absX: 0, absY: 0 }; // accumulated relative motion since the last GetDeviceState
       this.event = 0;
+      // (polling, win32/poll-idle.js: the device's input events so far, and their number at its last poll — a poll that
+      // finds none new is empty, and a polling wait ends when one comes)
+      this.inputs = 0; this.seen = 0;
       wmOf(vm).rawListeners.push(this); // (a listener: its onRaw(ev) — an object, kept in snapshots)
     }
     /**
@@ -58,6 +63,20 @@ export function registerDirectInput(api, vm) {
      * frame, sees the motion so far.
      */
     takeInput() { wmOf(vm).pump(); }
+    /** buffered data is there (the host's pending input taken first) */
+    buffered() { this.takeInput(); return this.queue.length > 0; }
+    /** the device's state changed since its last read (GetDeviceState, GetDeviceData) */
+    changed() { this.takeInput(); return this.inputs !== this.seen; }
+    /** either: what the next read would find */
+    fresh() { return this.changed() || this.queue.length > 0; }
+    /**
+     * A poll of the device that found nothing new (Acquire of an acquired device, GetDeviceData without data,
+     * GetDeviceState of an unchanged state, Poll): when the thread polls in a loop (a video player polling the keyboard
+     * for a key that skips the movie: Age of the Ring's intro, ~12 000 Acquire + GetDeviceData per frame), the call
+     * waits a little, woken once `ready` holds — the device's input (win32/poll-idle.js, shared with PeekMessage).
+     * PARK: the handler returns it (the call runs again once woken).
+     */
+    idle(c, ready) { return pollWait(vm, c, ready); }
     destroy() { if (this.kind === 'mouse') wmOf(vm).cursorHiddenBy(this, false); const l = wmOf(vm).rawListeners; const i = l.indexOf(this); if (i >= 0) l.splice(i, 1); }
     push(ofs, data) {
       if (!this.bufferSize) return;
@@ -74,21 +93,22 @@ export function registerDirectInput(api, vm) {
         scan &= 0xff; if (!scan) return;
         const down = ev.type === 'keydown';
         if (down && this.keys[scan]) return; // key repeat: no new DirectInput event
-        this.keys[scan] = down ? 0x80 : 0;
+        this.keys[scan] = down ? 0x80 : 0; this.inputs++;
         if (this.acquired) this.push(scan, down ? 0x80 : 0);
         return;
       }
       switch (ev.type) {
         case 'mousemove': {
           const dx = ev.dx | 0, dy = ev.dy | 0;
+          if (dx || dy || ev.x !== this.mouse.absX || ev.y !== this.mouse.absY) this.inputs++;
           this.mouse.absX = ev.x; this.mouse.absY = ev.y;
           if (dx) { this.mouse.x += dx; if (this.acquired) this.push(0, this.axisMode === DIPROPAXISMODE_ABS ? ev.x : dx); }
           if (dy) { this.mouse.y += dy; if (this.acquired) this.push(4, this.axisMode === DIPROPAXISMODE_ABS ? ev.y : dy); }
           break;
         }
-        case 'wheel': { const d = (ev.delta * 120) | 0; this.mouse.z += d; if (this.acquired) this.push(8, d); break; }
+        case 'wheel': { const d = (ev.delta * 120) | 0; this.mouse.z += d; this.inputs++; if (this.acquired) this.push(8, d); break; }
         case 'mousedown': case 'mouseup': {
-          const b = Math.min(7, ev.button | 0); const down = ev.type === 'mousedown';
+          const b = Math.min(7, ev.button | 0); const down = ev.type === 'mousedown'; this.inputs++;
           this.mouse.buttons[b] = down ? 0x80 : 0;
           if (this.acquired) this.push(12 + b, down ? 0x80 : 0);
           break;
@@ -153,9 +173,9 @@ export function registerDirectInput(api, vm) {
       }
       return DIERR_UNSUPPORTED;
     }
-    Acquire() {
+    Acquire(c) {
       if (!this.format) return DIERR_INVALIDPARAM;
-      if (this.acquired) return S_FALSE;
+      if (this.acquired) return !this.fresh() && this.idle(c, () => this.fresh()) === PARK ? PARK : S_FALSE; // (a loop re-acquiring before each read: a poll)
       this.acquired = true; this.queue.length = 0; this.overflow = false;
       this.mouse.x = this.mouse.y = this.mouse.z = 0;
       vm.log('input', `dinput: ${this.kind} acquired (coop ${this.coop.toString(16)})`);
@@ -174,7 +194,9 @@ export function registerDirectInput(api, vm) {
       if (!this.format) return DIERR_INVALIDPARAM;
       if (!this.acquired) return DIERR_NOTACQUIRED;
       if (!p || size !== this.format.size) return DIERR_INVALIDPARAM; // (the buffer is the data format's size exactly, as DirectInput checks)
-      this.takeInput(); if (this.kind === 'mouse') wmOf(vm).mouseStats.diState++;
+      if (this.changed()) pollFound(c.thread); else if (this.idle(c, () => this.changed()) === PARK) return PARK;
+      this.seen = this.inputs;
+      if (this.kind === 'mouse') wmOf(vm).mouseStats.diState++;
       mem.fill(p, size, 0);
       if (this.kind === 'keyboard') { mem.writeBytes(p, this.keys.subarray(0, Math.min(256, size))); return DI_OK; }
       const m = this.mouse;
@@ -190,7 +212,8 @@ export function registerDirectInput(api, vm) {
       if (!this.acquired) return DIERR_NOTACQUIRED;
       if (!this.bufferSize) return DIERR_NOTINITIALIZED;
       if (cbData !== 16 && cbData !== 20) return DIERR_INVALIDPARAM;
-      this.takeInput();
+      if (this.buffered() || this.overflow) pollFound(c.thread); else if (this.idle(c, () => this.buffered()) === PARK) return PARK;
+      this.seen = this.inputs;
       const max = mem.read32(pInOut);
       const n = Math.min(max, this.queue.length);
       if (this.kind === 'mouse') { const st = wmOf(vm).mouseStats; st.diData++; if (rgdod) st.diItems += n; }
@@ -260,7 +283,8 @@ export function registerDirectInput(api, vm) {
     SendForceFeedbackCommand() { return DIERR_UNSUPPORTED; }
     EnumCreatedEffectObjects() { return DI_OK; }
     Escape() { return DIERR_UNSUPPORTED; }
-    Poll() { if (!this.acquired) return DIERR_NOTACQUIRED; this.takeInput(); return DI_OK; }
+    // (DI_NOEFFECT: a keyboard or a mouse does not need polling — what DirectInput answers for them; a poll all the same)
+    Poll(c) { if (!this.acquired) return DIERR_NOTACQUIRED; return !this.fresh() && this.idle(c, () => this.fresh()) === PARK ? PARK : DI_NOEFFECT; }
     SendDeviceData() { return DIERR_UNSUPPORTED; }
     BuildActionMap() { return DI_OK; }
     SetActionMap() { return DI_OK; }

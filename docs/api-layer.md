@@ -274,7 +274,7 @@ docs/frame-accounting.md "CPU margin along a skirmish".) What the profile did fi
   transient): 490 → 51 ns per failing call (tools: a dispatch loop of one failing method, 5 alternated runs).
   tests/com-object-refs.test.js.
 
-## PeekMessage polling: pacing that now waits (src/win32/user32.js, peekIdle)
+## PeekMessage polling: pacing that now waits (src/win32/poll-idle.js since 2026-11-18; user32.js peekIdle before)
 
 Vice City's `api` time (19.5 ms per frame on the owner's PC, 17-19 ms here, 60 % of the emulator thread) was not
 Direct3D work: its frame limiter calls `PeekMessage` (and `QueryPerformanceCounter`, on the WASM fast path) in a loop
@@ -320,6 +320,43 @@ frames, p50 33.3 both. What remains of `api` in the browser: `DrawIndexedPrimiti
 render-worker recording (~2.4 ms; recording 1.3 ms of it by `ORTHROS_REC_TIME`), `PeekMessage` spinning near the
 expected end (~1 ms), buffer locks, DirectSound. BFME2 play (no such polling: no wait taken): unchanged (30.2 fps both,
 `api` 4.4 / 4.3 ms).
+
+## DirectInput polling waits too (src/win32/poll-idle.js, 2026-11-18)
+
+An audit of the owner's telemetry (2026-11-18): Age of the Ring's intro movies (1024x640 Bink, 24-25 fps) kept the
+emulator worker busy 91 % (work 38.6 ms per frame: guest 24.0, `api` 12.9), no wait. In Node (`startbench.mjs aotr-10
+--child`, a scenario of the intro: phases +4..+14 s and +14..+24 s after the first frame) the main thread re-acquires and
+reads the keyboard — game.dat+0x984b4: `Acquire`, then `GetDeviceData` of one event, nothing there — ~12 300 times per
+frame, 2-4 K guest instructions and a `timeGetTime` (JIT fast path) per pair, until the next picture is due; no other
+call between: PeekMessage's polling detection never saw it.
+
+**Decision.** PeekMessage's detection (user32.js `peekIdle`) became a module shared by every polling API,
+`poll-idle.js` (`pollIdle`, `pollWait`, `pollFound`; the thread's `pollIdle` state): an empty poll of a thread — a
+PeekMessage without a message, and DirectInput's `Acquire` of an acquired device, `GetDeviceData` without data,
+`GetDeviceState` of an unchanged state, `Poll` (which now answers DI_NOEFFECT, as DirectInput does for keyboards and
+mice) — counts, and the polls of all of them make one chain; a DirectInput wait ends at once on the device's input.
+Three changes to the shared logic, each found on this intro:
+- no wait only while a ready thread of the poller's priority or above (`hasYieldTarget`, as the Sleep(0) throttle) would
+  get the processor: the intro has a THREAD_PRIORITY_BELOW_NORMAL worker ready most of the time, and counted
+  (`hasRunnable`) it refused 5.5 M waits in 12 s — it now runs during the waits, as on Windows;
+- the call after a wait goes on with the streak however late it comes (that worker keeps the processor until its slice
+  ends, 0.25-0.5 ms: every wait broke the streak; the lateness feeds the overshoot margin instead);
+- a poll that finds something (a message) restarts the timing chain only within a bout of polling: the intro takes a
+  message every frame among its frame's other calls, which erased each bout's end — no frame interval was ever learned.
+
+Measured (Node, this server, the intro, main then this tree back to back, load 16-34; per frame of the two 10 s phases,
+240 frames each in both): `Acquire` + `GetDeviceData` 12 700 + 12 700 → 476 + 476 calls; emulator thread CPU 41.7 →
+20.0 ms (10.0 → 4.8 s per phase); `wait` 0 → 22.3 ms; guest 31.6 → 17.7 ms; `api` 10.0 → 1.6 ms; frame time p50 41.7 /
+41.8 → 41.7 / 41.6 ms, but p90 43.0 / 43.3 → 50.0 / 49.7, p99 45.9 / 48.9 → 54.5 / 54.0, frames over 50 ms 1 / 0 → 24 /
+19 per phase (see below). The bouts of polling end on the movie's own grid: no picture is skipped or added.
+
+The frame times spread more in Node, and that is this host: the polling's bouts end on the movie's grid (intervals of
+41 and 42 ms on the 1 ms timer, predicted ends met within 0-1.6 ms), but the frame's own work (Bink decoding, 29 M guest
+instructions) runs slower after the waits — 10-29 ms against 9-13 ms with the same tree spinning (the waits turned off,
+the bookkeeping on) — because this server's CPU clock drops while the thread sleeps (AMD EPYC VPS, `schedutil`): a fixed
+4.8 ms compute chunk takes 14.5 ms right after 30 ms of 2 ms `Atomics.wait` (scratch micro-benchmark). Not measured on
+the owner's laptop. `?dbg=ORTHROS_PEEK_IDLE_MS=0` turns every polling wait off. Test: `peek-idle.test.js` (a loop
+re-acquiring and reading a keyboard waits, a key ends the wait at once).
 
 ## Effects (src/win32/d3dx9-effect.js)
 

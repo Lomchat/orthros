@@ -90,6 +90,20 @@ woke threads at the exact millisecond and ran both tick counters in 1 ms steps. 
   tick (15 or 16 ms) whatever the resolution; timeGetTime and timeGetSystemTime by the current interrupt period;
 - `timeBeginPeriod` / `timeEndPeriod` are counted per period (TIMERR_NOCANDO for 0, or for an end without its begin);
 - SetTimer's timers (`WM_TIMER`) fall due at the interrupt too (SetTimer(10) fires every 15.6 ms by default);
+- waitable timers (2026-11-18, `WaitableTimer` in src/win32/kernel32.js; before, SetWaitableTimer recorded its due time
+  and nothing ever signaled the timer: a wait on one never ended) expire at the interrupt as well (at once for a due time
+  already past; exactly for CREATE_WAITABLE_TIMER_HIGH_RESOLUTION): relative or absolute (UTC FILETIME) due times,
+  periods (the next due time a period after the previous one; periods missed while nothing could observe the timer make
+  one expiry), manual or synchronization reset, CancelWaitableTimer, the last handle closed, Open/CreateWaitableTimer(Ex)
+  A/W, SetWaitableTimerEx. The expiry is evaluated where it can be observed (a wait or poll of the timer; every
+  scheduling pass, `Scheduler.expireTimers`; an alertable wait's first test), so the guest sees it at its time. A
+  completion routine is queued as an APC (one at a time, as Windows' timer holds one APC object) to the thread that set
+  the timer, and runs in that thread's alertable waits only — SleepEx(…, TRUE) (until then SleepEx ignored its
+  bAlertable), WaitForSingleObjectEx / WaitForMultipleObjectsEx / MsgWaitForMultipleObjectsEx(MWMO_ALERTABLE):
+  WAIT_IO_COMPLETION; an object signaled at the same time wins and the APCs stay queued, as Windows tests the objects
+  first. MsgWaitForMultipleObjectsEx read MsgWaitForMultipleObjects' argument order (its timeout as bWaitAll, its wake
+  mask as the timeout); QueueUserAPC failed on GetCurrentThread's pseudo handle. Test: tools/pe/waittimer.c
+  (tests/pe.test.js);
 - the JIT's fast paths give the same values (GetTickCount has its own id, 28: `env.tickCount`; timeGetTime 19:
   `env.mmTime`).
 

@@ -130,6 +130,19 @@ test('sync.exe: waits satisfied at signal time (mutex/critical-section hand-off,
   }
 });
 
+test('waittimer.exe: waitable timers expire on time (one-shot, periodic, absolute, cancelled), completion routines and APCs in alertable waits only', { skip: skip('waittimer.exe') }, () => {
+  const { vm } = boot('waittimer.exe');
+  assert.equal(vm.run(), 0);
+  const out = Object.fromEntries(vm.stdout.join('').trim().split('\n').map((l) => l.split('=')));
+  assert.deepEqual(out, {
+    manual_untouched: '258', oneshot: '0', oneshot_on_time: '1', manual_stays: '0',
+    periodic_waits: '5', periodic_spacing: '1', periodic_taken: '258', absolute: '0', absolute_on_time: '1', cancelled: '258',
+    apc_sleepex: '192', apc_calls: '1', apc_arg: '4660', apc_time: '1', apc_timer_signaled: '0', apc_not_in_sleep: '1', apc_queued_at_once: '192',
+    apc_calls_after: '2', apc_waitex_object_first: '0', apc_waitex_pending: '2', apc_waitex_alertable: '192', apc_calls_last: '3', user_apc: '192',
+    user_apc_ran: '5', multi: '1', multi_next: '0', msgwait_timeout: '258', msgwait_timeout_on_time: '1', msgwait_alertable: '192', msgwait_apc_calls: '4',
+  });
+});
+
 test('gdiplus.exe: GDI+ image loading (PNG/JPEG), LockBits, HBITMAP export, alpha drawing', { skip: skip('gdiplus.exe') }, () => {
   const fx = new URL('./fixtures/codec/', import.meta.url).pathname;
   const { vm } = boot('gdiplus.exe', { files: { 'rgb.png': fx + 'rgb.png', 'base.jpg': fx + 'base.jpg' } });
