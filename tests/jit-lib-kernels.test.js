@@ -18,7 +18,7 @@ import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
 import { FAST_TABLE, FAST } from '../src/cpu/jit/runtime.js';
 import { PeImage, mapImage } from '../src/loader/pe.js';
-import { LIB_KERNELS, LIB_LIVE } from '../src/cpu/jit/libkernels.js';
+import { LIB_KERNELS, LIB_LIVE, LIB_INLINE_KINDS } from '../src/cpu/jit/libkernels.js';
 import { depth } from './depth.js';
 
 const root = new URL('..', import.meta.url).pathname;
@@ -270,7 +270,10 @@ test('library kernels: _stricmp, tolower and strtok against the interpreter, at 
   };
   for (const def of LIB_KERNELS.filter((d) => STRING_KINDS.has(d.kind))) {
     const argc = def.kind === 'tolower' ? 1 : 2, k = def.k;
-    for (const [form, base, jitOpts] of [['entry', img.imageBase, {}], ['stub', 0x10000000, {}], ['call', img.imageBase, { chain: false }], ['entry', 0x10000000, { chain: false }]]) {
+    // (a kernel not run inline by default, strtok: its inline form as well, through `call [slot]`)
+    for (const [form, base, jitOpts, force] of [['entry', img.imageBase, {}], ['stub', 0x10000000, {}], ['call', img.imageBase, { chain: false }, true], ['entry', 0x10000000, { chain: false }]]) {
+      const forced = force && !LIB_INLINE_KINDS.has(def.kind);
+      if (forced) LIB_INLINE_KINDS.add(def.kind);
       const A = machine(img, base, null), D = machine(img, base, { ...jitOpts, libKernels: false });
       const B = machine(img, base, { ...jitOpts, libKernels: def.name, libInline: true, profile: true });
       const entry = B.mod.exports.get(def.name.split('!')[1]), data = [B.mod.base + dataSec.rva, B.mod.base + dataSec.rva + dataSec.virtualSize];
@@ -350,11 +353,12 @@ test('library kernels: _stricmp, tolower and strtok against the interpreter, at 
         assert.equal(rb, rd, what); assert.deepEqual(hide(sb), hide({ ...snapshot(D, c, data), err: D.mem.read32(TEB + 0x34), token: D.mem.read32(PTD + 0x18) }), what); assert.equal(nb, nd, `${what}: instructions`);
         if (!path) { expectFallbacks++; continue; }
         assert.equal(rb, ra, what); assert.deepEqual(sb, { ...snapshot(A, c, data), err: A.mem.read32(TEB + 0x34), token: A.mem.read32(PTD + 0x18) }, what); assert.equal(nb, na, `${what}: instructions`);
-        if (form !== 'entry' && i > 0) expectInline++;
+        if (form !== 'entry' && i > 0 && LIB_INLINE_KINDS.has(def.kind)) expectInline++; // (else its kernel function through the stub)
       }
       assert.ok(B.jit.libLive?.has(entry), `${def.name}: recognised`);
       assert.equal(B.jit.stats.libFallbacks - fallbacks0, expectFallbacks, `${def.name} (${form}): kernel taken exactly on its path`);
       if (form !== 'entry') assert.equal(B.jit.stats.prof.libInline, expectInline, `${def.name} (${form}): every call on the path after the first ran inline`);
+      if (forced) LIB_INLINE_KINDS.delete(def.kind);
     }
   }
 });

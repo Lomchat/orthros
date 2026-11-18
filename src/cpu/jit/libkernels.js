@@ -458,8 +458,13 @@ function diffFlags(c, L) {
   c.i32((LZ.SBB << 2) | 2).set(P.LZOP); c.i32(0).get(L.G).sub().set(P.LZA); c.i32(-1).set(P.LZB);
 }
 
-/** the kernel kinds a translated region can run inline (emitLibInline) */
-export const LIB_INLINE_KINDS = new Set(['memcmp', 'stricmp', 'tolower', 'strtok']);
+/**
+ * the kernel kinds a translated region runs inline (emitLibInline). Not strtok, though emitStrtok takes the inline form
+ * too: its ~1.4-2 KB of code in every region calling it (900 to 1100 sites at a SAGE game's start) made the translations
+ * of BFME1's start 3.8 % larger and its process 2.8 % more instructions — more than the calls save; its kernel function
+ * (the hash table, a chained return) saves without it.
+ */
+export const LIB_INLINE_KINDS = new Set(['memcmp', 'stricmp', 'tolower']);
 /**
  * A kernel run inline by a translated region (translate.js libInlineOf, opts.libInline): at an import stub's `jmp [slot]`
  * reached by a call (the return address on the stack: `ret` null) or at a `call [slot]` (`ret`: its return address,
