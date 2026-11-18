@@ -891,7 +891,10 @@ export class WebGLDevice {
       gl.blitFramebuffer(0, 0, w, h, 0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.COLOR_BUFFER_BIT, w === gl.drawingBufferWidth && h === gl.drawingBufferHeight ? gl.NEAREST : gl.LINEAR);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); this.gs.fbo = null;
-    if (dev.backBuffers.length > 1 && dev.pp.swap !== 3) { // flipping chain: rotate the contents, not the surfaces
+    // (debugging, the owner's pause flicker: dbg ORTHROS_FLIP_ROTATE=0 keeps one framebuffer for back buffer 0 — every
+    // frame drawn into the same GL objects; an alternation between the two framebuffers of a FLIP x2 chain then stops,
+    // one that comes from the game's own commands goes on)
+    if (dev.backBuffers.length > 1 && dev.pp.swap !== 3 && globalThis.ORTHROS_FLIP_ROTATE !== 0) { // flipping chain: rotate the contents, not the surfaces
       const ids = dev.backBuffers.map((b) => b.id), first = this.fbos.get(ids[0]);
       for (let i = 0; i < ids.length - 1; i++) { const f = this.fbos.get(ids[i + 1]); if (f) this.fbos.set(ids[i], f); else this.fbos.delete(ids[i]); }
       if (first) this.fbos.set(ids[ids.length - 1], first); else this.fbos.delete(ids[ids.length - 1]);
