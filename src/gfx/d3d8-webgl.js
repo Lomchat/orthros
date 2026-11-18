@@ -223,6 +223,9 @@ export class WebGLDevice {
     this.tmp = { v4: new Float32Array(4) };
     this.fvfCache = new Map();
     this.frameDraws = 0; this.sinceFlush = 0; this.fakeFlicker = 0; this.fakeN = 0;
+    // (the draw probe while it records this device's draws — draw-probe.js —, and `dprobe`, the hooks every draw calls
+    // when set: the draw probe, or with ORTHROS_FAKE_TF a fault wrapped around it — set at each present: drawHooks)
+    this.drawProbe = null; this.dprobe = null; this.fakeHook = null;
     this.dumpShaders = !!opts.dumpShaders;
     this.noCull = !!opts.noCull;
     // (measurement / tests: the draw's sampler and raster states derived again at every draw, as before their caches;
@@ -940,6 +943,7 @@ export class WebGLDevice {
     // (the GL call counter keeps away from the probes that wrap or replace GL methods themselves)
     if (this.probe) this.probe.busy = !!(globalThis.ORTHROS_GL_TIME || this.glTime || this.glNull || globalThis.ORTHROS_GL_NULL || this.capturing || this.countLeft || this.captureAt > this.frame || this.glCallCounts || this.probe.flicker?.recording);
     this.fakeFlicker = globalThis.ORTHROS_FAKE_FLICKER > 0 ? globalThis.ORTHROS_FAKE_FLICKER | 0 : 0; this.fakeN = 0;
+    this.dprobe = this.drawHooks(); // (the next frame's draw hooks: draw probe, fakeTfDraw)
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
     if (this.pc?.queue.length) this.prewarmStep();
     // (ORTHROS_CAPTURE_FRAMES=<n>: that many consecutive frames captured — a frame's work compared with the next one's)
@@ -971,6 +975,31 @@ export class WebGLDevice {
    * frame's draws) — a flicker made on purpose, to check the flicker probe and its capture (flicker-capture.js) end to end.
    */
   fakeSkip() { return (this.frame & 1) === 1 && this.fakeN++ % this.fakeFlicker === 0; }
+  /**
+   * Debugging (dbg:ORTHROS_FAKE_TF=<k>): in every k-th frame, the draws whose program reads TEXTUREFACTOR drawn with
+   * its alpha x 0.3 — what GL holds then is neither the game's value nor the backend's cached one — and the true value
+   * given back after the draw (`on` false): a GL-side fault made on purpose, to check the draw probe (draw-probe.js)
+   * end to end — the owner's pause-menu veil, fainter one frame in three, as a stale uniform would make it.
+   */
+  fakeTfDraw(P, on) {
+    const l = P.u('u_tfactor'); if (!l) return;
+    const v = colorToVec(this.rs(RS.TEXTUREFACTOR, 0xffffffff), this.tmp.v4);
+    if (on) v[3] *= 0.3;
+    this.gl.uniform4fv(l, v);
+  }
+  /** the hooks of the next frame's draws: the draw probe recording this device, wrapped in the fault of fakeTfDraw on its frames; null: none */
+  drawHooks() {
+    const k = globalThis.ORTHROS_FAKE_TF;
+    if (!(k > 0) || this.frame % (k | 0) !== 0) return this.drawProbe;
+    const h = this.fakeHook ??= {
+      inner: null,
+      state(d, P, info, tgt) { this.inner?.state(d, P, info, tgt); },
+      before(d, P, type, start, count) { this.inner?.before(d, P, type, start, count); d.fakeTfDraw(P, true); },
+      after(d, P) { d.fakeTfDraw(P, false); this.inner?.after(d, P); },
+    };
+    h.inner = this.drawProbe;
+    return h;
+  }
   /** A flicker capture may wrap the GL methods: nothing else wraps or replaces them now (call counters, GL timing, null mode). */
   flickerCanRecord() { return !this.probe?.glWrapped && !this.glTime && !this.glNull && !this.glCallCounts && !globalThis.ORTHROS_GL_TIME && !globalThis.ORTHROS_GL_NULL; }
   /** The devices sharing this GL context (a capture sees all their work). */
@@ -1505,7 +1534,7 @@ export class WebGLDevice {
   applyState(P, info, type = 0, count = 0, ib = -1) {
     const gl = this.gl, dev = this.dev;
     const tgt = this.bindTarget(), { h, flip } = tgt;
-    if (this.sigOn) this.sigDraw(P, info, type, count, ib); // (the frame's signature, for the flicker probe: sigMix)
+    if (this.sigOn) { this.sigDraw(P, info, type, count, ib); if (this.dprobe !== null) this.dprobe.state(this, P, info, tgt); } // (the frame's signature, for the flicker probe: sigMix; the draw probe's values, before the cached ones are compared)
     const v = dev.viewport, gs = this.gs;
     // (a scaled target: the viewport and scissor rectangles in its GL storage — render-scale.js; the u_viewport uniform
     // stays in Direct3D pixels, so pre-transformed vertices land at the same place of the picture)
@@ -1591,7 +1620,7 @@ export class WebGLDevice {
         if (U('u_fogParams')) gl.uniform4f(U('u_fogParams'), asFloat(fs), asFloat(fe), asFloat(fd), 0);
       }
       const fc = this.rs(RS.FOGCOLOR, 0); if (sv.fc !== fc) { sv.fc = fc; if (U('u_fogColor')) gl.uniform4fv(U('u_fogColor'), colorToVec(fc, this.tmp.v4)); }
-      const tf = this.rs(RS.TEXTUREFACTOR, 0xffffffff); if (sv.tf !== tf) { sv.tf = tf; if (U('u_tfactor')) gl.uniform4fv(U('u_tfactor'), colorToVec(tf, this.tmp.v4)); }
+      const tf = this.rs(RS.TEXTUREFACTOR, 0xffffffff); if (sv.tf !== tf) { sv.tf = tf; if (U('u_tfactor')) { gl.uniform4fv(U('u_tfactor'), colorToVec(tf, this.tmp.v4)); P.tfSent = tf; } } // (tfSent: what GL was last given, for the draw probe)
       const ar = this.rs(RS.ALPHAREF, 0) & 0xff; if (sv.ar !== ar) { sv.ar = ar; if (U('u_alphaRef')) gl.uniform1f(U('u_alphaRef'), ar / 255); }
       const ps = this.rs(RS.POINTSIZE, 0); if (sv.ps !== ps || sv.pk !== tgt.kx) { sv.ps = ps; sv.pk = tgt.kx; if (U('u_pointSize')) gl.uniform1f(U('u_pointSize'), (asFloat(ps) || 1) * tgt.kx); }
       const bumpU = P.bumpU ??= U_BUMPENV.map((n) => U(n)); // (locations, per program)
@@ -2068,8 +2097,10 @@ export class WebGLDevice {
       this.log(`d3d-webgl: [cap] drawPrimitive type ${type} start ${start} prims ${count} ${Array.from({ length: nv }, (_, i) => `v${i}=(${vtx(i)})`).join(' ')} world=${Array.from(this.dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')} view=${Array.from(this.dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(3)).join(',')}`);
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
+    if (this.dprobe !== null) this.dprobe.before(this, P, type, start, count); // (the draw probe: its target copied before and after: draw-probe.js)
     if (this.probe?.hot) this.probe.draw();
     gl.drawArrays(this.glMode(type), start, this.vertexCount(type, count));
+    if (this.dprobe !== null) this.dprobe.after(this, P);
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dp');
     if (this.stats.draws <= 64) this.checkErrors(`drawPrimitive(${type}, ${start}, ${count}) program ${P.key.slice(0, 60)} attrs ${P.attrNames.join(',')}`); // (the message is built only while it is checked)
@@ -2112,8 +2143,10 @@ export class WebGLDevice {
       this.log(`d3d-webgl: [cap] drawIndexedPrimitive type ${type} base ${baseVertex} start ${start} prims ${count} numV ${numV} tri0=[${vtx(0)} ${vtx(1)} ${vtx(2)}] ${uvr.join(' ')} stride=${st.stride} off=${st.offset ?? 0} fvf=${this.dev.fvf}${vdump} tss=${info.stages.map((st, i) => `${i}:${st.colorOp}/${st.colorArg1},${st.colorArg2}|${st.alphaOp}/${st.alphaArg1},${st.alphaArg2} tci${st.tci} ttff${st.ttff}`).join(' ')}${info.stages.map((st, i) => (st.ttff & 0xff) ? ` texmat${i}=[${Array.from(dev.transforms.get(TS_TEXTURE0 + i) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]` : '').join('')} world=[${Array.from(dev.transforms.get(TS_WORLD) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}] view=[${Array.from(dev.transforms.get(TS_VIEW) ?? IDENTITY).map((x) => +x.toPrecision(4)).join(',')}]`);
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
+    if (this.dprobe !== null) this.dprobe.before(this, P, type, start, count);
     if (this.probe?.hot) this.probe.draw();
     gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
+    if (this.dprobe !== null) this.dprobe.after(this, P);
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dip');
     void minIdx;
@@ -2133,8 +2166,10 @@ export class WebGLDevice {
     this.streamData(gl.ARRAY_BUFFER, data, n * stride);
     if (!this.bindAttributes(P, info.L, stride)) return;
     if (this.capturing) this.log(`d3d-webgl: [cap] drawPrimitiveUP type ${type} prims ${count} stride ${stride}`);
+    if (this.dprobe !== null) this.dprobe.before(this, P, type, 0, count);
     if (this.probe?.hot) this.probe.draw();
     gl.drawArrays(this.glMode(type), 0, n);
+    if (this.dprobe !== null) this.dprobe.after(this, P);
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dpup');
   }
@@ -2151,8 +2186,10 @@ export class WebGLDevice {
     this.bindIndices(this.upIbo);
     this.streamData(gl.ELEMENT_ARRAY_BUFFER, idx, n * (short ? 2 : 4));
     if (this.capturing) this.log(`d3d-webgl: [cap] drawIndexedPrimitiveUP type ${type} prims ${count} numV ${numV} stride ${stride}`);
+    if (this.dprobe !== null) this.dprobe.before(this, P, type, 0, count);
     if (this.probe?.hot) this.probe.draw();
     gl.drawElements(this.glMode(type), n, short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, 0);
+    if (this.dprobe !== null) this.dprobe.after(this, P);
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dipup');
   }

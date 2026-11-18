@@ -59,6 +59,7 @@ export class DeviceMirror {
     this.lights = new Map(); this.lightEnabled = new Set(); this.material = new Float32Array(17); this.materialWords = new Int32Array(this.material.buffer);
     this.renderTarget = null; this.backBuffers = [];
     this.gfx = null;
+    this.probeTf = undefined; this.probeSv = undefined; // (the game's TEXTUREFACTOR and state version at the last stamped draw: OP.PROBE, draw-probe.js)
   }
 }
 
@@ -262,6 +263,7 @@ export class Replayer {
         break;
       }
       case OP.TEX_LOD: { const t = this.res.get(a[0]); if (t) t.lod = a[1]; break; }
+      case OP.PROBE: if (m) { m.probeTf = a[0] >>> 0; m.probeSv = a[1] >>> 0; } break; // (the game's TEXTUREFACTOR before the next draw: draw-probe.js)
       case OP.VOL_MEM: { const t = this.res.get(a[0]); const l = t?.levels?.[a[1]]; if (l) { l.mem = a[2]; l.dirty = true; t.gen = a[3] | 0; } break; } // (its memory, or new contents: uploaded at the next use, its generation acknowledged then)
       case OP.SHADER9: { const code = Uint32Array.from(a[3]); this.shaders.set(a[0], { kind: a[1] ? 'ps' : 'vs', code, handle: a[2], version: code[0] >>> 0 }); break; }
       case OP.SHADER8: this.shaders.set(a[0], a[1] ? { handle: a[2], code: Uint32Array.from(a[5]) } : { handle: a[2], decl: Uint32Array.from(a[4]), code: a[5] ? Uint32Array.from(a[5]) : null, usage: a[3] }); break;

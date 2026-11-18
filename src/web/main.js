@@ -485,7 +485,7 @@ function onWorkerMessage(m) {
       if (state.snapshotFrom === 'shared') { try { sessionStorage.setItem(SHARED_FAILED + state.snapshotKey, '1'); } catch { /* storage off */ } dropPieces(() => snapshotDir(state.manifest)); } // (else the reload fetches it again: a loop)
       dropSnapshot(state.manifest).then(() => { if (!headless) location.reload(); });
       break;
-    case 'log': if (m.msg?.event === 'flicker-capture') sendFlickerCapture(m.msg); else if (m.msg?.event === 'display-report-bb') { if (state.reportWait?.id !== m.msg.id) break; if (m.msg.started) state.screenRec?.extendTo(m.msg.started); else state.reportWait.resolve(m.msg); } else log(m.kind, m.msg); break; // (the GL backend's flicker capture and its half of a display report ride its log channel: gfx/flicker-capture.js, gfx/frame-report.js)
+    case 'log': if (m.msg?.event === 'flicker-capture' || m.msg?.event === 'draw-probe') sendFlickerCapture(m.msg); else if (m.msg?.event === 'display-report-bb') { if (state.reportWait?.id !== m.msg.id) break; if (m.msg.started) state.screenRec?.extendTo(m.msg.started); else state.reportWait.resolve(m.msg); } else log(m.kind, m.msg); break; // (the GL backend's flicker capture and its half of a display report ride its log channel: gfx/flicker-capture.js, gfx/frame-report.js)
     case 'stdout': log('stdout', m.text); break;
     case 'started': if (state.sharedSnapshotCopy) { storeSnapshot(state.manifest, state.snapshotKey, state.sharedSnapshotCopy).catch(() => {}).then(() => dropPieces(() => snapshotDir(state.manifest))); state.sharedSnapshotCopy = null; } state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
     case 'dbg': if (/^ORTHROS_HOST_TIMER_HELPER_[A-Z]+$/.test(m.k)) { window[m.k] = m.v === undefined || m.v === '' ? undefined : m.v; state.timerHelper?.apply(); } break; // (harness dbg: steps for the page's own switches, forwarded by the worker)
@@ -791,12 +791,14 @@ function telemetryEvent(ev) { if (!state.telemetry) return; (state.queue ??= [])
 /**
  * The session's flicker capture (gfx/flicker-capture.js: the frames of its first strong flicker, their pictures and GL
  * work, up to ~400 KB) sent alone, with what the page knows of the session: larger than a batch of records, and than
- * the 64 KB a keepalive request may carry. tools/dev/flicker-capture.mjs reads it.
+ * the 64 KB a keepalive request may carry. tools/dev/flicker-capture.mjs reads it. The session's draw probe
+ * (gfx/draw-probe.js: what the last draws of a few seconds of frames did to the picture, up to ~230 KB) the same way;
+ * tools/dev/draw-probe.mjs reads it.
  */
 function sendFlickerCapture(rec) {
-  const body = JSON.stringify({ ...rec, session: state.session, game: state.manifest ?? null, build: state.version ?? null, options: state.perfOptions ?? null, page: { glworker: params.get('glworker'), dbg: params.get('dbg') } });
-  const what = `d3d-webgl: flicker capture: ${rec.frames?.length ?? 0} frames, ${Math.round(body.length / 1024)} KB${rec.cut?.length ? ` (cut: ${rec.cut.join(', ')})` : ''}; the captured frames ${rec.small ? `${rec.small.aba} % A-B-A, ${rec.small.chg12} % changed` : 'without pictures'}${rec.trigger?.cmd ? `, commands ${rec.trigger.cmd} at the sample` : ''}${rec.took ? `; made in ${rec.took.ms} ms after the frames, ${rec.took.slices} slices (${rec.took.busy ?? "?"} ms busy), the longest ${rec.took.longest} ms, ${rec.took.over8 ?? "?"} over 8 ms` : ''}`;
-  if (headless) window.__orthrosFlickerCapture = rec; // (a harness run without telemetry reads it there)
+  const body = JSON.stringify({ ...rec, session: state.session, game: state.manifest ?? null, build: state.version ?? null, version: state.gameManifest?.version ?? null, options: state.perfOptions ?? null, page: { glworker: params.get('glworker'), dbg: params.get('dbg') } });
+  const what = rec.event === 'draw-probe' ? `d3d-webgl: draw probe (${rec.trigger?.why ?? '?'}): ${rec.frames?.length ?? 0} frames, ${Math.round(body.length / 1024)} KB${rec.cut?.length ? ` (cut: ${rec.cut.join(', ')})` : ''}; ${rec.summary?.odd ?? '?'} odd frames; ${rec.summary?.verdict ?? ''}` : `d3d-webgl: flicker capture: ${rec.frames?.length ?? 0} frames, ${Math.round(body.length / 1024)} KB${rec.cut?.length ? ` (cut: ${rec.cut.join(', ')})` : ''}; the captured frames ${rec.small ? `${rec.small.aba} % A-B-A, ${rec.small.chg12} % changed` : 'without pictures'}${rec.trigger?.cmd ? `, commands ${rec.trigger.cmd} at the sample` : ''}${rec.took ? `; made in ${rec.took.ms} ms after the frames, ${rec.took.slices} slices (${rec.took.busy ?? "?"} ms busy), the longest ${rec.took.longest} ms, ${rec.took.over8 ?? "?"} over 8 ms` : ''}`;
+  if (headless) { if (rec.event === 'draw-probe') window.__orthrosDrawProbe = rec; else window.__orthrosFlickerCapture = rec; } // (a harness run without telemetry reads it there)
   if (!state.telemetry) { log('gfx', `${what}; not sent (no telemetry)`); return; }
   fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).then((r) => log(r.ok ? 'gfx' : 'warn', `${what}; sent, server ${r.status}`), (e) => log('warn', `${what}; not sent: ${e?.message ?? e}`));
 }

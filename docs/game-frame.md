@@ -85,6 +85,9 @@ the figures. The renderer's window starts when the emulator's thread passes the 
 page records until that window's end too. `window.orthros.reportDisplay()` does the same from the console or a harness.
 `tools/with-browser-slot.sh node tools/check/display-report-check.mjs` checks both halves and the tool without a game
 (a square drawn every other frame, a red picture and a stale one shown on purpose: both must be found, and nothing else).
+Its automatic companion, without any click: the **draw probe** (`src/gfx/draw-probe.js`, docs/aotr-play.md "The draw
+probe"): on a still screen that stays, or a flicker under the same commands, a few seconds of what each of the frame's
+last draws did to the picture and the values it was drawn with, sent once per session (`tools/dev/draw-probe.mjs`).
 
 ## Another window: the game keeps playing (Windows games, 2026-11-17)
 

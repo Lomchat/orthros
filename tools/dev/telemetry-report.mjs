@@ -8,7 +8,7 @@
 //   categories;
 // - the flicker probe's counters (gfx/flicker-probe.js: `altSame` / `altCmdAba`, the alternating samples whose frames'
 //   command signatures were the same / went A-B-A), its logged samples' command patterns, and whether the session sent
-//   its flicker capture (read with tools/dev/flicker-capture.mjs);
+//   its flicker capture (read with tools/dev/flicker-capture.mjs); its draw probe's verdict (tools/dev/draw-probe.mjs);
 // - the bench runs (?bench=<name>, docs/real-machine-bench.md): per phase results;
 // and a comparison of the bench runs, per bench: one line per run, its phases side by side.
 // - the bench suite's runs (?benchsuite=, bench-suite.js: every game in a row): per run, each game's outcome and phases
@@ -58,9 +58,11 @@ export function buildSessions(lines, { from = null, to = null, session = null, g
     const day = typeof r.at === 'string' ? r.at.slice(0, 10) : null;
     if (day && ((from && day < from) || (to && day > to))) continue;
     let s = sessions.get(r.session);
-    if (!s) sessions.set(r.session, (s = { id: r.session, game: r.game ?? null, first: r.at ?? null, last: r.at ?? null, env: null, options: null, version: null, samples: [], summaries: [], benches: [], suites: [], bench: null, slow: 0, events: {}, compat: null, capture: null, flickerLogs: [] }));
+    if (!s) sessions.set(r.session, (s = { id: r.session, game: r.game ?? null, first: r.at ?? null, last: r.at ?? null, env: null, options: null, version: null, samples: [], summaries: [], benches: [], suites: [], bench: null, slow: 0, events: {}, compat: null, capture: null, drawProbe: null, flickerLogs: [] }));
     if (r.game) s.game = r.game;
     // (the session's flicker capture, gfx/flicker-capture.js: a line of its own — tools/dev/flicker-capture.mjs reads it)
+    // (its draw probe, gfx/draw-probe.js: a line of its own too — tools/dev/draw-probe.mjs reads it)
+    if (r.event === 'draw-probe') { s.drawProbe = { at: r.at ?? null, why: r.trigger?.why ?? null, frames: r.frames?.length ?? 0, odd: r.summary?.odd ?? null, verdict: r.summary?.verdict ?? null, path: r.path ?? null, cut: r.cut ?? [] }; continue; }
     if (r.event === 'flicker-capture') { s.capture = { at: r.at ?? null, trigger: r.trigger ?? null, small: r.small ?? null, frames: r.frames?.length ?? 0, images: r.images?.length ?? 0, cut: r.cut ?? [], took: r.took ?? null, alt: r.alt?.fields ?? null, renderer: r.gl?.renderer ?? null }; continue; }
     if (r.bench) s.bench = r.bench; // (a bench's session: the page marks its batches — its suite run, or the bench's name)
     if (r.at) { if (!s.first || r.at < s.first) s.first = r.at; if (!s.last || r.at > s.last) s.last = r.at; }
@@ -172,10 +174,10 @@ export function report(sessions, { minSeconds = 60, bench = undefined, players =
     const seconds = s.samples.reduce((a, x) => a + x.dt, 0) || s.summaries.reduce((a, x) => a + (x.seconds ?? 0), 0);
     const benches = bench === undefined ? s.benches : s.benches.filter((b) => bench === true || b.bench === bench);
     if (bench !== undefined && !benches.length) continue;
-    if (seconds < minSeconds && !benches.length && !s.capture) continue;
+    if (seconds < minSeconds && !benches.length && !s.capture && !s.drawProbe) continue;
     const cmds = {}; for (const x of s.flickerLogs) cmds[x.cmd] = (cmds[x.cmd] ?? 0) + 1;
     const r = { session: s.id, game: s.game, bench: s.bench, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), compat: s.compat, benches,
-      flickerCapture: s.capture, flickerLogs: s.flickerLogs.length ? { n: s.flickerLogs.length, maxStill: Math.max(...s.flickerLogs.map((x) => x.still).filter((v) => !Number.isNaN(v)), 0), commands: cmds } : null };
+      flickerCapture: s.capture, drawProbe: s.drawProbe, flickerLogs: s.flickerLogs.length ? { n: s.flickerLogs.length, maxStill: Math.max(...s.flickerLogs.map((x) => x.still).filter((v) => !Number.isNaN(v)), 0), commands: cmds } : null };
     for (const st of stretches(s.samples)) {
       const min = st.seconds / 60, n = st.acctFrames || 1, slowTotal = Object.values(st.slowCats).reduce((a, b) => a + b, 0);
       r.stretches.push({ kind: st.kind, at: new Date(st.t0).toISOString().slice(11, 19), seconds: Math.round(st.seconds), fps: +(st.frames / st.seconds).toFixed(1), busy: Math.round(st.busy / st.seconds), per33: Math.round(st.s33 / min), per50: Math.round(st.s50 / min),
@@ -286,6 +288,7 @@ export function formatReport(reports, comparison) {
     L.push(`  machine: ${r.machine}`);
     // (the flicker probe's logged samples with their frames' command pattern, and the session's flicker capture)
     if (r.flickerLogs) L.push(`  flicker samples logged: ${r.flickerLogs.n} (largest ${r.flickerLogs.maxStill} % flickering; commands ${Object.entries(r.flickerLogs.commands).map(([k, v]) => `${k} ${v}`).join(', ')})`);
+    if (r.drawProbe) { const d = r.drawProbe; L.push(`  draw probe: ${d.at ? d.at.slice(11, 19) : '?'}, started by ${d.why ?? '?'} (${d.path ?? '?'}); ${d.frames} frames, ${d.odd ?? '?'} odd${d.cut.length ? `; cut ${d.cut.join(', ')}` : ''}; ${d.verdict ?? ''} — node tools/dev/draw-probe.mjs <telemetry .jsonl> --session ${r.session}`); }
     if (r.flickerCapture) { const c = r.flickerCapture; L.push(`  flicker capture: ${c.at ? c.at.slice(11, 19) : '?'}, trigger ${c.trigger ? `${c.trigger.asked ? 'asked' : `${c.trigger.still} % flickering, commands ${c.trigger.cmd ?? '?'}`}` : '?'}; ${c.frames} frames, ${c.images} pictures${c.small ? ` (${c.small.aba} % A-B-A)` : ''}${c.alt && Object.keys(c.alt).length ? `; alternating draw fields ${Object.entries(c.alt).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${c.cut.length ? `; cut ${c.cut.join(', ')}` : ''}${c.took ? `; made in ${c.took.ms} ms, longest slice ${c.took.longest} ms` : ''} — node tools/dev/flicker-capture.mjs <telemetry .jsonl> --session ${r.session}`); }
     if (r.options) L.push(`  options: ${Object.entries(r.options).filter(([, v]) => v !== '' && v !== false && v !== null).map(([k, v]) => `${k}=${v}`).join(' ')}`);
     for (const st of r.stretches) {

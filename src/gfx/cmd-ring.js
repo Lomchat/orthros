@@ -82,6 +82,9 @@ export const OPS = [
   ['TEX_LOD', 'uu'], // texture id, its IDirect3DBaseTexture::SetLOD level (the most detailed level sampled)
   ['MEMORY', 'u'], // the guest memory the devices created from here read (an index of the memories the render worker was given: a child process's, docs/processes.md)
   ['FORGET', 'u'], // a guest memory released (its process ended: docs/processes.md): the devices made from it destroyed, the first memory current again
+  // the draw probe (draw-probe.js), while it asks: before a draw, the game's own TEXTUREFACTOR and state version as the
+  // emulator's device holds them (the mirror keeps the last: what its backend reads is compared with it)
+  ['PROBE', 'uu'],
 ];
 export const OP = Object.fromEntries(OPS.map(([name], i) => [name, i]));
 export const OP_NAMES = OPS.map(([name]) => name);

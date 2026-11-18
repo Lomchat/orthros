@@ -31,14 +31,15 @@ export const RING_WORDS = 1 << 22;
  * device field by field (mismatches logged).
  */
 export function createInlineGfx(canvas, log, dump, { check = false, beforePresent = null } = {}) {
-  const inner = createWebGLBackend(canvas, log, dump);
+  let link = null; // (the draw probe's request for the game's values at each draw: d3d-recorder.js stamp)
+  const inner = createWebGLBackend(canvas, (m) => { if (m?.event === 'draw-probe-stamp') { if (link) link.stampDraws = !!m.on; } else log(m); }, dump);
   if (!inner) return null;
   const words = new Int32Array(1 << 20), ack = new Int32Array(ACK_SLOTS).fill(-1);
   const replayer = new Replayer(words, {
     mem: null, ack, createBackend: (m) => inner.createDevice(m), beforePresent,
     onCanvas: (w, h) => { if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; } },
   });
-  const link = new RenderLink({ words, replayer, ack, log });
+  link = new RenderLink({ words, replayer, ack, log });
   let checks = 0, mismatches = 0;
   const gfx = {
     mode: check ? 'check' : 'inline', gl: inner.gl, programCache: inner.programCache, link,
@@ -146,6 +147,7 @@ export function createRemoteGfx({ log, onFail, workerUrl }) {
         else if (m.type === 'failed') { fail(`render worker could not start: ${m.reason}`); settle?.(); }
         else if (m.type === 'stats') { for (const [id, s] of m.devices) remoteStats.set(id, s); Object.assign(programCache, m.programCache, { queue: { length: m.programCache.queueLength ?? 0 } }); gfx.replay = m.replay; }
         else if (m.type === 'log') log(m.msg);
+        else if (m.type === 'stamp') gfx.link.stampDraws = !!m.on; // (the draw probe asks for the game's values at each draw: d3d-recorder.js stamp)
         else if (m.type === 'compare') gfx.onCompare?.(m);
       };
       worker.onerror = (e) => { fail(`render worker error: ${e.message ?? e}`); settle?.(); };

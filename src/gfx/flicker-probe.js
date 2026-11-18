@@ -37,9 +37,18 @@
 // runs no sample is taken.
 // A player's display report (frame-report.js: the page's "report a display problem", ORTHROS_FLICKER_REPORT=<id>) also
 // goes through here: it takes the presents while it records — no sample, no capture meanwhile.
-// ORTHROS_FLICKER (debug global): 0 off, 2 every sample logged.
+// So does the draw probe (draw-probe.js: what each of a frame's last draws did to the picture and the values it was
+// drawn with, a few seconds, sent once per session), started without the player: by a sample whose three frames had the
+// same commands and flickered where nothing moved (alt, or still >= DP_STILL), or by a still screen that stays — two
+// samples in a row with the same commands each (a pause, a menu, a loading screen: the second one taken CONFIRM_MS after
+// the first) —; when it finds nothing it sends nothing, and tries again at the next such screen at least DP_RETRY_MS
+// later, DP_TRIES times at most (menus and loading screens before the game must leave tries for its pause). It runs
+// before the session's flicker capture, whose warm-up sends every uniform again (a stale one would be hidden).
+// ORTHROS_FLICKER (debug global): 0 off, 2 every sample logged. ORTHROS_DRAW_PROBE: 0 never, 1 a draw probe now (sent
+// whatever it finds).
 import { FlickerCapture, CAPTURE_STILL } from './flicker-capture.js';
 import { FrameReport } from './frame-report.js';
+import { DrawProbe } from './draw-probe.js';
 
 export const W = 64, H = 48, PERIOD_MS = 10000, T = 24;
 /**
@@ -61,6 +70,8 @@ const LOG_MAX = 3;
 export const RECENT = 32;
 /** an `alt` sample: at least this many ppm of the frame went A-B-A (48 pixels of 800 x 600) */
 export const ALT_MIN = 100;
+/** the draw probe: a same-commands sample flickering this much (ppm still A-B-A) starts it; a still screen's tries; their spacing; a still screen's second look */
+export const DP_STILL = 10000, DP_TRIES = 10, DP_RETRY_MS = 30000, CONFIRM_MS = 2000;
 
 const VS = '#version 300 es\nvoid main() { gl_Position = vec4(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0, 0.0, 1.0); }';
 // (per output pixel: its block [x0, x1) x [y0, y1) of the frame, every pixel fetched from the three copies)
@@ -134,12 +145,13 @@ export class FlickerProbe {
   constructor(gl, opts = {}) {
     this.gl = gl; this.now = opts.now ?? (() => performance.now()); this.log = opts.log ?? null; this.logged = 0; this.errors = opts.errors ?? true;
     this.send = opts.send ?? null; this.encode = opts.encode; this.cap = null; this.captured = false; this.armed = null; this.report = null; this.reportAsked = null;
+    this.dp = null; this.dpArmed = null; this.dpSent = false; this.dpTries = 0; this.dpNext = 0; this.sameRun = 0; // (the draw probe: draw-probe.js)
     this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, abaAlt: 0, altSame: 0, altCmdAba: 0, glErrors: 0, glError: 0 };
     this.next = this.now() + PERIOD_MS; this.left = 0; this.read = null; this.presents = 0; this.sigs = [0, 0, 0];
     this.reset();
   }
   /** The context was lost (and restored): its objects are gone, the sample in progress dropped. */
-  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; this.cap?.abort(); this.cap = null; this.report?.abort('WebGL context lost'); this.report = null; this.unsign(); }
+  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; this.cap?.abort(); this.cap = null; this.report?.abort('WebGL context lost'); this.report = null; this.dp?.abort('WebGL context lost'); this.dp = null; this.unsign(); }
   /** the device that signs the sample's frames told to stop */
   unsign() { if (this.sigDev) { this.sigDev.sigOn = false; this.sigDev = null; } }
   /** a capture records GL calls now (the GL call counter keeps away) */
@@ -157,7 +169,9 @@ export class FlickerProbe {
     // off —: it takes the presents while it records)
     const rep = this.reportStep(fbo, w, h, dev, sig);
     if (rep !== null) return rep;
-    if (globalThis.ORTHROS_FLICKER === 0 || globalThis.ORTHROS_GL_DISCARD) { if (this.cap) { this.cap.abort(); this.cap = null; } this.unsign(); return false; } // (nothing rasterized: nothing to compare — and its draw must not lift RASTERIZER_DISCARD)
+    if (globalThis.ORTHROS_FLICKER === 0 || globalThis.ORTHROS_GL_DISCARD) { if (this.cap) { this.cap.abort(); this.cap = null; } if (this.dp) { this.dp.abort('probe switched off'); this.dp = null; } this.unsign(); return false; } // (nothing rasterized: nothing to compare — and its draw must not lift RASTERIZER_DISCARD)
+    const dpr = this.drawProbeStep(fbo, w, h, dev, sig);
+    if (dpr !== null) return dpr;
     const gl = this.gl, now = this.now();
     this.presents++;
     if (this.cap) { // (a capture runs: it takes the presents, no sample meanwhile)
@@ -168,7 +182,7 @@ export class FlickerProbe {
     if (this.read) this.poll();
     // (a capture: armed by a sample, or asked — ORTHROS_FLICKER_CAPTURE=1, debugging —, when the GL methods are free to wrap)
     const ask = globalThis.ORTHROS_FLICKER_CAPTURE;
-    if ((this.armed || ask === 1) && ask !== 0 && this.send && !this.left && !this.read && (dev?.flickerCanRecord?.() ?? true)) {
+    if ((this.armed || ask === 1) && ask !== 0 && this.send && !this.left && !this.read && !this.dpArmed && !this.dp && (dev?.flickerCanRecord?.() ?? true)) { // (after the draw probe: its warm-up would hide a stale uniform)
       if (ask === 1) globalThis.ORTHROS_FLICKER_CAPTURE = undefined;
       this.cap = new FlickerCapture(gl, { send: this.send, trigger: this.armed ?? { asked: true }, now: this.now, encode: this.encode, errors: this.errors });
       this.armed = null; this.captured = true; this.unsign();
@@ -208,7 +222,7 @@ export class FlickerProbe {
    */
   reportStep(fbo, w, h, dev, sig) {
     const ask = globalThis.ORTHROS_FLICKER_REPORT;
-    if (ask && ask !== this.reportAsked && !this.report && this.send && !globalThis.ORTHROS_GL_DISCARD && !(this.cap && (this.cap.recording || this.cap.phase === 'start'))) {
+    if (ask && ask !== this.reportAsked && !this.report && this.send && !globalThis.ORTHROS_GL_DISCARD && !(this.cap && (this.cap.recording || this.cap.phase === 'start')) && !this.dp?.active) {
       this.reportAsked = ask; globalThis.ORTHROS_FLICKER_REPORT = undefined;
       if (this.left) { this.left = 0; this.dropCopies(); }
       this.unsign();
@@ -221,6 +235,28 @@ export class FlickerProbe {
     if (this.read) this.poll();
     if (this.cap && !this.cap.recording && this.cap.phase !== 'start') { this.cap.present(fbo, w, h, dev); if (this.cap.phase === 'done') this.cap = null; }
     return changed;
+  }
+  /**
+   * The draw probe's share of a present (draw-probe.js): started when armed (or asked: ORTHROS_DRAW_PROBE=1) and no
+   * sample, capture or report is in progress; given the presents while it records; polled afterwards until its record
+   * is made (the probe goes on meanwhile). Returns what present returns while it records, else null.
+   */
+  drawProbeStep(fbo, w, h, dev, sig) {
+    const ask = globalThis.ORTHROS_DRAW_PROBE;
+    if (ask === 1 && !this.dp) { globalThis.ORTHROS_DRAW_PROBE = undefined; this.dpArmed = { why: 'asked' }; }
+    if (this.dp) {
+      if (this.dp.active) return this.dp.present(fbo, w, h, dev, sig);
+      this.dp.present(fbo, w, h, dev, sig); // (its readbacks polled, its record made)
+      if (this.dp.done) {
+        if (this.dp.sent) this.dpSent = true; else { this.dpTries++; this.dpNext = this.now() + DP_RETRY_MS; this.sameRun = 0; } // (nothing sent: another try later, DP_TRIES in all)
+        this.dp = null; this.next = this.now() + PERIOD_MS;
+      }
+      return null;
+    }
+    if (!this.dpArmed || ask === 0 || !this.send || this.left || this.read || this.cap || !dev?.dev || !(dev.flickerCanRecord?.() ?? true)) return null;
+    this.dp = new DrawProbe(this.gl, { send: this.send, trigger: this.dpArmed, now: this.now, force: this.dpArmed.why === 'asked' });
+    this.dpArmed = null; this.unsign();
+    return this.dp.present(fbo, w, h, dev, sig);
   }
   /** the third frame copied: the draw comparing the three into the small target, its readback started */
   reduce(w, h) {
@@ -279,6 +315,14 @@ export class FlickerProbe {
     if (over1) st.over1++;
     const cmd = cmdPattern(sigs);
     if (still >= CAPTURE_STILL && !this.captured && !this.armed && this.send) this.armed = { still: still / 1e4, aba: aba / 1e4, chg: chg / 1e4, w, h, sample: st.n, cmd }; // (the session's capture, at the next present: flicker-capture.js)
+    // (the draw probe: a flicker under the same commands, or a still screen that stays — draw-probe.js)
+    if (cmd === 'same') this.sameRun++; else this.sameRun = 0;
+    if (!this.dpSent && !this.dp && !this.dpArmed && this.send && globalThis.ORTHROS_DRAW_PROBE !== 0 && this.dpTries < DP_TRIES) {
+      const t = { still: still / 1e4, aba: aba / 1e4, chg: chg / 1e4, w, h, sample: st.n, cmd };
+      if (cmd === 'same' && (alt || still >= DP_STILL) && this.now() >= this.dpNext) this.dpArmed = { why: 'flicker', ...t };
+      else if (this.sameRun >= 2 && this.now() >= this.dpNext) this.dpArmed = { why: 'still', ...t };
+      else if (this.sameRun === 1) this.next = Math.min(this.next, this.now() + CONFIRM_MS); // (a second look soon)
+    }
     if (alt) st.alt++;
     if (abaAlt) st.abaAlt++;
     if (alt && cmd === 'same') st.altSame++;

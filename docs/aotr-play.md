@@ -413,3 +413,67 @@ with the same `vsig` is GL's work on the same commands and values. Checked on th
 1400x1050, in-thread backend): one values signature over 850 still pause frames, and the fade-in's frames named — the
 veil's draw (#298 of ~300) 0x0b → 0x28 → 0x50 → 0x7b → 0xa3 → 0xc0 → 0xcc, the two other layers after it. (`tf` compares
 draws by index: a frame with another number of draws shows the shifted ones too.)
+
+**What his strip also shows** (the back buffers' picture identities, `flicker-report.mjs`: equal pixels share a number):
+the normal pause frames are a small set of pictures that come back exactly, in a back-and-forth order (0 1 … 16, 13
+12 … 1 0, 1 2 …: the additive swirl's animation going forward and back), and the dips sit at places of that animation
+(the 5th, 8th, 11th in the first pass), a dip of the second pass coming back bit for bit at the same place on the way
+back (picture 22 at the 8th place twice, 20 at the 5th, 24 at the 11th); from one pass to the next the levels differ.
+Dips that follow the animation's state rather than time point to a value derived from that state (the game's, or one
+Orthros keeps from an earlier draw) more than to a GPU race — which the draw probe below tells apart.
+
+## The draw probe (2026-11-18): the decisive record, without the player
+
+`src/gfx/draw-probe.js` (the record and its analysis: `src/shared/draw-probe.js`; reader: `tools/dev/draw-probe.mjs`)
+records for ~3 s what each of the frame's last draws did to the picture and the values it was drawn with, and sends it
+once per session (telemetry `event: 'draw-probe'`, ≤ 230 KB). **The player does nothing**: the flicker probe starts it
+— at a sample whose three frames had the same commands and flickered where nothing moved (`alt`, or still A-B-A ≥ 1 %),
+or at a still screen that stays (two samples in a row, the second 2 s after the first, each with three equal command
+signatures: the pause menu, ~2-12 s after Escape). When nothing varied (no frame came back A-B-A, no value moved) it
+sends nothing and tries again at the next such screen, 30 s later at least, 10 times at most (menus and loading screens
+before the game leave tries for its pause). `?dbg=ORTHROS_DRAW_PROBE=1` starts one now and sends it whatever it finds;
+`ORTHROS_DRAW_PROBE=0` never.
+- **Phases**: the device signs its frames (command signature and values record); with the render worker, the emulator
+  stamps each draw with the game's own TEXTUREFACTOR and state version (ring command `PROBE`, `d3d-recorder.js stamp`,
+  asked by the render worker's `stamp` message: the mirror keeps it); then **2 s probed**: for each of the frame's last
+  12 draws, its render target copied before and after the draw (one NEAREST blit of the whole target into a 64 x 48
+  cell: 3072 native pixels, no filtering) into an atlas read back once per frame through a pixel buffer and a fence (no
+  stall; a GPU 32 frames behind loses pictures, never waits); then **1 s control**: the presented frames only (a
+  defect the copies between draws would hide shows there). No uniform is sent again (unlike the flicker capture's
+  warm-up), and the probe runs before the session's flicker capture.
+- **Per probed draw**: the producer's TEXTUREFACTOR (the emulator's device; in-thread: the device itself), the
+  backend's (`rs(TEXTUREFACTOR)` on the mirror), the program's cached copy before its comparison (`P.v.sv.tf`) and
+  after, the value last sent to its `u_tfactor` (`P.tfSent`), whether its state / transform groups were skipped (the
+  program had seen that version), the program (GL object, key hash), render target (framebuffer, color and depth
+  objects, surface, depth surface, size, flipped), vertex array and element buffer, vertex buffer resource, GL buffer,
+  stride and offset, index buffer, start, count, vertex base, buffer uploads at the draw, raster state (blend, color
+  mask, depth, stencil, cull, scissor, viewport) and the texture matrices of the stages that use one (with whether the
+  program had seen their version).
+- **Analysis** (in the page, then again by the reader): a frame is *odd* when ≥ 0.5 % of its presented grid went A-B-A
+  between its neighbours (an animation or a scene that moves is not); rectangles of 4 x 4 grid points where the odd
+  frames differed most (`var`) and 5 fixed ones; per draw position from the frame's end and rectangle, before → after
+  in normal frames, after / before (~0.20 under a black layer of alpha 0.80), and how far the odd frames' after and
+  before moved beyond the normal frames' own spread. The culprit is the first draw, in drawing order, whose result
+  moved in the odd frames over the same picture. The verdict then reads what moved with it: **the game's own
+  TEXTUREFACTOR** (the producer's value differs in the odd frames: follow the animation frame in the game), **the render
+  worker's replay** (the producer's stayed, the backend's moved), **Orthros' uniform cache** (cached / sent value
+  differs), or **the same commands and values: GL's work** (then a GPU / ANGLE issue: try `?glworker=0`, a smaller
+  canvas, another ANGLE backend); or the picture under the probed draws already differed (an earlier draw), or odd
+  frames only in the control phase (the copies hide it: GPU timing).
+- **Reading his**: `node tools/dev/telemetry-report.mjs /var/lib/orthros/telemetry --session <id>` names the verdict;
+  `node tools/dev/draw-probe.mjs /var/lib/orthros/telemetry/telemetry-<day>.jsonl --session <id> --out <dir>` prints
+  the draws, their values in normal and odd frames, per frame the after/before ratio per rectangle (`--frames`: every
+  frame), the texture matrix set of each draw (`tm`), and writes the pictures (reference, odd, before / after the draw
+  that changed most).
+- **Cost**: nothing when idle (two field tests per draw: `WebGLDevice.dprobe`, `fakeTf`). While it records, 25 small
+  blits and one 393 KB readback per frame; the record is made in slices after the frames (40-90 ms in all, slices
+  ≤ 8 ms, SwiftShader).
+- **Checked** (`tools/with-browser-slot.sh node tools/check/draw-probe-check.mjs`, headless Chromium, the real backend
+  on a pause screen like his — scene, UI quads, the black veil MODULATE DIFFUSE x TFACTOR 0xcc with SRCALPHA blending,
+  an additive disc whose colour moves every frame —, the probe started by itself): `dbg ORTHROS_FAKE_TF=3` (GL draws the
+  veil with alpha x 0.3 one frame in three while the game, the mirror and the cache all say 0xcc: d3d8-webgl.js
+  fakeTfDraw) → "draw 3 from the end … the same values in every frame … what GL makes of the same commands and values",
+  in-thread and through the command ring (stamps); the game setting 0x28 one frame in three → "the game's own
+  TEXTUREFACTOR changed with it"; nothing varying → tried once, nothing sent. `tests/draw-probe.test.js`: it starts by
+  itself on a still screen, copies around draws only while it records, the producer's value reaches it through the ring,
+  no uniform resent, one record the server takes.

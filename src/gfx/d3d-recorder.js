@@ -66,6 +66,7 @@ export class RenderLink {
     // (the mirror's ids of shaders and vertex declarations: kept here, not on the guest's objects, which snapshots save)
     this.objIds = new WeakMap();
     this.proc = null; this.failed = false;
+    this.stampDraws = false; // (the draw probe asks: each draw stamped with the game's TEXTUREFACTOR, Recorder.stamp)
     // (buffers whose contents travel in the ring with written bytes not copied yet — see lazyAdd; the vertex layouts'
     // streams by declaration object or FVF code — Recorder.streamsRead; the stale-read check, ORTHROS_VB_CHECK)
     this.u16 = null; this.u32 = null; this.lazyN = 0; this.layoutsByObj = new WeakMap(); this.layoutsByFvf = new Map(); this.vbCheck = null; this.checkStep();
@@ -682,6 +683,7 @@ export class Recorder {
     this.flush();
     this.noteTarget(this.dev.renderTarget ?? this.dev.backBuffers[0]);
     if (this.link.lazyN !== 0 || this.link.vbCheck !== null) this.readBuffers(-1, this.vertexCount(type, count), start, 0);
+    if (this.link.stampDraws) this.stamp();
     this.w.c3(OP.DRAW, type, start, count);
     this.workDone();
   }
@@ -690,6 +692,7 @@ export class Recorder {
     const d = this.dev;
     if (this.s.ibRes) this.noteTarget(d.renderTarget ?? d.backBuffers[0]); // (the backend draws nothing without indices)
     if (this.s.ibRes && (this.link.lazyN !== 0 || this.link.vbCheck !== null)) this.readBuffers(start, this.vertexCount(type, count), 0, base);
+    if (this.link.stampDraws) this.stamp();
     const W = this.w;
     if ((base >>> 0) === base || (base | 0) === base) { const p = W.begin(OP.DRAW_INDEXED, 7), I = W.I; I[p] = type; I[p + 1] = minIdx; I[p + 2] = numV; I[p + 3] = start; I[p + 4] = count; I[p + 5] = (base >>> 0) === base ? 0 : 1; I[p + 6] = base; }
     else W.put(OP.DRAW_INDEXED, type, minIdx, numV, start, count, base);
@@ -800,11 +803,18 @@ export class Recorder {
     L.stats.vbChecked++;
     if (bad !== null) { L.stats.vbStale++; if (L.stats.vbStale <= 20) L.log(`render record: VB check: draw ${d.draws} reads stale data: ${bad}`); }
   }
+  /**
+   * The draw probe (draw-probe.js) compares the TEXTUREFACTOR its backend reads with the game's own: while it asks
+   * (link.stampDraws, set by render-host.js), each draw is preceded by that value and the device's state version as
+   * this device holds them (OP.PROBE; the mirror keeps the last one).
+   */
+  stamp() { const d = this.dev; this.w.c2(OP.PROBE, (d.rs.get(60) ?? 0xffffffff) | 0, d.stateVersion | 0); }
   vertexCount(type, prims) { switch (type) { case 1: return prims; case 2: return prims * 2; case 3: return prims + 1; case 4: return prims * 3; default: return prims + 2; } }
   drawPrimitiveUP(type, count, data, stride) {
     this.flush();
     this.noteTarget(this.dev.renderTarget ?? this.dev.backBuffers[0]);
     const n = this.vertexCount(type, count) * stride;
+    if (this.link.stampDraws) this.stamp();
     this.w.put(OP.DRAW_UP, type, count, stride, this.mem.bytes(data, Math.max(0, n)));
     this.workDone();
   }
@@ -812,6 +822,7 @@ export class Recorder {
     this.flush();
     this.noteTarget(this.dev.renderTarget ?? this.dev.backBuffers[0]);
     const nv = (minIdx + numV) * stride, ni = this.vertexCount(type, count) * (ifmt === 101 ? 2 : 4);
+    if (this.link.stampDraws) this.stamp();
     this.w.put(OP.DRAW_INDEXED_UP, type, minIdx, numV, count, ifmt, stride, this.mem.bytes(data, Math.max(0, nv)), this.mem.bytes(idx, Math.max(0, ni)));
     this.workDone();
   }
