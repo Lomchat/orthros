@@ -181,6 +181,7 @@ try {
     onMouse: () => { frame.focus(); frame.contentWindow?.postMessage({ type: 'orthros-capture' }, location.origin); shell.toast(S.capture, 4000); },
     onQuit: () => flush(), onSignedIn: () => { if (pendingMulti) { pendingMulti = false; enter('multi'); } else if (session.state === 'ready') render(entry); },
     saves: () => null,
+    working: () => session.state === 'starting' || (session.state === 'running' && !drawn), // (the engine's load in its frame, to its first images)
   });
   // (the save indicator: the account's cloud copy is the engine page's — a conflict is settled there, in the game)
   shell.showProgress(false);

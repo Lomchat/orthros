@@ -10,6 +10,7 @@ import { PointerInput, winButton, cursorView } from './pointer.js';
 import { SNAPSHOT_PREFIX, profileFiles, replaceProfile, mergeVersionProfiles, profileDates, noteProfileDates } from './data-store.js';
 import { cloudProfile, profileDir, profileKeyOf } from '../vfs/profile-share.js';
 import { createShell, lockKeys } from './shell.js';
+import { backgroundChoice } from './background-play.js';
 import { escapeToGame } from './escape.js';
 import { CloudSave } from './cloud-sync.js';
 import { accountState } from './account.js';
@@ -277,7 +278,7 @@ async function start(name, language = null) {
   const tree = await treeReq;
   state.status = 'starting'; state.manifest = name;
   // (the passive session record, perf-page.js: every 2 min of play and at the end — docs/real-machine-bench.md)
-  if (state.telemetry) state.perf = new PerfSession({ runtime: 'win32', game: name, session: state.session, version: manifest.version ?? null, build: state.version, bench: BENCH_MARK, env: () => state.env ?? environment(), storage: state.storage ?? undefined, phase: () => state.status, helper: () => state.timerHelper?.report() ?? null, pace: () => state.pacer?.counters() ?? null });
+  if (state.telemetry) state.perf = new PerfSession({ runtime: 'win32', game: name, session: state.session, version: manifest.version ?? null, build: state.version, bench: BENCH_MARK, env: () => state.env ?? environment(), storage: state.storage ?? undefined, phase: () => state.status, helper: () => state.timerHelper?.report() ?? null, pace: () => state.pacer?.counters() ?? null, awake: () => !!shell?.awake.sounding });
   startPacing();
   startTimerHelper(params);
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
@@ -637,6 +638,7 @@ function makeShell(name, manifest, language) {
     onQuit: () => saveNow(), saves: () => cloud,
     onSignedIn: (user) => lateSignIn(name, user),
     onReport: state.telemetry ? (o) => reportDisplay(o) : null, // (a display report: sent with the telemetry — none without it)
+    working: () => ['loading', 'starting', 'running'].includes(state.status), // (the worker keeps running hidden: the tab kept in the foreground)
   });
   window.orthrosShell = shell;
 }
@@ -798,6 +800,8 @@ function recordSample(m) {
   const jitMs = m.jitMs ?? 0, pj = state.lastJitMs ?? jitMs; state.lastJitMs = jitMs;
   // (busy: % of the interval the worker spent running the game; jit: ms spent translating code in the interval)
   const smp = { t: Date.now(), dt: m.dt ?? 0.5, fps: m.fps, busy: m.busy ?? null, jit: jitMs - pj, max: m.frameMax ?? 0, s33: m.slow33 ?? 0, s50: m.slow50 ?? 0, p99: m.frameP99, mips: Math.round(m.mips), api: Math.round(m.apiPerSec), draws: d3dDraws - prev, io: m.ioMB ?? 0, net: m.netMs ?? 0, netReq: m.netReq ?? 0, prog: progs - pp.n, progMs: progMs - pp.ms, frames: m.frames, st: state.status, mem: state.memoryMB ?? null, au: m.audioUnderruns ?? null, fs: !!document.fullscreenElement, vis: document.visibilityState === 'visible', ...(m.net ? { bw: m.net.bw, nw: m.net.waiting ? 1 : 0, rx: Math.round(received(m.net) / 1048576) } : {}) }; // (bw: measured link bytes/s, nw: the game waits for the network, rx: MB received)
+  // (hidden: whether the tab was kept in the foreground by background-play.js — 1 — or not — 0: the MIPS with and without)
+  const aw = shell?.awake.sample(); if (aw !== undefined) smp.aw = aw;
   // frame accounting of the interval (frame-acct.js): mean work and time by category per frame (ms), the slow frames'
   // categories summed and the worst one [ms, work ms, categories] — what made frames slow
   const fa = m.acct; if (fa) { smp.w = fa.w; smp.c = fa.c; if (fa.sc) { smp.sc = fa.sc; smp.wf = fa.wf; } }
@@ -809,7 +813,9 @@ function recordSample(m) {
   // every ~20 s a summary of the frames (perf-summary.js: percentiles, slow frames, time by category, draws, GPU time,
   // GL calls, render worker waits), at most 720 per session
   const sum = (state.summaries ??= new SummaryClock()).add(m, { t: smp.t, visible: smp.vis, fullscreen: smp.fs, status: state.status });
-  if (sum) state.queue.push({ t: smp.t, event: 'summary', ...sum, audio: state.audioStats.take(), pace: paceSince() }); // (audio: sound.js AudioStats — context, worklet, mix level, buffers; pace: refreshes per frame shown)
+  // (audio: sound.js AudioStats — context, worklet, mix level, buffers; pace: refreshes per frame shown; awake: the
+  // window's hidden time and the part kept in the foreground, background-play.js — only when the page was hidden in it)
+  if (sum) { const awake = shell?.awake.take(); state.queue.push({ t: smp.t, event: 'summary', ...sum, audio: state.audioStats.take(), pace: paceSince(), ...(awake ? { awake } : {}) }); }
   if (!state.flushTimer) state.flushTimer = setTimeout(flushTelemetry, 10000);
 }
 /**
@@ -929,8 +935,9 @@ function typeText(text) {
 }
 window.orthrosInput = { push, EV, typeText, get pointer() { return pointer; } }; // (pointer: the harness's captured-mouse moves, pointer.js)
 
-// background play: the game stays active when the page loses the focus (default; ?bg=pause or localStorage orthros.bg=pause: deactivated as before)
-state.bgActive = params.get('bg') ? params.get('bg') !== 'pause' : (() => { try { return localStorage.getItem('orthros.bg') !== 'pause'; } catch { return true; } })();
+// background play: the game stays active when the page loses the focus (default; ?bg=pause or localStorage orthros.bg=pause:
+// deactivated as before) — background-play.js, which also keeps it at full speed while the tab is hidden (shell.awake)
+state.bgActive = backgroundChoice().active;
 state.heldInput = { keys: new Map(), buttons: new Set() }; // (the page's keys and buttons down: released when it loses the focus)
 /** The page's mouse → the input ring (pointer.js): captured relative motion, or the free pointer's position. */
 const pointer = new PointerInput((type, a, b, c) => push(type, a, b, c), () => state.mode);

@@ -89,9 +89,10 @@ export class PerfSession {
    *   tier?: () => string|null, bench?: string|null, env?: () => object, phase?: () => string|null,
    *   data?: () => ({ waits: number, ms: number, sum?: object }|null), gpu?: () => object|null, send?: (rec: object) => void,
    *   helper?: () => object|null, win?: any, now?: () => number, probe?: boolean, recordMs?: number, storage?: ReturnType<typeof pageStorage>,
-   *   pace?: () => object|null }} o
+   *   pace?: () => object|null, awake?: () => boolean }} o
    *   storage: the page's (storage-persist.js: its env's `storage`, read again after each record), else one of its own;
-   *   pace: the display pacing's counters (display-pacing.js FramePacer.counters), else watchFrames' own
+   *   pace: the display pacing's counters (display-pacing.js FramePacer.counters), else watchFrames' own;
+   *   awake: the hidden page kept in the foreground now (background-play.js), else the page's shell's (orthrosShell.awake)
    */
   constructor(o) {
     this.o = o; this.win = o.win ?? globalThis; this.now = o.now ?? (() => performance.now());
@@ -116,7 +117,9 @@ export class PerfSession {
     if (this.ended) return;
     const now = this.now(), vis = this.visible();
     this.rec.counters({ gpu: this.gpu() ?? null, data: this.data() ?? null, pace: this.pace() ?? null });
-    this.rec.clock(now, vis, this.o.phase?.() ?? null);
+    // (hidden: kept in the foreground or not — background-play.js; the page's shell when the runtime does not say)
+    let awake = false; if (!vis) { try { awake = !!(this.o.awake ? this.o.awake() : globalThis.orthrosShell?.awake?.sounding); } catch { /* unknown: no */ } }
+    this.rec.clock(now, vis, this.o.phase?.() ?? null, awake);
     if (!this.probeAsked && vis && this.rec.tot.vis >= PROBE_AFTER_MS) {
       this.probeAsked = true;
       runTimingProbe().then((p) => { if (p) this.rec.setProbe({ ...p, helper: this.o.helper?.() ?? undefined }); }, () => {});
