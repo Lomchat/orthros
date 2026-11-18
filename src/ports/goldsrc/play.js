@@ -19,6 +19,7 @@ import { cloudProfile } from '../../vfs/profile-share.js';
 import { treeFiles, languageFiles } from '../../vfs/game-tree.js';
 import { engineUrls, openPortData, mountPortFiles } from '../port-files.js';
 import { phaseOnRead } from '../../vfs/emscripten-files.js';
+import { canSuspend, suspendingEngine } from '../../vfs/emscripten-suspend.js';
 import { announceMapLoads, configSetting } from './bsp-reads.js';
 import { createLobby, roomAddress } from './lobby.js';
 
@@ -112,6 +113,8 @@ function soundHint() {
 }
 setInterval(soundHint, 1000);
 let engine, db, profileDb, relay, timer, cloudTimer, saving, stopped = false;
+/** the engine's suspension while its reads wait (emscripten-suspend.js), or null: they hold the page */
+let suspend = null;
 function log(line) { logs.push(String(line)); if (logs.length > 500) logs.shift(); shell?.log(String(line)); }
 window.addEventListener('error', event => {
   if (stopped && (event.error === Infinity || event.error === 'unwind')) { event.preventDefault(); return; }
@@ -443,6 +446,11 @@ async function start() {
   const width = $('canvas').clientWidth || 1024, height = $('canvas').clientHeight || 768;
   // (a language's own arguments and folders, goldsrc.languages.<code> — the engine's, as the version's release has them)
   const own = g.languages?.[language] ?? {};
+  // (a read of the game's files that waits for the network suspends the engine's frame instead of holding the page —
+  // its header, its menus, the lobby go on — : the engine linked by emscripten-suspend.js, JSPI; ?jspi=0 turns it off)
+  suspend = params.get('jspi') !== '0' && canSuspend()
+    ? suspendingEngine({ wasm: at('engine/xash.wasm'), fs: () => engine?.em?.FS, log }) : null;
+  session.suspend = suspend?.stats ?? null;
   engine = session.engine = new Xash3D({
     canvas: $('canvas'),
     // (-dll: the engine opens the server module under the name the wrapper preloaded it with, not the one the game's
@@ -456,8 +464,12 @@ async function start() {
       menu: at(g.modules.menu ?? 'engine/libmenu.wasm'), client: at(g.modules.client), server: at(g.modules.server),
       render: { gl4es: at('engine/libref_webgl2.wasm') }
     },
-    module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))), postMainLoop: onFrame }
+    module: { print: log, printErr: log, onAbort: reason => fail(new Error(String(reason))), postMainLoop: onFrame,
+      ...(suspend ? { instantiateWasm: suspend.instantiateWasm } : {}) }
   });
+  // (the page's commands: frames of their own, their reads free to suspend the engine — `map` loads the map's server
+  // there —, each after the frame under way, never in the middle of it)
+  if (suspend) { const exec = engine.Cmd_ExecuteString.bind(engine); engine.Cmd_ExecuteString = (command) => suspend.exec('Cmd_ExecuteString', command, () => exec(command)); }
   if (g.multiplayer) attachNet(Net);
   const t = performance.now();
   await engine.init();
@@ -472,7 +484,7 @@ async function start() {
   const t0 = performance.now();
   step('files', 'active', fmtMB(0), 0);
   let nodes;
-  ({ nodes } = await mountPortFiles(gameData, { name, files: shown, FS, root: '/rodir', log, db,
+  ({ nodes } = await mountPortFiles(gameData, { name, files: shown, FS, root: '/rodir', log, db, asyncReads: !!suspend,
     onCopy: (bytes) => step('files', 'active', fmtMB(bytes), 0), onProgress: (progress) => shell.setData(progress) }));
   session.files = gameData;
   // (each map the engine loads — its .bsp read — a phase of the game data: the server learns what each map's load reads,
@@ -555,6 +567,8 @@ async function start() {
 async function quit() {
   if (session.state !== 'running') return true;
   try {
+    // (a frame waiting for its files: its end first, 5 s at most — the settings written after it)
+    if (suspend?.waiting) await Promise.race([suspend.idle(), new Promise((r) => setTimeout(r, 5000))]);
     engine?.Cmd_ExecuteString('host_writeconfig'); await save();
     const sent = cloud ? await cloud.push() : null;
     return !sent || !['error', 'toobig', 'conflict'].includes(sent.state);

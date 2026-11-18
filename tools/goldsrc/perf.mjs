@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile } from '../bench/port-perf.mjs';
+import { launchOptions, addProbe, quietReports, startMeasure, readMeasure, startProfile, stopProfile, portInGame } from '../bench/port-perf.mjs';
 
 const args = process.argv.slice(2), arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
 const [name] = args;
@@ -42,6 +42,7 @@ try {
   await page.waitForTimeout(3000);
   await page.evaluate((m) => portSession.command(`map ${m}`), map);
   await page.waitForFunction(() => perfProbe.draws > 50, null, { timeout: 60000 });
+  await portInGame(page, { timeout: 300000 }); // (the map's load goes on after its command: src/vfs/emscripten-suspend.js)
   await page.waitForTimeout(7000);
   await page.evaluate(() => document.exitPointerLock()); await page.locator('#canvas').click();
   for (const k of (arg('--join-keys', '') || '').split(',').filter(Boolean)) { await page.keyboard.press(k); await page.waitForTimeout(1000); }

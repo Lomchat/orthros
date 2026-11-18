@@ -8,6 +8,7 @@
 //   node tools/bench/data-matrix-run.mjs --base https://127.0.0.1:<proxy> --manifest <name> [--lang en] [--seconds 1200] [--shot f.png]
 import fs from 'node:fs';
 import { chromium } from 'playwright';
+import { portInGame } from './port-perf.mjs';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
 const base = opt('base'), name = opt('manifest'), lang = opt('lang', null), seconds = Number(opt('seconds', 1200));
@@ -82,6 +83,8 @@ try {
         await page.waitForFunction(() => window.portSession?.state === 'running', null, { timeout: Math.max(1000, deadline - Date.now()) }).catch(() => {});
         await page.waitForTimeout(2000);
         await page.evaluate((m) => window.portSession.command(`map ${m}`), man.goldsrc.solo.map).catch((e) => out.notes.push('map: ' + e.message));
+        // (the map in: its load goes on after its command — src/vfs/emscripten-suspend.js)
+        await portInGame(page, { timeout: Math.max(1000, deadline - Date.now()) }).catch(() => out.notes.push('map: not in by the deadline'));
         out.mapAt = at();
       } else if (rt === 're3') {
         const mode = man.modes?.[0] ?? null;

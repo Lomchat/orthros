@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { chromium } from 'playwright';
-import { rendererOf } from '../bench/port-perf.mjs';
+import { portInGame, rendererOf } from '../bench/port-perf.mjs';
 import { distance, lastStatus, scoreOf, signedOn } from './status-lines.mjs';
 
 const args = process.argv.slice(2), arg = (k) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined);
@@ -55,7 +55,12 @@ async function signIn(context, i, clean = true) {
 const nicknames = [];
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const clients = [], keys = arg('--join-keys');
-const enter = (page) => page.evaluate((command) => portSession.command(command), mode === 'solo' ? `map ${manifest.goldsrc.solo.map}` : 'connect 127.0.0.1:8080');
+/** The game in, as the player sees it (portInGame: a command that loads a map returns at once, its load after it). */
+const inGame = (page) => portInGame(page, { timeout: bootTimeout });
+const enter = async (page) => {
+  await page.evaluate((command) => portSession.command(command), mode === 'solo' ? `map ${manifest.goldsrc.solo.map}` : 'connect 127.0.0.1:8080');
+  await inGame(page);
+};
 /** A page's answer, or null after `ms` (a page whose main thread is held answers nothing). */
 const within = (promise, ms) => Promise.race([promise.catch(() => null), new Promise((resolve) => setTimeout(resolve, ms, null))]);
 const focusGame = async (page) => {
@@ -172,7 +177,7 @@ try {
     const listSaves = (dir) => { const FS = portSession.engine.em.FS; try { return FS.readdir(dir).filter((f) => f.startsWith('orthros_qa')).sort().map((f) => ({ f, size: FS.stat(dir + '/' + f).size })); } catch { return []; } };
     await page.waitForFunction((dir) => { try { return portSession.engine.em.FS.readdir(dir).some((f) => f.startsWith('orthros_qa')); } catch { return false; } }, saves, { timeout: 15000 });
     await page.evaluate(() => portSession.save());
-    await page.evaluate(() => portSession.command('load orthros_qa')); await page.waitForTimeout(5000);
+    await page.evaluate(() => portSession.command('load orthros_qa')); await page.waitForTimeout(5000); await inGame(page);
     if (args.includes('--reload')) {
       const saved = await page.evaluate(listSaves, saves);
       await page.evaluate(() => document.exitPointerLock());
@@ -197,7 +202,7 @@ try {
       await again.waitForFunction(() => renderProbe.draws > 50, null, { timeout: 30000 });
       const restored = await again.evaluate(listSaves, saves);
       if (JSON.stringify(restored) !== JSON.stringify(saved)) throw new Error('Saved files changed across quit and relaunch' + (nicknames[0] ? ' on another device' : '') + `: ${JSON.stringify({ saved, restored })}`);
-      await again.evaluate(() => portSession.command('load orthros_qa')); await again.waitForTimeout(5000);
+      await again.evaluate(() => portSession.command('load orthros_qa')); await again.waitForTimeout(5000); await inGame(again);
       console.log('PERSISTENCE', JSON.stringify({ saved, restored, otherDevice: !!nicknames[0] }));
     }
   }
