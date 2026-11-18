@@ -120,7 +120,8 @@ Checked in Chromium here, without automation attached to the page (`tools/with-b
 tools/check/hidden-tab/check.mjs`: Chromium started directly, a tiny extension hides the tab and reads Chrome's own
 `audible`): hidden and silent, the page's renderer goes to nice 5 (Linux's form of the lowered priority) and the tab is
 not audible; with the offset Chrome calls the tab audible and the renderer comes back to nice 0 within a second
-(2026-11-18, Chromium of Playwright 1.63); a constant of -68 dBFS and over is audible, -74 and -80 are not. Not reproducible here: Windows' slower cores — the owner's next sessions
+(2026-11-18, Chromium of Playwright 1.63); a constant of -68 dBFS and over is audible, -74 and -80 are not. Its cost:
+the browser's processes on an idle hidden page 1.5 → 2.5 % of one core (8 s, one run each). Not reproducible here: Windows' slower cores — the owner's next sessions
 say it (below). Playwright starts Chromium with `--disable-renderer-backgrounding` (and no occluded-window or timer
 backgrounding): the harness and the benches never see this slowdown.
 
