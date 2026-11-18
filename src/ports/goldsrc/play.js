@@ -593,6 +593,7 @@ try {
     steps: Object.entries(S.steps).map(([k, label]) => ({ k, label })), tips: S.tips, extras: [lobbyButton],
     onQuit: quit, onFullscreen: fullscreen, onMouse: giveMouse, onSignedIn: lateSignIn, saves: () => cloud,
     onLoaderHidden: fit,
+    working: () => session.state === 'starting', // (its load; the engine stops with the page's animation frames once it runs)
   });
   shell.sound.addEventListener('click', resumeAudio);
   // (the multiplayer lobby: among the loading screen's choices while the game loads, over the game after it)

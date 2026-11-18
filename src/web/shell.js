@@ -5,13 +5,15 @@
 //   - the loading screen before the game shows: the game's cover blurred behind, who plays (the Orthros account, or a
 //     warning that nothing is saved on an account), the runtime's choices when it has some, the steps of the start;
 //   - passing messages, the questions asked to the player, the "sound is off" button;
-//   - "report a display problem" (a runtime that can record one: onReport), its button in the header and Ctrl+Shift+F.
+//   - "report a display problem" (a runtime that can record one: onReport), its button in the header and Ctrl+Shift+F;
+//   - the game kept at full speed while the tab is hidden (background-play.js: `working`, the runtime's own state).
 // The page drives it (createShell(...) and the methods it returns); it never names a game. Styles: player.css.
 import { pickLang } from './lang.js';
 import { h } from './dom.js';
 import { gpuInfo, gpuShortName } from './gpu-class.js';
 import { accountState, signIn, onAccountChange, googleSignIn, googleText, GOOGLE_G } from './account.js';
 import { REPORT_GAP_MS } from '../shared/display-report.js';
+import { KeepAwake } from './background-play.js';
 
 const LOGO = '/src/web/orthros_logo.png';
 const STRINGS = {
@@ -116,13 +118,18 @@ const svg = (name) => { const s = h('span', { class: 'ic', 'aria-hidden': 'true'
  *   tips?: string[], extras?: HTMLElement[], headless?: boolean,
  *   onQuit?: () => Promise<boolean|void>, onFullscreen?: () => void, onMouse?: () => void, onPerf?: () => void, onSignedIn?: (user) => void,
  *   onReport?: (o: { recorded: () => void }) => Promise<{ ok: boolean, why?: string, again?: boolean }>,
- *   saves?: () => import('./cloud-sync.js').CloudSave|null }} o
+ *   saves?: () => import('./cloud-sync.js').CloudSave|null, working?: () => boolean }} o
  * `onReport`: a display report made (recorded — `recorded()` once the recording is over —, then sent); none: no button
+ * `working()`: the game loads or runs and works while the tab is hidden (an engine stopped with the page's animation
+ * frames does not): the tab then kept in the foreground (background-play.js, `shell.awake`); none: never
  */
 export function createShell(o) {
   const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
   document.documentElement.lang = lang;
   const shell = { lang, S, account: null, accounts: null, running: false };
+  // (the game at full speed in a hidden tab: an inaudible signal keeps Chrome from lowering the page's process — its
+  // state in the telemetry: shell.awake.sample() / take())
+  shell.awake = new KeepAwake({ working: o.working ?? (() => false) });
 
   // ---------------------------------------------------------------- the header
   const fpsEl = h('span', { class: 'fps' }, '–'), sub = h('span', { class: 'sub' }), graph = h('canvas', { width: 96, height: 24 });

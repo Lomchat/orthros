@@ -613,6 +613,7 @@ try {
     steps: Object.entries(S.steps).map(([k, label]) => ({ k, label })), tips: S.tips,
     onQuit: quit, onFullscreen: fullscreen, onMouse: giveMouse, onSignedIn: lateSignIn, saves: () => cloud,
     onLoaderHidden: fit,
+    working: () => session.state === 'starting', // (its load; the engine stops with the page's animation frames once it runs)
   });
   shell.sound.addEventListener('click', resumeAudio);
   const modes = Object.keys(config.re3.modes ?? {});

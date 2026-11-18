@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Orthros hidden tab check</title>
+<!-- tools/check/hidden-tab/check.mjs: the shared module that keeps a hidden page in the foreground
+     (src/web/background-play.js), a worker counting its loops, the page's state posted to the check's server. -->
+<script type="module">
+import { KeepAwake } from '/src/web/background-play.js';
+const awake = new KeepAwake({ working: () => true });
+const post = (rate) => fetch('/state', { method: 'POST', body: JSON.stringify({ t: Date.now(), rate, vis: document.visibilityState, aw: awake.state, sounding: awake.sounding, ctx: awake.ctx?.state ?? null }) }).catch(() => {});
+const loop = `let n = 0, t0 = performance.now();
+for (;;) { let x = 0; for (let i = 0; i < 2e6; i++) x = (x + i * 7) | 0; n++; const t = performance.now(); if (t - t0 >= 500) { postMessage({ rate: n * 1000 / (t - t0), x }); n = 0; t0 = t; } }`;
+new Worker(URL.createObjectURL(new Blob([loop], { type: 'text/javascript' }))).onmessage = (e) => post(Math.round(e.data.rate * 10) / 10);
+</script>

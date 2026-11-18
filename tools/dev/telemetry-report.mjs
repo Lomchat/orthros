@@ -118,6 +118,27 @@ export function stretches(samples) {
 }
 
 /**
+ * The emulated CPU's speed with the tab visible, hidden and kept in the foreground (`aw` 1: src/web/background-play.js)
+ * and hidden without (`aw` 0, or a build before it): the median MIPS of the samples where the worker was busy (≥ 90 % of
+ * the interval — a boot, a load, a game held by its CPU), and the guest + API work a frame in play (≥ 10 fps, the frame
+ * accounting's categories). Chrome lowers a hidden silent tab's process (2026-11-18: 2.5-4 times slower on the owner's
+ * laptop); null when the session was never hidden.
+ */
+export function hiddenSpeed(samples) {
+  const groups = { visible: [], awake: [], hidden: [] };
+  for (const x of samples) if (x.st === 'running' || x.st === 'starting') groups[x.vis !== false ? 'visible' : x.aw === 1 ? 'awake' : 'hidden'].push(x);
+  if (!groups.awake.length && !groups.hidden.length) return null;
+  const med = (v) => { const a = v.filter(Number.isFinite).sort((p, q) => p - q); return a.length ? a[a.length >> 1] : null; };
+  const out = {};
+  for (const [k, xs] of Object.entries(groups)) {
+    const busy = xs.filter((x) => (x.busy ?? 0) >= 90), play = xs.filter((x) => (x.fps ?? 0) >= 10 && x.c);
+    out[k] = { seconds: Math.round(xs.reduce((a, x) => a + (x.dt ?? 0), 0)), busySeconds: Math.round(busy.reduce((a, x) => a + (x.dt ?? 0), 0)), mips: med(busy.map((x) => x.mips)),
+      playSeconds: Math.round(play.reduce((a, x) => a + (x.dt ?? 0), 0)), work: med(play.map((x) => (x.c.guest ?? 0) + (x.c.api ?? 0))) };
+  }
+  return out;
+}
+
+/**
  * The ~20 s summaries merged per stretch (consecutive summaries of one kind, a 3D scene or not): frame-time
  * percentiles from the merged histograms, slow-frame rates, draws / GL calls / GPU time / render waits per frame.
  */
@@ -177,7 +198,7 @@ export function report(sessions, { minSeconds = 60, bench = undefined, players =
     if (seconds < minSeconds && !benches.length && !s.capture && !s.drawProbe) continue;
     const cmds = {}; for (const x of s.flickerLogs) cmds[x.cmd] = (cmds[x.cmd] ?? 0) + 1;
     const r = { session: s.id, game: s.game, bench: s.bench, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), compat: s.compat, benches,
-      flickerCapture: s.capture, drawProbe: s.drawProbe, flickerLogs: s.flickerLogs.length ? { n: s.flickerLogs.length, maxStill: Math.max(...s.flickerLogs.map((x) => x.still).filter((v) => !Number.isNaN(v)), 0), commands: cmds } : null };
+      hidden: hiddenSpeed(s.samples), flickerCapture: s.capture, drawProbe: s.drawProbe, flickerLogs: s.flickerLogs.length ? { n: s.flickerLogs.length, maxStill: Math.max(...s.flickerLogs.map((x) => x.still).filter((v) => !Number.isNaN(v)), 0), commands: cmds } : null };
     for (const st of stretches(s.samples)) {
       const min = st.seconds / 60, n = st.acctFrames || 1, slowTotal = Object.values(st.slowCats).reduce((a, b) => a + b, 0);
       r.stretches.push({ kind: st.kind, at: new Date(st.t0).toISOString().slice(11, 19), seconds: Math.round(st.seconds), fps: +(st.frames / st.seconds).toFixed(1), busy: Math.round(st.busy / st.seconds), per33: Math.round(st.s33 / min), per50: Math.round(st.s50 / min),
@@ -296,6 +317,8 @@ export function formatReport(reports, comparison) {
       if (st.slowShares) L.push(`      slow frames' time (%): ${st.slowShares}; worst ${st.worst[0]} ms (work ${st.worst[1]}: ${Object.entries(st.worst[2]).map(([k, v]) => `${k} ${v}`).join(', ')})`);
     }
     if (r.audio && r.audio.verdict !== 'none') L.push(`  ${audioText(r.audio)}`);
+    // (the tab hidden: Chrome's lowered priority, and the foreground kept by background-play.js — hiddenSpeed)
+    if (r.hidden) L.push(`  hidden tab, MIPS while the worker is busy (s) | guest+API ms a frame in play (s): ${Object.entries(r.hidden).filter(([, g]) => g.seconds).map(([k, g]) => `${k === 'awake' ? 'hidden kept awake' : k} ${g.mips ?? '-'} (${g.busySeconds}) | ${g.work !== null ? g.work.toFixed(1) : '-'} (${g.playSeconds})`).join('; ')}`);
     for (const line of compatLines(r.compat)) L.push(`  ${line}`);
     if (r.summaryStretches.length) L.push('  summaries (every ~20 s), merged per stretch:');
     for (const st of r.summaryStretches) {

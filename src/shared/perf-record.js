@@ -89,8 +89,9 @@ class Acc {
 }
 
 /**
- * The recording of one session. The page calls `clock(now, visible, phase)` about every second (time, visibility,
- * phase), and either `frame(dtMs, workMs, dataMs)` for each frame shown (the ports: their frame meters) or
+ * The recording of one session. The page calls `clock(now, visible, phase, awake)` about every second (time, visibility,
+ * phase, whether a hidden page was kept in the foreground: src/web/background-play.js — the record's `aw`, seconds),
+ * and either `frame(dtMs, workMs, dataMs)` for each frame shown (the ports: their frame meters) or
  * `interval(acct, dtMs)` for each stats interval (Win32: frame-acct.js FrameStats.takeInterval, ~0.5 s), and
  * `counters({ gpu, data })` with the cumulative GPU timer (gpu-probe.js stats.gpu) and game data waits ({ waits, ms },
  * and `sum` the session's attribution so far: compactDataSum, in the totals).
@@ -100,18 +101,18 @@ export class PerfRecorder {
   /** @param {{ header?: object, recordMs?: number, minuteMs?: number }} [o] */
   constructor(o = {}) {
     this.header = o.header ?? {}; this.recordMs = o.recordMs ?? RECORD_MS; this.minuteMs = o.minuteMs ?? MINUTE_MS;
-    this.t0 = null; this.last = null; this.visible = true; this.phase = null;
+    this.t0 = null; this.last = null; this.visible = true; this.phase = null; this.awake = false;
     this.cur = null; this.done = []; this.dropped = 0; this.tot = new Acc(0); this.seq = 0; this.lastRecord = null; this.ended = false;
     this.gpuNow = null; this.dataNow = null; this.dataSum = null; this.dataSumSrc = null; this.probe = null; this.probeSent = false;
     this.slowFrames = {}; // (the ports' slow frames by cause, summed ms: added to the entry's `slow`)
   }
   /** The time since the last clock goes to the visible or the hidden time; entries close at minutes and phase changes. */
-  clock(now, visible = true, phase = this.phase) {
+  clock(now, visible = true, phase = this.phase, awake = false) {
     if (this.t0 === null) { this.t0 = now; this.last = now; this.lastRecord = now; }
     const el = Math.max(0, now - this.last); this.last = now;
     this.cur ??= this.open(now);
-    if (this.visible) { this.cur.vis += el; this.tot.vis += el; } else { this.cur.hid += el; this.tot.hid += el; }
-    this.visible = visible;
+    if (this.visible) { this.cur.vis += el; this.tot.vis += el; } else { this.cur.hid += el; this.tot.hid += el; if (this.awake) this.tot.aw = (this.tot.aw ?? 0) + el; }
+    this.visible = visible; this.awake = !!awake;
     if (phase !== this.phase) {
       this.phase = phase;
       if (this.cur.vis + this.cur.hid >= MIN_SPLIT_MS) this.close(now); else this.cur.ph = phase;
@@ -213,13 +214,13 @@ export class PerfRecorder {
   take(now, final = false) {
     if (this.ended || this.t0 === null) return null;
     if (!final && !this.due(now)) return null;
-    if (final) { this.clock(now, this.visible, this.phase); this.close(now); this.ended = true; }
+    if (final) { this.clock(now, this.visible, this.phase, this.awake); this.close(now); this.ended = true; }
     if (final && !this.seq && !this.tot.n && !this.done.length) return null; // (a page that never showed a frame: nothing to send)
     else if (!this.done.length) { this.lastRecord = now; return null; } // (nothing new to say: a hidden tab sends nothing)
     this.lastRecord = now; this.syncTotals();
     this.takeDataSum();
     const rec = { event: 'perf', v: PERF_VERSION, ...this.header, seq: this.seq++, final: !!final,
-      len: Math.round((now - this.t0) / 1000), vis: r1(this.tot.vis / 1000), hid: r1(this.tot.hid / 1000),
+      len: Math.round((now - this.t0) / 1000), vis: r1(this.tot.vis / 1000), hid: r1(this.tot.hid / 1000), ...(this.tot.aw ? { aw: r1(this.tot.aw / 1000) } : {}),
       mins: this.done.splice(0), tot: this.entry(this.tot, true) };
     if (this.dropped) { rec.dropped = this.dropped; this.dropped = 0; }
     if (this.probe && (!this.probeSent || final)) { rec.probe = this.probe; this.probeSent = true; }
@@ -319,7 +320,7 @@ export function sanitizePerfRecord(r) {
   const rec = {
     event: 'perf', v: PERF_VERSION, session: r.session, game: typeof r.game === 'string' ? r.game.slice(0, 120) : null, runtime: r.runtime,
     ...pick(r, { version: nullable((v) => str(v, 80)), build: nullable((v) => str(v, 80)), tier: nullable((v) => str(v, 16)), bench: nullable((v) => str(v, 60)) }),
-    seq, final: r.final === true, ...pick(r, { len: (v) => num(v, 1e7), vis: (v) => num(v, 1e7), hid: (v) => num(v, 1e7), dropped: (v) => int(v) }),
+    seq, final: r.final === true, ...pick(r, { len: (v) => num(v, 1e7), vis: (v) => num(v, 1e7), hid: (v) => num(v, 1e7), aw: (v) => num(v, 1e7), dropped: (v) => int(v) }),
     mins: r.mins.map((e) => pick(e, ENTRY)),
     tot: { ...pick(r.tot, ENTRY), ...(r.tot.data && typeof r.tot.data === 'object' ? { data: pick(r.tot.data, TOT_DATA) } : {}), ...(hist(r.tot.h) ? { h: r.tot.h } : {}) },
   };

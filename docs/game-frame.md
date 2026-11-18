@@ -97,8 +97,40 @@ button down — and the game stays the active application: no `WM_ACTIVATEAPP 0`
 the way back (the owner's "application deactivated: device lost" at each window switch, AotR 2026-11-17, and a switch
 back to a mode that failed on that lost device: docs/sage-display-mode-confirm.md). The "paused" banner is not shown.
 The game keeps running and rendering in the background (the worker and its OffscreenCanvas are not throttled with
-the page; not measured). `?bg=pause`, or `localStorage['orthros.bg'] = 'pause'`, restores the former behaviour, the
+the page). `?bg=pause`, or `localStorage['orthros.bg'] = 'pause'`, restores the former behaviour, the
 game deactivated on blur (D052) — the harness's `--bg pause`; the emulator's deactivation path is unchanged.
+
+### At full speed in a hidden tab (every runtime, 2026-11-18)
+
+Running is not enough: Chrome lowers the priority of a renderer process whose pages are all hidden — every thread of
+it, the emulator's worker and the render worker included (Windows: a lower priority class and EcoQoS, slower cores at
+a low clock). The owner's sessions (2026-11-08..18, RTX 4050 laptop, Chrome 157): the tab hidden and silent ran the
+guest 2.5-4 times slower at once — AotR's boot 1 600-1 900 MIPS visible, 200-750 hidden, the worker busy all the time
+(a boot of 55-73 s visible, 132 s mostly hidden); RotWK in play, the same scene, 16 → 60 ms of guest work a frame
+(28 → 14 fps) — and at full speed while hidden with the game's own music playing. Chrome keeps a process in the
+foreground when one of its frames is *audible*: an output stream at or over -72.25 dBFS (services/audio/output_stream.cc,
+measured 15 times a second; content/browser/media/audio_stream_monitor.cc `kPlayingAudibleAudioStream`).
+
+`src/web/background-play.js` (created by the shell for every runtime; each page says when its game works — `working`:
+the Windows games while they load and run, the browser ports during their load only, their engines stopping with the
+page's animation frames) plays, while the page is hidden and the game works, a constant offset of 1/512 (-54 dBFS) on
+an AudioContext of its own, faded in and out over 0.5 s and suspended while the page is visible: a constant moves a
+loudspeaker's cone by 0.2 % of its travel and keeps it there, nothing is heard; Chrome shows the tab as playing sound.
+Checked in Chromium here, without automation attached to the page (`tools/with-browser-slot.sh xvfb-run -a node
+tools/check/hidden-tab/check.mjs`: Chromium started directly, a tiny extension hides the tab and reads Chrome's own
+`audible`): hidden and silent, the page's renderer goes to nice 5 (Linux's form of the lowered priority) and the tab is
+not audible; with the offset Chrome calls the tab audible and the renderer comes back to nice 0 within a second
+(2026-11-18, Chromium of Playwright 1.63); a constant of -68 dBFS and over is audible, -74 and -80 are not. Not reproducible here: Windows' slower cores — the owner's next sessions
+say it (below). Playwright starts Chromium with `--disable-renderer-backgrounding` (and no occluded-window or timer
+backgrounding): the harness and the benches never see this slowdown.
+
+Not when the player pauses the game in the background (`?bg=pause`), nor with `?awake=0` / `localStorage['orthros.awake']
+= '0'` (the A/B of this mitigation), and not past 30 minutes hidden in one go: an audible tab keeps Windows from going to
+sleep, a game forgotten in a hidden tab must not keep the computer awake for ever. The telemetry says when it was on:
+the Windows games' samples carry `aw` while hidden (1 kept in the foreground, 0 not), their summaries `awake` ({ hid, on,
+st } seconds of the window), the passive records of every runtime `aw` (seconds hidden and kept); `node
+tools/dev/telemetry-report.mjs` prints per session the MIPS while the worker is busy and the work a frame in play,
+visible / hidden kept awake / hidden.
 
 ## One identity: the Orthros account
 
