@@ -619,3 +619,46 @@ at frame 20 and one asked while the session's probe records (it waits for that p
 window): two records, the report's printed by flicker-report.mjs. On the game (run 3, High, the pause over the
 construction, the header's button): the report and its probe sent (63 KB and 9 KB, server 204), the probe's 6 frames
 (SwiftShader ~2 fps) with the game's values stamped, no odd frame.
+
+## Parameter blocks: the flicker while a building is under construction (2026-11-18, cause found and fixed)
+
+The owner's flicker — everything alternating as soon as he builds, in play and in the pause menu in Age of the Ring,
+in the pause menu in RotWK — was Orthros handing one D3DX parameter block's handle to another block. It closes the
+sections above ("objects that alternate", "the pause menu's veil", "a building under construction"): the game's
+values, GL, the uniform cache and the timing were all innocent — the 45-frame cycle of commands in his report is the
+ring of handles turning.
+
+- **Reproduction.** His own skirmish save (Erech, Dol Guldur, a building at 64-95 %), loaded from the menu with his
+  profile (StaticGameLOD High), headless Chromium / SwiftShader at 1280x720 and Node (`startbench --gfx backend`). In
+  the pause menu no two consecutive frames were equal: a strict cycle of 9 frames in the browser, 3 000-13 000 pixels
+  moving by up to 200 levels — trees, units and the building site drawn, absent or translucent in turn, and the
+  veil missing. A capture of nine frames (`dbg:ORTHROS_CAPTURE_FRAMES`) showed the same 331 draws in the same order,
+  a third of them with another material from frame to frame: the normal one (alpha blending off, depth write, CW
+  culling) or an additive one (ONE / ONE, no depth write, no culling, a 1x1 second texture, a fading colour).
+  My earlier tries (a dwarven mine in a fresh skirmish) never showed it: too few moving materials to turn the ring.
+- **The game.** `game.dat` 0x551f94 (the same code in RotWK's and Age of the Ring's): a material whose constants
+  moved deletes its block and records it again — `DeleteParameterBlock([esi+0x24])`, `BeginParameterBlock`, the
+  setters, `[esi+0x24] = EndParameterBlock()` —, and every draw applies its material's block
+  (`ApplyParameterBlock([esi+0x24])`, 0x551847). With the building under construction: 40 materials recorded again
+  per pass, 52-100 blocks a frame, beside the blocks of the materials that never change; 65-114 blocks alive at once.
+- **Orthros.** `EndParameterBlock` drew its handles from a ring of 90 values (`nextBlock++ % 90`, since the first
+  d3dx9, fd6ffe9). Each turn of the ring gave a static material's handle to a moving one: the static material then
+  applied that block's values, and once the moving material deleted "its" block, the static one's
+  `ApplyParameterBlock` failed (D3DERR_INVALIDCALL) and it drew with whatever the previous draw had left. Period:
+  90 / blocks recorded per frame — 9 frames at 10 a frame, and **45/8 frames at 16 a frame: his report mjcpu55w**
+  (pictures and command signatures repeating after exactly 45 frames, eight events in between).
+- **Fix** (`src/win32/d3dx9-effect.js`): a block's handle is the address of a process-heap allocation of its own, as
+  D3DX's — unique while the block lives, given back by `DeleteParameterBlock` and at the effect's release.
+  `tests/d3dx9-effect-bind.test.js` replays the mechanism (a kept block, another deleted and recorded 300 times: it
+  failed at the 89th on the old code).
+- **Measured, his save.** Node, play then pause, 401 frames: `ApplyParameterBlock` failures 47-84 a frame before
+  (of 163-246 calls), 0 of 93 004 after; draws whose program or raster state differs from the previous paused
+  frame's 45-171 a frame before (cycle of 15 frames at 78 blocks a frame), 0 over 60 frames after. Browser, paused,
+  60 consecutive back buffers: at most 10 pixels moving by more than 8 levels (the command bar's orb), the veil in
+  place; in play, 30 frames, no frame with more than 130 A-B-A pixels (the site's light beam).
+- **What would have shown it.** `ApplyParameterBlock` failed 50 times a frame for weeks without a line anywhere: an
+  application naming a block the effect does not hold is now a `[warn]` (once per effect, with the caller). And a
+  signed frame's values record also hashes the shader constants its draws read (`csig`, `cn`, `cd`: d3d8-webgl.js
+  valDraw; display report, draw probe, `tools/dev/flicker-report.mjs`): an effect's values travel there, so the
+  record of TEXTUREFACTOR and the material could not see materials taking turns
+  (`tools/check/display-report-check.mjs` carries the new fields from the renderer to the reader).

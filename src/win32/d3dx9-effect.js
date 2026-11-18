@@ -110,7 +110,7 @@ export function defineEffects(X, vm, h) {
       ({ shaders: this.shaders, exprs: this.exprs, refs: this.refs } = effectResources(parsed));
       this.technique = this.techniques[0] ?? null;
       mem.write32(this.handleBlock + FX_SLOTS, this.technique?.passes.length ?? 0);
-      this.saved = null; this.pass = null; this.stateManager = 0; this.recording = null; this.blocks = new Map(); // (parameter blocks by handle)
+      this.saved = null; this.pass = null; this.stateManager = 0; this.recording = null; this.blocks = new Map(); this.blockWarned = false; // (parameter blocks by handle; noBlock)
       // (filled at first use; declared here so that every effect object has one shape: the per-call methods read them)
       this.comObject = null; this.devImpl = null; this.devObj = null; this.fastCtx = null; this.devFns = null; this.vsRegsRaw = undefined; this.psRegsRaw = undefined;
       this.paramShaders = null; this.missing = null; this.unknownOps = null; this.commitBlock = 0; this.commitPublished = null; this.commitShadow = 0; this.noRestore = 0;
@@ -351,7 +351,7 @@ export function defineEffects(X, vm, h) {
       this.recording = null; return id;
     }
     ApplyParameterBlock(c) {
-      const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return D3DERR_INVALIDCALL;
+      const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return this.noBlock(c, 'ApplyParameterBlock');
       for (let k = 0; k < b.length; k++) {
         const e = b[k];
         if (e.words !== null && !apiOpt.fxRef) { // (a version move only for a real change, as the setters)
@@ -365,7 +365,17 @@ export function defineEffects(X, vm, h) {
         this.touched(e.n);
       }
     }
-    DeleteParameterBlock(c) { const h = c.arg(1) >>> 0; if (!this.blocks.delete(h)) return D3DERR_INVALIDCALL; this.proc.processHeap.free_(h); return D3D_OK; }
+    DeleteParameterBlock(c) { const h = c.arg(1) >>> 0; if (!this.blocks.delete(h)) return this.noBlock(c, 'DeleteParameterBlock'); this.proc.processHeap.free_(h); return D3D_OK; }
+    /**
+     * A parameter block the application names that this effect does not hold (deleted, another effect's): the call
+     * fails as D3DX's, and the log says so once per effect — an application does not do that on Windows, so it is
+     * Orthros' doing (handles given twice made BFME2 apply such blocks every frame, unseen for weeks: see EndParameterBlock).
+     */
+    noBlock(c, what) {
+      const h = c.arg(1) >>> 0;
+      if (h !== 0 && !this.blockWarned) { this.blockWarned = true; vm.log('warn', `d3dx effect: ${what}(0x${h.toString(16)}): no such parameter block, from ${c.proc?.symbolize?.(c.retAddr) ?? '?'} (said once per effect)`); }
+      return D3DERR_INVALIDCALL;
+    }
     CloneEffect(c) { if (!c.arg(2)) return D3DERR_INVALIDCALL; const e = new Effect(c, c.arg(1) || this.dev, this.fx, this.flags); mem.write32(c.arg(2), createEffect(c, e)); com.addRef(com.objectAt(e.dev)); }
 
     Begin(c) {
