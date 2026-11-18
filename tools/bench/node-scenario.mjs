@@ -196,6 +196,7 @@ export class NodeScenario {
           this.log(`[input] dbg ${k}=${v ?? ''}`);
         } else if (/^ORTHROS_[A-Z0-9_]+$/.test(k) && !/^ORTHROS_(JIT_AB|JIT_HEAT|JIT_HARVEST)$/.test(k)) { // (other worker debug globals, as the browser worker sets them)
           globalThis[k] = v === undefined || v === '' ? undefined : Number.isNaN(Number(v)) ? v : Number(v);
+          refreshApiOpt(); // (the switches read from debug globals once, as the browser worker does: ORTHROS_FX_BURST)
           this.log(`[input] dbg ${k}=${v ?? ''}`);
         }
         break;
