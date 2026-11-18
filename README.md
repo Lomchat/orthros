@@ -170,8 +170,9 @@ plus deux versions dans une même session. Le serveur range ces versions dans `-
 sert immuables (mises en cache par le navigateur sans revalidation) et garde 7 jours celles qui servent encore.
 
 Le canal décide quelle version reçoivent les joueurs (`node tools/ops/build-channel.mjs <commande>`, sans redémarrage) :
-- `auto` (par défaut) : la dernière version de l'arbre, comme avant — chaque fusion arrive au chargement suivant ;
-- `restart` : la version de l'arbre au démarrage du serveur — une fusion arrive au prochain redémarrage ;
+- `restart` (par défaut) : la version de l'arbre au démarrage du serveur — une fusion arrive au prochain redémarrage,
+  en même temps que le code du serveur ;
+- `auto` : la dernière version de l'arbre, comme avant — chaque fusion arrive au chargement suivant ;
 - `promote [<id>]` : une version épinglée (« stable »), jusqu'à la promotion suivante ; `promote <id>` d'une version
   gardée sert de retour arrière.
 `status` affiche le canal et les versions gardées. Avec `?channel=main` dans l'adresse (retenu par un cookie,

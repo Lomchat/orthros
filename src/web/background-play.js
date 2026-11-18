@@ -9,7 +9,7 @@
 // kSilenceThresholdDBFS: "…downgrading the tab's priority"), the frame then counts as a media stream that keeps its
 // process in the foreground (content/browser/media/audio_stream_monitor.cc, kPlayingAudibleAudioStream).
 // The owner's sessions (2026-11-08..18, RTX 4050 laptop, Chrome 157 on Windows): the page hidden and silent ran the
-// guest 2.5-4 times slower at once (AotR's boot 1 600-1 900 → 400-750 MIPS, the worker busy all the time; RotWK's
+// guest 2.5-7 times slower at once (AotR's boot 1 600-1 900 → 200-750 MIPS, the worker busy all the time; RotWK's
 // play, the same scene: 16 → 60 ms of guest work a frame) — and at full speed while hidden with the game's music.
 // Checked in Chromium here (Linux: the renderer's nice value, Chrome's own `audible` of the tab): a hidden silent tab's
 // renderer goes to nice 5; with a constant offset of -54 or -68 dBFS on an AudioContext the tab is audible and its
@@ -37,6 +37,11 @@ export const AWAKE_FADE_S = 0.5;
 export const AWAKE_MAX_HIDDEN_MS = 30 * 60 * 1000;
 /** how often the state is checked again (ms): the runtime's work starting or ending, the hidden time's limit */
 export const AWAKE_CHECK_MS = 2000;
+
+// (the browser's own AudioContext and connect, taken when this module loads: before a port's page patches them to track
+// and meter its engine's sound — goldsrc/re3 play.js —, so that the signal's context is not counted as the game's: no
+// false "sound is off" button, no extra context in its audio report)
+const NATIVE_AUDIO_CONTEXT = globalThis.AudioContext ?? null, NATIVE_CONNECT = globalThis.AudioNode?.prototype?.connect ?? null;
 
 const storageGet = (storage, key) => { try { return storage?.getItem(key) ?? null; } catch { return null; } };
 /**
@@ -73,7 +78,7 @@ export class KeepAwake {
   constructor(o = {}) {
     this.win = o.win ?? globalThis; this.choice = o.choice ?? backgroundChoice(this.win.location?.search ?? '');
     this.working = o.working ?? (() => true); this.now = o.now ?? (() => performance.now());
-    this.createContext = o.createContext ?? (() => new this.win.AudioContext({ latencyHint: 'playback' }));
+    this.createContext = o.createContext ?? (() => new ((this.win === globalThis && NATIVE_AUDIO_CONTEXT) || this.win.AudioContext)({ latencyHint: 'playback' }));
     this.maxHiddenMs = o.maxHiddenMs ?? AWAKE_MAX_HIDDEN_MS;
     this.ctx = null; this.node = null; this.wanted = false; this.state = 'visible'; this.error = null; this.offGesture = null; this.suspendTimer = null;
     this.hiddenSince = null; this.last = this.now();
@@ -114,9 +119,12 @@ export class KeepAwake {
       try {
         this.ctx = this.createContext();
         this.node = new this.win.ConstantSourceNode(this.ctx, { offset: 0 });
-        this.node.connect(this.ctx.destination); this.node.start();
-        // (not allowed to start yet — no user activation in this page —: at the player's next gesture)
-        this.offGesture = resumeOnGesture(this.ctx, this.win);
+        if (this.win === globalThis && NATIVE_CONNECT) NATIVE_CONNECT.call(this.node, this.ctx.destination); else this.node.connect(this.ctx.destination);
+        this.node.start();
+        // (not allowed to start yet — no user activation in this page —: at the player's next gesture; only while the
+        // signal is wanted — a gesture on the visible page must not start its context again for nothing)
+        const self = this;
+        this.offGesture = resumeOnGesture({ get state() { return self.wanted ? self.ctx?.state ?? 'closed' : 'running'; }, resume: () => self.ctx.resume() }, this.win);
       } catch (e) { this.error = String(e?.message ?? e).slice(0, 120); this.ctx = null; this.node = null; this.state = 'unsupported'; return; }
     }
     if (!this.ctx) return;

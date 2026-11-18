@@ -80,8 +80,9 @@ export function pollIdle(vm, t) {
   }
   // (a ready thread of a priority at least this one's, a starved one counted higher, runs at the slice's end anyway: the
   // polling goes on until then; a lower one runs during the wait — Age of the Ring's intro has one ready most of the
-  // time, at THREAD_PRIORITY_BELOW_NORMAL: counted, it kept the polling from ever waiting)
-  if (vm.sched.hasYieldTarget(t)) { st.busy++; return 0; }
+  // time, at THREAD_PRIORITY_BELOW_NORMAL: counted, it kept the polling from ever waiting). ?dbg=ORTHROS_POLL_ANY_READY=1:
+  // any ready thread keeps it from waiting, as before 2026-11-18 (an A/B of this rule alone: it holds for PeekMessage too)
+  if (globalThis.ORTHROS_POLL_ANY_READY ? vm.sched.hasRunnable(t) : vm.sched.hasYieldTarget(t)) { st.busy++; return 0; }
   st.parks++; if (wait > ms) st.longParks++;
   st.streak = POLL_STREAK; st.last = st.waitEnd = now + wait; st.waitAt = now; st.sinceWait = 0;
   return wait;

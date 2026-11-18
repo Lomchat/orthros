@@ -41,7 +41,7 @@ export function ffKeyRegenerable(key) { return typeof key === 'string' && /^ff:f
  * instead of being built at draws again until relearned. Is `r` such a record (as the server keeps it)?
  */
 export function programRecipe(r) {
-  return !!r && typeof r === 'object' && typeof r.vs === 'string' && typeof r.ps === 'string' && r.vs.length <= 131072 && r.ps.length <= 131072 && /^[A-Za-z0-9+/=]*$/.test(r.vs + r.ps)
+  return !!r && typeof r === 'object' && typeof r.vs === 'string' && typeof r.ps === 'string' && r.vs.length <= 32768 && r.ps.length <= 32768 && /^[A-Za-z0-9+/=]*$/.test(r.vs + r.ps)
     && typeof r.c === 'string' && r.c.length <= 512 && typeof r.e === 'string' && /^(?:[0-7][124]){0,16}$/.test(r.e) && Number.isInteger(r.fog) && Number.isInteger(r.at) && (r.f === 0 || r.f === 1);
 }
 /** shader code (32-bit tokens) as base64, and back */

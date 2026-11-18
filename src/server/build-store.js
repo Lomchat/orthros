@@ -68,8 +68,8 @@ export const pageInBuild = (text, id) => (id ? text.replace(/(\b(?:src|href)\s*=
 
 /** The channel file: { stable (a pinned build's id, or null), mode ('auto' | 'restart': without a pin) }. */
 export function readChannel(dir) {
-  let c = null; try { c = JSON.parse(fs.readFileSync(path.join(dir, 'channel.json'), 'utf8')); } catch { /* none: auto */ }
-  return { stable: BUILD_ID.test(String(c?.stable)) ? c.stable : null, mode: c?.mode === 'restart' ? 'restart' : 'auto' };
+  let c = null; try { c = JSON.parse(fs.readFileSync(path.join(dir, 'channel.json'), 'utf8')); } catch { /* none: restart */ }
+  return { stable: BUILD_ID.test(String(c?.stable)) ? c.stable : null, mode: c?.mode === 'auto' ? 'auto' : 'restart' };
 }
 
 export class BuildStore {
@@ -86,7 +86,7 @@ export class BuildStore {
     this.known = new Map();
     this.hashes = new Map(); // (live file -> { size, mtimeMs, hash }: hashed again only when changed)
     this.live = null; this.stamp = null; this.checkedAt = 0; this.pending = null;
-    this.pin = { stable: null, mode: 'auto', stamp: undefined };
+    this.pin = { stable: null, mode: 'restart', stamp: undefined };
     this.readPin();
     this.refresh(true);
     /** the build of the tree as it was at the start (the `restart` channel's) */
@@ -176,9 +176,9 @@ export class BuildStore {
 
   /** The channel file read again when it changed (a stat at each page picked). */
   readPin() {
-    let m = null; try { const st = fs.statSync(path.join(this.dir, 'channel.json')); m = `${st.ino}:${st.size}:${st.mtimeMs}`; } catch { /* none: auto */ }
+    let m = null; try { const st = fs.statSync(path.join(this.dir, 'channel.json')); m = `${st.ino}:${st.size}:${st.mtimeMs}`; } catch { /* none: restart */ }
     if (m === this.pin.stamp) return;
-    const c = m === null ? { stable: null, mode: 'auto' } : readChannel(this.dir);
+    const c = m === null ? { stable: null, mode: 'restart' } : readChannel(this.dir);
     if (c.stable !== this.pin.stable || c.mode !== this.pin.mode) {
       this.log(c.stable ? `builds: stable channel pinned to ${c.stable}${this.get(c.stable) ? '' : ' (not in the store: the live build served)'}`
         : c.mode === 'restart' ? 'builds: restart channel (the build of the tree as it was at the server\'s start)' : 'builds: auto channel (the live tree\'s latest build)');

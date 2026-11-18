@@ -338,7 +338,8 @@ mice) — counts, and the polls of all of them make one chain; a DirectInput wai
 Three changes to the shared logic, each found on this intro:
 - no wait only while a ready thread of the poller's priority or above (`hasYieldTarget`, as the Sleep(0) throttle) would
   get the processor: the intro has a THREAD_PRIORITY_BELOW_NORMAL worker ready most of the time, and counted
-  (`hasRunnable`) it refused 5.5 M waits in 12 s — it now runs during the waits, as on Windows;
+  (`hasRunnable`) it refused 5.5 M waits in 12 s — it now runs during the waits, as on Windows (this holds for every
+  game polling PeekMessage too: `?dbg=ORTHROS_POLL_ANY_READY=1` puts the old rule back alone, for an A/B);
 - the call after a wait goes on with the streak however late it comes (that worker keeps the processor until its slice
   ends, 0.25-0.5 ms: every wait broke the streak; the lateness feeds the overshoot margin instead);
 - a poll that finds something (a message) restarts the timing chain only within a bout of polling: the intro takes a

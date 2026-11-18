@@ -690,7 +690,8 @@ export function defineEffects(X, vm, h) {
       if (run >= 0 && apiOpt.fxRuns) { // (a run of words: the same registers and changed flag as the loop below)
         let i = 0;
         while (i < n && dst[o + i] === root[run + i]) i++;
-        if (i < n) { dst.set(root.subarray(run + i, run + n), o + i); changed = true; }
+        // (a short rest copied word by word: a subarray costs more than the copy under ~32 words — 2026-11-18 review)
+        if (i < n) { changed = true; if (n - i < 32) for (; i < n; i++) dst[o + i] = root[run + i]; else dst.set(root.subarray(run + i, run + n), o + i); }
       } else for (let i = 0; i < n; i++) { const k = src[i], w = k < 0 ? 0 : root[k]; if (dst[o + i] !== w) { dst[o + i] = w; changed = true; } }
       if (changed) { dev.gfx?.constTouched?.(vs ? 0 : 1, o, o + n); dev.constVersion++; if (vs) dev.vsConstVersion++; else dev.psConstVersion++; }
     }

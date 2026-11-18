@@ -102,7 +102,8 @@ export class PerfSession {
     this.gpuProbe = null; this.dataCum = null; this.gpuStats = null; this.paced = null;
     this.storage = o.storage ?? pageStorage(this.win.navigator); // (read by tick: at once, then every STORAGE_READ_MS)
     const doc = this.win.document;
-    this.onVis = () => { this.tick(); if (this.meter) { this.meter.prevT = null; this.meter.lastShownT = null; } };
+    // (a port's pace meter paused too: no animation frame while hidden, so the frame back would count as a 5+ hold)
+    this.onVis = () => { this.tick(); if (this.meter) { this.meter.prevT = null; this.meter.lastShownT = null; } this.paced?.meter.pause(); };
     this.onHide = () => this.end();
     doc?.addEventListener?.('visibilitychange', this.onVis);
     // (capture: before the page's own pagehide listeners — a large telemetry flush there could use up the keepalive quota)

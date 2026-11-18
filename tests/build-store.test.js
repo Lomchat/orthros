@@ -27,6 +27,7 @@ test('frozen builds: a session keeps its build across a deploy and a restart; th
     return { server, get: (p, h = {}) => fetch(base + p, { headers: h, redirect: 'manual' }), stop: () => { server.closeAllConnections(); return new Promise((r) => server.close(r)); } };
   };
   const homeBuild = async (s, h) => { const html = await (await s.get('/', h)).text(); return /\/b\/([0-9a-f]{16})\/src\/web\/main\.js/.exec(html)?.[1]; };
+  fs.mkdirSync(store, { recursive: true }); fs.writeFileSync(path.join(store, 'channel.json'), JSON.stringify({ mode: 'auto' })); // (the default is restart)
   let s = await start();
   try {
     const home = await (await s.get('/')).text(), A = await homeBuild(s);

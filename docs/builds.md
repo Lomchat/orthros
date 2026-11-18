@@ -49,10 +49,13 @@ deploy, all from the new tree).
 `<store>/channel.json`, written by `node tools/ops/build-channel.mjs <command>` (the server reads it at its next page,
 no restart; `status` shows the channel, what a page gets and the builds kept):
 
-- **auto** (the default): players get the live tree's latest build — every deploy, a merge into the live tree or a
-  restart, reaches the next page loaded, as before builds; running sessions keep theirs.
-- **restart**: the build of the tree as it was when the server started — a merge reaches players at the next restart
-  (`orthros.service`: 1-5 restarts a day against 8-24 commits of page code, 2026-11-11..18).
+- **restart** (the default, since the integration of 2026-11-18): the build of the tree as it was when the server
+  started — a merge reaches players at the next restart (`orthros.service`: 1-5 restarts a day against 8-24 commits of
+  page code, 2026-11-11..18), together with the server's code of that restart: a page never runs code newer than the
+  server it talks to (a merge's new record fields, routes), and a returning player on a slow link meets fewer builds
+  (each new one: ~0.7-0.8 MB of page code again, ~9 s at 85 KB/s).
+- **auto**: players get the live tree's latest build — every deploy, a merge into the live tree or a restart, reaches
+  the next page loaded, as before builds; running sessions keep theirs.
 - **stable**: `promote` pins the live tree's current build (`promote <id>`: any build kept — a rollback) until the next
   promotion, whatever the live tree does.
 

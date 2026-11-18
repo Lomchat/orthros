@@ -535,5 +535,5 @@ if (learnedHeat) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learn
 acct.enter(ACCT.guest); // (as the browser worker's slices: the VM's own sections enter their categories)
 // (a failure exit — the game's own crash handler ending the process, as BFME1's exit 666 — prints the report the page
 // sends with its exit event: the exceptions raised last, the files opened, the threads' state; Vm.exitProcess)
-try { const r = vm.run(); if (vm.exitReport) console.log(vm.exitReport); report(r?.code ? `exited with code ${r.code}` : 'exited'); } catch (e) { if (e.report) console.log(e.report); report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); } // (a guest crash: its report first)
+try { const r = vm.run(); if (vm.exitReport) console.log(vm.exitReport); report(Number.isFinite(r) ? `exited with code ${r}` : 'exited'); } catch (e) { if (e.report) console.log(e.report); report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); } // (a guest crash: its report first)
 if (!keepDir) fs.rmSync(saveDir, { recursive: true, force: true });

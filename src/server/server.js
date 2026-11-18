@@ -454,6 +454,8 @@ export function createServer(opts = {}) {
   };
   /** The build a page loaded now runs (null without builds). */
   const pageBuild = (req, url) => builds?.served(channelOf(req, url)) ?? null;
+  /** A build players can be handed now: the live tree's, the start's, the stable pin. */
+  const currentBuild = (b) => !!b && !!builds && (b.id === builds.live?.id || b.id === builds.startBuild?.id || b.id === builds.pin.stable);
   /** The build an /api/ request names (`build=`, src/shared/build-path.js withBuild): undefined when none, null when not kept. */
   const namedBuild = (url) => (!builds || !url.searchParams.has('build') ? undefined : builds.get(url.searchParams.get('build')));
   /** The state-owning sources' hash (/api/snapshot-sources) of build `b` (fixed: computed once), or of the live tree. */
@@ -1438,7 +1440,7 @@ export function createServer(opts = {}) {
       if (!e || typeof e.key !== 'string' || typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs) || !e.attrs.every((a) => typeof a === 'string')) continue;
       if (e.key.length > 4096 || e.vs.length > PROGRAM_SRC_MAX || e.fs.length > PROGRAM_SRC_MAX || e.attrs.length > 32) continue;
       const t = Number.isFinite(e.t) ? Math.max(0, e.t) : 1e9, id = programSourceId(e.vs, e.fs, e.attrs), old = m.get(id), r = programRecipe(e.r) ? e.r : null;
-      if (old) { old.t = Math.min(old.t, t); old.n++; old.s = L.sessions; if (ver) old.v = ver; old.r ??= r; continue; }
+      if (old) { old.t = Math.min(old.t, t); old.n++; old.s = L.sessions; if (ver) old.v = ver; if (r) old.r = r; continue; } // (the latest recipe: a wrong one is replaced by the next session that builds these sources)
       if (m.size >= PROGRAMS_MAX) { // (full: the least recently used one leaves, unless all were used this session)
         let lru = null;
         for (const [k, v] of m) if (!lru || v.s < lru[1].s) lru = [k, v];
@@ -2453,7 +2455,10 @@ export function createServer(opts = {}) {
           }
           // (Orthros' code in it from the build of the Orthros page around it — ?b=, play.js —, else from the one a page
           // loaded now gets)
-          const b = builds ? builds.get(url.searchParams.get('b')) ?? pageBuild(req, url) : null;
+          // (?b= only for a build players can be handed now — live, start, stable —: an old build's page, its fixed
+          // client-side bugs included, is never served by a link; a session opened just before a deploy whose engine
+          // page loads after it gets the build served now)
+          const asked = builds?.get(url.searchParams.get('b')), b = builds ? (currentBuild(asked) ? asked : pageBuild(req, url)) : null;
           if (b) { builds.touch(b); page = pageInBuild(page, b.id); }
           return send(res, 200, page, { 'Content-Type': MIME[path.extname(asset)], 'Cache-Control': 'private, no-store', 'Vary': 'Cookie' });
         }
@@ -2500,10 +2505,13 @@ export function createServer(opts = {}) {
         if (!b) return send(res, builds && BUILD_ID.test(m[1]) ? 410 : 404, 'this version of Orthros is no longer served: reload the page', { 'Cache-Control': 'no-store' });
         const hash = b.files.get(m[2]);
         if (!hash) return send(res, 404, 'not found');
+        // (a page — a document — only of a build players can be handed now: no page needs another's, and an old build's
+        // must not be loadable by a link — nor kept alive by one)
+        if (m[2].endsWith('.html')) return currentBuild(b) ? sendPageBody(req, res, builtPage(b, m[2]), { 'Cache-Control': IMMUTABLE }) : send(res, 404, 'not a page of a current build', { 'Cache-Control': 'no-store' });
         builds.touch(b);
-        if (m[2].endsWith('.html')) return sendPageBody(req, res, builtPage(b, m[2]), { 'Cache-Control': IMMUTABLE });
         const file = path.join(b.dir, m[2]);
-        return sendSource(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream', { 'Cache-Control': IMMUTABLE, 'ETag': `"${hash}"` }, '#' + hash);
+        // (weak: the same tag for the brotli and the plain bytes — a strong one must differ per content coding)
+        return sendSource(req, res, file, MIME[path.extname(file)] ?? 'application/octet-stream', { 'Cache-Control': IMMUTABLE, 'ETag': `W/"${hash}"` }, '#' + hash);
       }
       // (the live tree's code asked by a frozen build's own — a module or worker of /b/<id>/ naming an absolute /src/
       // address: the Referer says its build —: answered from that build, a session never mixes two versions' code)

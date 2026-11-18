@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // The build players get (docs/builds.md): every page loads all its code from one frozen build of the tree
 // (src/server/build-store.js), picked at its load; the channel says which:
-//   auto (the default)  the live tree's latest build: every deploy — a merge into the live tree, a restart — reaches the
+//   restart (default)   the build of the tree as it was when the server started: a merge reaches players at the next
+//                       restart, with the server's code of that restart (fewer new builds: a returning player
+//                       downloads the page's code again at each one)
+//   auto                the live tree's latest build: every deploy — a merge into the live tree, a restart — reaches the
 //                       next page loaded, as before builds
-//   restart             the build of the tree as it was when the server started: a merge reaches players at the next
-//                       restart (fewer new builds: a returning player downloads the page's code again at each one)
 //   stable (promote)    a pinned build, until the next promotion, whatever the live tree does (promote <id>: any build
 //                       kept — a rollback)
 // A page opened with ?channel=main (a cookie; ?channel=stable to leave it) gets the live tree's latest build whatever the

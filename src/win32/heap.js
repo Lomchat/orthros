@@ -5,9 +5,11 @@
 // obtained from VMem start and end with used sentinel blocks so coalescing stops at their edges.
 // A list's ends are marked by an address of the heap itself (`end`: its first chunk's start sentinel), not by 0, as
 // Windows' free lists end at their list head in the heap's header (and its lookaside lists leave a block's second word
-// as the program left it): a freed block's two first words are never zero there. A program counting a reference through
-// a stale pointer into a block it freed — BFME1's first SKIRMISH click (docs/bfme1-skirmish-crash.md) — read a count of
-// 0 where Windows gives a non-zero one, and freed the block again.
+// as the program left it): Windows never writes 0 into a freed block's second word (its first can be 0 there: the last
+// entry of an XP lookaside list). A program counting a reference through a stale pointer into a block it freed — BFME1's
+// first SKIRMISH click (docs/bfme1-skirmish-crash.md) — read a count of 0 there where Windows gives a non-zero one, and
+// freed the block again. (A new block cut from a free one inherits those words: a fresh allocation's first two words are
+// now this mark instead of 0, as on the XP/7 heap; the Windows 8+ LFH hands out zeroed blocks.)
 import { PAGE_READWRITE, alignUp } from './vmem.js';
 
 // (FTR: the footer's 4 bytes and 4 of padding — header and footer together 16 bytes, so every user address stays

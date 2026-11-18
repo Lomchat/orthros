@@ -365,7 +365,9 @@ A/B scenarios (ON = default, OFF = `ORTHROS_HOST_TIMER_HELPER_OFF=1`): `tools/sc
 
 ## The BFME1 investigation (2026-10-03/04)
 
-**Closed 2026-11-18: not a race** (docs/bfme1-skirmish-crash.md). At a player's first SKIRMISH click (no skirmish
+**Cause found 2026-11-18: not a race** (docs/bfme1-skirmish-crash.md) — **BFME1 can still crash there until the
+manifest patch the document proposes is installed**: the heap fix covers only the case of a block given back to the heap,
+not the game's own pool's (the likelier one, by the October reports' 68-byte record). At a player's first SKIRMISH click (no skirmish
 profile yet) the game copies the first name of an empty list — the list's uninitialized sentinel node, recycled with a
 stale pointer; when that pointer reads a count of 0 (a string buffer the program freed, or a block it gave back to the
 heap, whose links Orthros ended with 0 where Windows never writes 0 — fixed in src/win32/heap.js), the copy and its
