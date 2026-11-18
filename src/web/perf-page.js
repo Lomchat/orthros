@@ -3,13 +3,16 @@
 // accounting), a browser port's page (GoldSrc, re3, the OpenMW engine's page) its frames shown — the engine's work a
 // frame measured from the browser's animation frames, its GPU time by the timer query probe (gpu-probe.js, sampled
 // windows), its game data waits from the shared game data's counters (data-client.js) and what they were for
-// (portDataSummary). It keeps the clock (visible and hidden time, the phase), runs the host timing probe once
+// (portDataSummary), the refreshes each frame stayed on the screen (shared/display-pacing.js: the Windows games' page
+// counts them as it shows the emulator's frames, `pace`; a port's from the animation frames that showed its frames).
+// It keeps the clock (visible and hidden time, the phase), runs the host timing probe once
 // (timing-probe.js), and sends a record every 2 minutes of play and one at the end (sendBeacon, else a keepalive fetch).
 import { PerfRecorder, SLOW_A } from '../shared/perf-record.js';
 import { GpuProbe } from '../gfx/gpu-probe.js';
 import { runTimingProbe } from './timing-probe.js';
 import { gpuClass, gpuInfo } from './gpu-class.js';
 import { pageStorage, withStorage } from './storage-persist.js';
+import { RefreshClock, PaceMeter } from '../shared/display-pacing.js';
 
 export { SLOW_A };
 /** the clock's period (ms); the timing probe once after this much visible time */
@@ -85,14 +88,16 @@ export class PerfSession {
    * @param {{ runtime: string, game: string|null, session: string, version?: string|null, build?: string|null,
    *   tier?: () => string|null, bench?: string|null, env?: () => object, phase?: () => string|null,
    *   data?: () => ({ waits: number, ms: number, sum?: object }|null), gpu?: () => object|null, send?: (rec: object) => void,
-   *   helper?: () => object|null, win?: any, now?: () => number, probe?: boolean, recordMs?: number, storage?: ReturnType<typeof pageStorage> }} o
-   *   storage: the page's (storage-persist.js: its env's `storage`, read again after each record), else one of its own
+   *   helper?: () => object|null, win?: any, now?: () => number, probe?: boolean, recordMs?: number, storage?: ReturnType<typeof pageStorage>,
+   *   pace?: () => object|null }} o
+   *   storage: the page's (storage-persist.js: its env's `storage`, read again after each record), else one of its own;
+   *   pace: the display pacing's counters (display-pacing.js FramePacer.counters), else watchFrames' own
    */
   constructor(o) {
     this.o = o; this.win = o.win ?? globalThis; this.now = o.now ?? (() => performance.now());
     this.rec = new PerfRecorder({ recordMs: o.recordMs, header: { session: o.session, game: o.game ?? null, runtime: o.runtime, version: o.version ?? null, build: o.build ?? null, tier: null, ...(o.bench ? { bench: o.bench } : {}) } });
     this.sendFn = o.send ?? beacon; this.envCache = null; this.ended = false; this.probeAsked = o.probe === false;
-    this.gpuProbe = null; this.dataCum = null; this.gpuStats = null;
+    this.gpuProbe = null; this.dataCum = null; this.gpuStats = null; this.paced = null;
     this.storage = o.storage ?? pageStorage(this.win.navigator); // (read by tick: at once, then every STORAGE_READ_MS)
     const doc = this.win.document;
     this.onVis = () => { this.tick(); if (this.meter) { this.meter.prevT = null; this.meter.lastShownT = null; } };
@@ -106,10 +111,11 @@ export class PerfSession {
   visible() { return this.win.document?.visibilityState !== 'hidden'; }
   gpu() { return this.o.gpu ? this.o.gpu() : this.gpuProbe ? this.gpuProbe.stats.gpu : this.gpuStats; }
   data() { return this.o.data ? this.o.data() : this.dataCum; }
+  pace() { const p = this.paced; return this.o.pace ? this.o.pace() : p ? { ...p.meter.counters(), hz: p.clock.t === null ? null : 1000 / p.clock.period } : null; }
   tick() {
     if (this.ended) return;
     const now = this.now(), vis = this.visible();
-    this.rec.counters({ gpu: this.gpu() ?? null, data: this.data() ?? null });
+    this.rec.counters({ gpu: this.gpu() ?? null, data: this.data() ?? null, pace: this.pace() ?? null });
     this.rec.clock(now, vis, this.o.phase?.() ?? null);
     if (!this.probeAsked && vis && this.rec.tot.vis >= PROBE_AFTER_MS) {
       this.probeAsked = true;
@@ -129,7 +135,7 @@ export class PerfSession {
   end() {
     if (this.ended) return;
     const now = this.now();
-    this.rec.counters({ gpu: this.gpu() ?? null, data: this.data() ?? null });
+    this.rec.counters({ gpu: this.gpu() ?? null, data: this.data() ?? null, pace: this.pace() ?? null });
     const r = this.rec.take(now, true); this.ended = true;
     clearInterval(this.timer);
     this.win.document?.removeEventListener?.('visibilitychange', this.onVis); this.win.removeEventListener?.('pagehide', this.onHide, { capture: true });
@@ -156,8 +162,9 @@ export class PerfSession {
    * to the engine's request for the next one made in it (its iteration's end, with an asynchronous main loop as well).
    */
   watchFrames({ gl = null, draws = null } = {}) {
+    this.paced = { clock: new RefreshClock(), meter: new PaceMeter() };
     const w = watchEngineFrames(this.win, {
-      draws, gl, data: () => this.data(), active: () => this.visible(), stopped: () => this.ended, now: () => performance.now(),
+      draws, gl, data: () => this.data(), active: () => this.visible(), stopped: () => this.ended, now: () => performance.now(), pace: this.paced,
       onGl: (ctx) => { try { this.gpuProbe = new GpuProbe(timerContext(ctx), { wrapGl: false }); } catch { this.gpuProbe = null; } },
       onShown: () => { try { this.gpuProbe?.frame(); } catch { /* lost context */ } },
       onFrame: (dt, work, dataMs) => this.rec.frame(dt, work, dataMs),
@@ -191,6 +198,7 @@ export function watchEngineFrames(win, o) {
   const tick = (t) => {
     if (o.stopped?.()) return;
     if (m.frameT !== t) m.frameT = t; // (this frame's asks are this frame's)
+    const pv = o.pace ? o.pace.clock.idx : null; // (the refresh of the previous animation frame, whose frame is looked at)
     if (m.prevT !== null) {
       const a = m.ask[0] === m.prevT ? m.ask : m.askPrev[0] === m.prevT ? m.askPrev : null;
       if (a) { m.work += Math.max(0, a[1] - m.prevT); m.known = true; }
@@ -201,9 +209,11 @@ export function watchEngineFrames(win, o) {
         o.onShown?.(m.prevT);
         const dw = o.data?.(), dms = dw ? dw.ms : 0, dd = m.dataAt === null ? 0 : Math.max(0, dms - m.dataAt); m.dataAt = dms;
         if (m.lastShownT !== null && (o.active?.() ?? true)) o.onFrame(m.prevT - m.lastShownT, m.known ? m.work : null, dd, m.prevT);
+        if (o.pace) { if (o.active?.() ?? true) o.pace.meter.visible(pv); else o.pace.meter.pause(); } // (on the screen from that refresh)
         m.lastShownT = m.prevT; m.work = 0; m.known = false;
       }
     }
+    o.pace?.clock.tick(t);
     m.prevT = t; raf0(tick);
   };
   raf0(tick);

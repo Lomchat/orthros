@@ -813,6 +813,12 @@ export function d3dCore(vm) {
       if (!this.api9 && this.pp.windowed) return this.pp.swap === 4 ? 1 : 0;
       return iv === 2 ? 2 : iv === 4 ? 3 : iv === 8 ? 4 : 1;
     }
+    /**
+     * The refreshes a Present waits for: vsyncRefreshes, none when ?dbg=ORTHROS_VSYNC=0 switched the wait off. The host
+     * tells the page (BrowserHost.notePacing), which then aligns the frames on the display's refreshes
+     * (shared/display-pacing.js) — the wait itself stays on the guest clock, below.
+     */
+    presentRefreshes() { return globalThis.ORTHROS_VSYNC === '0' || globalThis.ORTHROS_VSYNC === 0 ? 0 : this.vsyncRefreshes(); }
     Present(c) {
       // (the call re-executed after its pacing wait below: the frame was presented before the wait)
       if (this.vsyncTid === c.thread.id && c.thread.resuming) { this.vsyncTid = 0; return D3D_OK; }
@@ -830,7 +836,7 @@ export function d3dCore(vm) {
       // the display's rate on Windows, not at hundreds of frames per second burning the player's CPU and GPU. The wait
       // is a floor on the time since the previous present's slot, not a fixed grid: a frame that took longer than a
       // refresh is not held to the next one (a 30 fps limiter keeps its 33 ms frames). ?dbg=ORTHROS_VSYNC=0: no wait.
-      const n = globalThis.ORTHROS_VSYNC === '0' || globalThis.ORTHROS_VSYNC === 0 ? 0 : this.vsyncRefreshes();
+      const n = this.presentRefreshes();
       if (n) {
         const now = vm.clock.now(), period = 1000 / (!this.pp.windowed && this.pp.refresh >= 30 ? this.pp.refresh : 60);
         const due = this.vsyncAt + n * period;

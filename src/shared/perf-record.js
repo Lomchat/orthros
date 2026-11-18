@@ -2,12 +2,14 @@
 // the Windows games' (src/web/main.js), the browser ports' (GoldSrc, re3, OpenMW) — measures its normal play
 // sessions the same way and sends the same compact record (`event: "perf"`): per minute of play (a phase change starts
 // a new entry) the frame rate, the frame-time percentiles, the frames over 40 / 100 ms, the work vs the wait per frame,
-// the GPU time, the game data's waits; the session's totals — with what its data waits were for (the files, the
+// the GPU time, the game data's waits, the refreshes each frame stayed on the screen and the judder
+// (shared/display-pacing.js); the session's totals — with what its data waits were for (the files, the
 // engine's own stops, the announced reads, the background's producers: compactDataSum); the machine; the host timing
 // probe once. Hidden time is
 // counted apart, its frames left out. This module is the recording and the record's validation (the server's), with
 // no DOM: the page's side is src/web/perf-page.js.
 import { HIST_N, histAddSparse, histBucket, histQuantile, histSparse } from '../core/frame-acct.js';
+import { HOLD_BUCKETS, paceWindow } from './display-pacing.js';
 
 export const PERF_VERSION = 1;
 /** a record every RECORD_MS of the session (and one at its end), one entry per MINUTE_MS */
@@ -69,7 +71,7 @@ class Acc {
   constructor(t0 = 0, ph = null) {
     this.t0 = t0; this.ph = ph; this.vis = 0; this.hid = 0; this.n = 0; this.h = new Array(HIST_N).fill(0); this.max = 0; this.fa = 0; this.fb = 0;
     this.dtSum = 0; this.workSum = 0; this.workN = 0; this.workDt = 0; this.cats = {}; this.catN = 0; this.slow = {};
-    this.gpu = null; this.data = null; // (the cumulative counters at the start: differences at the end)
+    this.gpu = null; this.data = null; this.pace = null; // (the cumulative counters at the start: differences at the end)
   }
   frame(dt, work) {
     this.n++; this.h[histBucket(dt)]++; this.dtSum += dt; if (dt > this.max) this.max = dt;
@@ -103,6 +105,7 @@ export class PerfRecorder {
     this.t0 = null; this.last = null; this.visible = true; this.phase = null;
     this.cur = null; this.done = []; this.dropped = 0; this.tot = new Acc(0); this.seq = 0; this.lastRecord = null; this.ended = false;
     this.gpuNow = null; this.dataNow = null; this.dataSum = null; this.dataSumSrc = null; this.probe = null; this.probeSent = false;
+    this.paceNow = null; // (the display pacing's cumulative counters: display-pacing.js FramePacer / PaceMeter counters)
     this.slowFrames = {}; // (the ports' slow frames by cause, summed ms: added to the entry's `slow`)
   }
   /** The time since the last clock goes to the visible or the hidden time; entries close at minutes and phase changes. */
@@ -118,7 +121,7 @@ export class PerfRecorder {
     }
     if (this.cur && now - (this.t0 + this.cur.t0) >= this.minuteMs) this.close(now);
   }
-  open(now) { const a = new Acc(now - this.t0, this.phase); a.gpu = this.gpuNow; a.data = this.dataNow; return a; }
+  open(now) { const a = new Acc(now - this.t0, this.phase); a.gpu = this.gpuNow; a.data = this.dataNow; a.pace = this.paceNow; return a; }
   close(now) {
     const c = this.cur; this.cur = this.open(now);
     if (!c || (!c.n && c.vis < 1000)) return; // (hidden, or nothing shown: no entry — the totals keep its time)
@@ -144,8 +147,9 @@ export class PerfRecorder {
     this.cur ??= this.open(this.last);
     this.cur.interval(a, dtMs); this.tot.interval(a, dtMs);
   }
-  /** The cumulative counters now (GPU timer, game data waits). */
-  counters({ gpu, data } = {}) {
+  /** The cumulative counters now (GPU timer, game data waits, display pacing). */
+  counters({ gpu, data, pace } = {}) {
+    if (pace !== undefined) this.paceNow = pace ? { ...pace, h: pace.h.slice() } : null;
     if (gpu !== undefined) this.gpuNow = gpu ? { state: gpu.state ?? null, frames: gpu.frames ?? 0, ms: gpu.ms ?? 0, lost: gpu.lost ?? 0, hist: gpu.hist ? Array.from(gpu.hist) : null,
       run: gpuSeries(gpu.runFrames, gpu.runMs, gpu.runHist), fence: gpuSeries(gpu.fenceN, gpu.fenceMs, gpu.fenceHist),
       scale: Number.isFinite(gpu.scale) ? gpu.scale : null, scaleChanges: gpu.scaleChanges ?? 0 } : null; // (the adaptive render resolution: src/gfx/render-scale.js)
@@ -187,6 +191,9 @@ export class PerfRecorder {
     const d0 = c.data, d1 = this.dataNow;
     if (d1) out.data = total ? { n: c.data?.waits ?? 0, ms: Math.round(c.data?.ms ?? 0) } : { n: grow(d0?.waits, d1.waits), ms: Math.round(grow(d0?.ms, d1.ms)) };
     if (total && this.dataSum) out.data = { ...(out.data ?? { n: 0, ms: 0 }), ...this.dataSum }; // (what the session's waits were for)
+    // the refreshes each frame stayed on the screen, the judder (counted since the session's start: its totals)
+    const pw = paceWindow(total ? null : c.pace, this.paceNow);
+    if (pw) out.pace = pw;
     if (total) out.h = histSparse(c.h);
     return out;
   }
@@ -274,11 +281,15 @@ const gpuPart = (g) => {
     run: (v) => (v && typeof v === 'object' ? pick(v, GPU_SERIES) : undefined), fence: (v) => (v && typeof v === 'object' ? pick(v, GPU_SERIES) : undefined) });
 };
 const hist = (h) => (Array.isArray(h) && h.length <= 2 * HIST_N && h.every((x) => Number.isInteger(x) && x >= 0 && x < 1e9) ? h : undefined);
+/** an entry's display pacing (display-pacing.js paceWindow) */
+const PACE = { hz: nullable((v) => num(v, 1000)), n: (v) => int(v), h: (v) => (Array.isArray(v) && v.length === HOLD_BUCKETS && v.every((x) => int(x) !== undefined) ? v : undefined),
+  jud: nullable((v) => num(v, 100)), jn: (v) => int(v), al: (v) => int(v), ex: (v) => int(v) };
 const ENTRY = {
   t: (v) => int(v, 1e7), ph: nullable((v) => str(v, 24)), s: (v) => num(v, 1e7), hid: (v) => num(v, 1e7), n: (v) => int(v), fps: (v) => num(v, 1e4),
   p50: nullable((v) => num(v, 1e6)), p90: nullable((v) => num(v, 1e6)), p99: nullable((v) => num(v, 1e6)), max: (v) => num(v, 1e7), f40: (v) => int(v), f100: (v) => int(v),
   work: (v) => num(v, 1e6), wait: (v) => num(v, 1e6), cats: numMap, slow: numMap, gpu: gpuPart,
   data: (d) => (d && typeof d === 'object' ? pick(d, { n: (v) => int(v), ms: (v) => num(v) }) : undefined),
+  pace: (v) => (v && typeof v === 'object' ? pick(v, PACE) : undefined),
 };
 const path = (v) => (typeof v === 'string' && v ? pathOf(v) : undefined);
 /** [path, ms] or [path, ms, waits] lists, TOP_FILES at most */

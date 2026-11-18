@@ -6,6 +6,8 @@
 // - the ~20 s summaries (frame-time percentiles, frames > 33 / 40 / 50 / 100 ms, draws and GL calls per frame, GPU
 //   time per frame when the browser measures it, render worker waits) merged per stretch, with the slow frames'
 //   categories;
+// - the display pacing (shared/display-pacing.js: the refreshes each frame stayed on the screen, the judder, the frames
+//   aligned on the refreshes) per summary stretch, and per game × GPU in --perf;
 // - the flicker probe's counters (gfx/flicker-probe.js: `altSame` / `altCmdAba`, the alternating samples whose frames'
 //   command signatures were the same / went A-B-A), its logged samples' command patterns, and whether the session sent
 //   its flicker capture (read with tools/dev/flicker-capture.mjs); its draw probe's verdict (tools/dev/draw-probe.mjs);
@@ -29,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { HIST_N, histAddSparse, histQuantile } from '../../src/core/frame-acct.js';
 import { audioVerdict, audioText } from '../../src/web/sound.js';
 import { probeLine } from '../../src/web/timing-probe.js';
+import { paceMerge, paceText } from '../../src/shared/display-pacing.js';
 
 const FILE_DATE = /telemetry-(\d{4}-\d{2}-\d{2})\.jsonl$/;
 
@@ -125,7 +128,8 @@ export function summaryStretches(summaries) {
   const out = []; let cur = null;
   for (const x of summaries) {
     const kind = kindOf(x.d3dFrames ?? x.frames ?? 0, (x.drawsPerFrame ?? 0) * (x.d3dFrames ?? 0));
-    if (!cur || cur.kind !== kind) out.push(cur = { kind, t0: x.t, n: 0, seconds: 0, frames: 0, s33: 0, s40: 0, s50: 0, s100: 0, max: 0, hist: new Array(HIST_N).fill(0), cats: {}, slowCats: {}, work: 0, d3dFrames: 0, draws: 0, glFrames: 0, glCalls: 0, gpuFrames: 0, gpuMs: 0, gpuHist: new Array(HIST_N).fill(0), gpuState: null, gpuMax: 0, rwWait: 0, rwReplay: 0, rwFrames: 0, render: null, visible: 0 });
+    if (!cur || cur.kind !== kind) out.push(cur = { kind, t0: x.t, n: 0, seconds: 0, frames: 0, s33: 0, s40: 0, s50: 0, s100: 0, max: 0, hist: new Array(HIST_N).fill(0), cats: {}, slowCats: {}, work: 0, d3dFrames: 0, draws: 0, glFrames: 0, glCalls: 0, gpuFrames: 0, gpuMs: 0, gpuHist: new Array(HIST_N).fill(0), gpuState: null, gpuMax: 0, rwWait: 0, rwReplay: 0, rwFrames: 0, render: null, visible: 0, pace: [] });
+    if (x.pace) cur.pace.push(x.pace);
     cur.n++; cur.seconds += x.seconds ?? 0; cur.frames += x.frames ?? 0;
     for (const k of ['s33', 's40', 's50', 's100']) cur[k] += x[k] ?? 0;
     if ((x.dt?.max ?? 0) > cur.max) cur.max = x.dt.max;
@@ -150,7 +154,7 @@ export function summaryStretches(summaries) {
       drawsPerFrame: c.d3dFrames ? Math.round(c.draws / c.d3dFrames) : null, glCallsPerFrame: c.glFrames ? Math.round(c.glCalls / c.glFrames) : null,
       gpu: c.gpuFrames ? { frames: c.gpuFrames, mean: +(c.gpuMs / c.gpuFrames).toFixed(2), p50: hasGpuHist ? histQuantile(c.gpuHist, 0.5, c.gpuMax || Infinity) : null, p99: hasGpuHist ? histQuantile(c.gpuHist, 0.99, c.gpuMax || Infinity) : null, max: c.gpuMax || null } : c.gpuState,
       renderWaitMs: c.rwFrames ? +(c.rwWait / c.rwFrames).toFixed(2) : null, replayMs: c.rwFrames ? +(c.rwReplay / c.rwFrames).toFixed(2) : null, render: c.render,
-      visible: c.seconds ? +(c.visible / c.seconds).toFixed(2) : null,
+      visible: c.seconds ? +(c.visible / c.seconds).toFixed(2) : null, pace: paceMerge(c.pace),
       flicker: c.flk ? { n: c.flk.n, aba: c.flk.n ? +(c.flk.aba / c.flk.n).toFixed(4) : null, still: c.flk.stillN ? +(c.flk.still / c.flk.stillN).toFixed(4) : null, chg: c.flk.n ? +(c.flk.chg / c.flk.n).toFixed(4) : null, max: c.flk.max, over1: c.flk.over1, alt: c.flk.alt, abaAlt: c.flk.abaAlt, altSame: c.flk.altSame, altCmdAba: c.flk.altCmdAba, glErrors: c.flk.glErrors, glError: c.flk.glError } : null,
     };
   });
@@ -301,6 +305,7 @@ export function formatReport(reports, comparison) {
     for (const st of r.summaryStretches) {
       L.push(`  ${st.at ?? '--:--:--'} ${st.kind.padEnd(9)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps; frame ms p50 ${st.p50} p90 ${st.p90} p99 ${st.p99} max ${st.max}; >33 ${st.per33}/min >40 ${st.per40} >50 ${st.per50} >100 ${st.per100}; draws/frame ${st.drawsPerFrame ?? '-'}, GL calls/frame ${st.glCallsPerFrame ?? '-'}; GPU ${typeof st.gpu === 'object' && st.gpu ? `${st.gpu.mean} ms/frame p50 ${st.gpu.p50} p99 ${st.gpu.p99} (${st.gpu.frames} frames timed)` : st.gpu ?? '-'}${st.renderWaitMs !== null ? `; render worker waits ${st.renderWaitMs} ms/frame, replay ${st.replayMs}` : ''}${st.visible !== null && st.visible < 0.99 ? `; visible ${Math.round(st.visible * 100)}%` : ''}`);
       if (st.work !== null) L.push(`      work ${st.work} ms/frame: ${st.cats}${st.slowShares ? `; slow frames' time (%): ${st.slowShares}` : ''}`);
+      if (st.pace) L.push(`      ${paceText(st.pace)}`);
       // (gfx/flicker-probe.js: frame triples sampled every 10 s, % of their pixels going A-B-A where nothing moved — the
       // flicker; a summary without `still`, from the probe's first version (2026-11-17 morning): only A-B-A anywhere, a
       // scroll's included —, the largest, the samples where it dominates what changed; WebGL errors)
@@ -376,7 +381,7 @@ function sessionFigures(s) {
   const t = s.tot ?? {}, sec = t.s ?? s.vis ?? 0;
   return { session: s.id, at: s.first, runtime: s.runtime, tier: s.tier, build: s.build, seconds: Math.round(sec), len: s.len, visible: s.len ? +(s.vis / s.len).toFixed(2) : null, final: s.final,
     fps: t.fps ?? null, p50: t.p50 ?? null, p90: t.p90 ?? null, p99: t.p99 ?? null, max: t.max ?? null, per40: per(t.f40 ?? 0, sec), per100: per(t.f100 ?? 0, sec),
-    work: t.work ?? null, wait: t.wait ?? null, gpu: t.gpu?.n ? t.gpu : null, gpuRun: t.gpu?.run ?? null, gpuFence: t.gpu?.fence ?? null, gpuState: t.gpu?.state ?? null, dataMsPerMin: t.data ? per(t.data.ms, sec) : null, dataWaits: t.data?.n ?? null,
+    work: t.work ?? null, wait: t.wait ?? null, pace: t.pace ?? null, gpu: t.gpu?.n ? t.gpu : null, gpuRun: t.gpu?.run ?? null, gpuFence: t.gpu?.fence ?? null, gpuState: t.gpu?.state ?? null, dataMsPerMin: t.data ? per(t.data.ms, sec) : null, dataWaits: t.data?.n ?? null,
     machine: machineLine(s.env), probe: s.probe };
 }
 
@@ -404,7 +409,7 @@ export function perfReport(sessions, { minSeconds = 60 } = {}) {
       game: g.game, gpu: g.gpu, runtime: g.runtime, sessions: f.length, noFrames: g.noFrames, minutes: +(g.seconds / 60).toFixed(1),
       median: { fps: m('fps'), p50: m('p50'), p90: m('p90'), p99: m('p99'), per40: m('per40'), per100: m('per100'), work: m('work'), wait: m('wait'), gpuMean: median(f.map((x) => x.gpu?.mean)), runMean: median(f.map((x) => x.gpuRun?.mean)), fenceMean: median(f.map((x) => x.gpuFence?.mean)), gpuP90: median(f.map((x) => x.gpu?.p90)), dataMsPerMin: m('dataMsPerMin'), visible: m('visible') },
       merged: { p50: histQuantile(g.hist, 0.5, g.max || Infinity), p90: histQuantile(g.hist, 0.9, g.max || Infinity), p99: histQuantile(g.hist, 0.99, g.max || Infinity), max: g.max || null },
-      gpuStates: [...new Set(f.map((x) => x.gpuState).filter(Boolean))],
+      gpuStates: [...new Set(f.map((x) => x.gpuState).filter(Boolean))], pace: paceMerge(f.map((x) => x.pace)),
       slowShares: slowTotal ? Object.fromEntries(Object.entries(g.slow).map(([k, v]) => [k, Math.round(v / slowTotal * 100)]).filter(([, v]) => v >= 1).sort((a, b) => b[1] - a[1])) : null,
       worst, probe: probes.length ? { atomicsWait1P50: median(probes.map((p) => p.atomicsWait1?.[0])), setTimeout1P50: median(probes.map((p) => p.setTimeout1?.[0])), onBattery: probes.filter((p) => p.battery && !p.battery.charging).length, n: probes.length } : null,
       perSession: f,
@@ -422,10 +427,11 @@ export function formatPerf(groups) {
     L.push(`${g.game ?? '?'} (${g.runtime}) × ${g.gpu}: ${g.sessions} session(s), ${g.minutes} min of visible play${g.noFrames ? `; ${g.noFrames} session(s) without a frame shown` : ''}`);
     L.push(`  medians over the sessions: ${v(md.fps)} fps; frame ms p50 ${v(md.p50)} p90 ${v(md.p90)} p99 ${v(md.p99)}; >40 ms ${v(md.per40)}/min >100 ms ${v(md.per100)}/min; work ${v(md.work)} wait ${v(md.wait)} ms/frame; GPU ${md.gpuMean !== null ? `${md.gpuMean} ms/frame p90 ${v(md.gpuP90)}${md.runMean !== null ? `, draw run ${md.runMean}` : ''}${md.fenceMean !== null ? `, fence backlog ${md.fenceMean}` : ''}` : g.gpuStates.join('/') || '-'}; data waits ${v(md.dataMsPerMin)} ms/min; visible ${md.visible !== null ? Math.round(md.visible * 100) + '%' : '-'}`);
     L.push(`  all frames merged: p50 ${v(g.merged.p50)} p90 ${v(g.merged.p90)} p99 ${v(g.merged.p99)} max ${v(g.merged.max)} ms`);
+    if (g.pace) L.push(`  all sessions' ${paceText(g.pace)}`);
     if (g.slowShares) L.push(`  slow frames' time by cause (%): ${Object.entries(g.slowShares).map(([k, x]) => `${k} ${x}`).join(', ')}`);
     for (const w of g.worst) L.push(`  worst minute: ${w.session} t=${w.t}s ${w.ph ?? '-'} ${w.fps} fps p99 ${v(w.p99)} >40 ms ${w.per40}/min${w.work !== undefined ? ` work ${w.work} wait ${w.wait}` : ''}${w.gpu?.n ? ` gpu ${w.gpu.mean}` : ''}${w.data?.ms ? ` data ${w.data.ms} ms` : ''}${w.slow ? ` slow: ${Object.entries(w.slow).map(([k, x]) => `${k} ${x}`).join(', ')}` : ''}`);
     if (g.probe) L.push(`  host timing: Atomics.wait(1) late p50 ${v(g.probe.atomicsWait1P50)} ms, setTimeout(1) ${v(g.probe.setTimeout1P50)} ms (median of ${g.probe.n}); ${g.probe.onBattery} on battery`);
-    for (const s of g.perSession) L.push(`    ${(s.at ?? '').slice(0, 16).replace('T', ' ')} ${s.session} ${s.seconds} s${s.visible !== null && s.visible < 0.99 ? ` (visible ${Math.round(s.visible * 100)}%)` : ''}${s.final ? '' : ' (no end record)'}: ${v(s.fps)} fps p99 ${v(s.p99)} >40 ${v(s.per40)}/min work ${v(s.work)} gpu ${s.gpu ? s.gpu.mean : v(s.gpuState)}${s.gpuRun ? ` run ${s.gpuRun.mean}` : ''}${s.gpuFence ? ` fence ${s.gpuFence.mean}` : ''}${s.tier ? ` tier ${s.tier}` : ''} | ${s.machine}${s.build ? ` | build ${s.build}` : ''}`);
+    for (const s of g.perSession) L.push(`    ${(s.at ?? '').slice(0, 16).replace('T', ' ')} ${s.session} ${s.seconds} s${s.visible !== null && s.visible < 0.99 ? ` (visible ${Math.round(s.visible * 100)}%)` : ''}${s.final ? '' : ' (no end record)'}: ${v(s.fps)} fps p99 ${v(s.p99)} >40 ${v(s.per40)}/min work ${v(s.work)} gpu ${s.gpu ? s.gpu.mean : v(s.gpuState)}${s.gpuRun ? ` run ${s.gpuRun.mean}` : ''}${s.gpuFence ? ` fence ${s.gpuFence.mean}` : ''}${s.pace?.jud !== null && s.pace?.jud !== undefined ? ` judder ${s.pace.jud}` : ''}${s.tier ? ` tier ${s.tier}` : ''} | ${s.machine}${s.build ? ` | build ${s.build}` : ''}`);
   }
   return L.join('\n');
 }

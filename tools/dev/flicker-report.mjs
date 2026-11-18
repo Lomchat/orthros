@@ -13,7 +13,10 @@
 //   matched best (presented in the 600 ms before it) and their difference (red: luminance apart by more than T);
 // - the text: the page's and renderer's notes, the strips' summaries (from the decoded pictures; the page's own,
 //   made before the JPEG encode, beside them), the alignment's (screen pictures matched, unmatched, back), then frame
-//   by frame both strips and the alignment, the canvases' states, the page's events and the bitmaps it received.
+//   by frame both strips and the alignment, the canvases' states, the page's events and the bitmaps it received;
+//   the refreshes each frame stayed on the screen and the judder (shared/display-pacing.js), as the screen strip saw
+//   them, and as the page's alignment would have made them from the same arrivals and refreshes (the frames of a
+//   Direct3D device whose interval waits for the retrace: `page.vsync` in later reports).
 // Usage: node tools/dev/flicker-report.mjs <telemetry .jsonl> [--session <id>] [--id <n>] [--out <dir>] [--cols 8] [--rows 6]
 //   [--match <ppm>] (a screen picture farther than this from every back buffer is "unmatched"; default 20000 = 2 %)
 //   [--frames] (the frame-by-frame tables; default: only frames that are marked)
@@ -23,6 +26,7 @@ import zlib from 'node:zlib';
 import readline from 'node:readline';
 import { decodeJpeg } from '../../src/gfx/codecs/jpeg.js';
 import { lumOf, stripAnalysis, alignStrips, resampleLum, T } from '../../src/shared/display-report.js';
+import { RefreshClock, PaceMeter, FramePacer, paceWindow, paceText } from '../../src/shared/display-pacing.js';
 
 const args = process.argv.slice(2), opt = (k) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : null; };
 const file = args[0], only = opt('session'), onlyId = opt('id'), out = opt('out') ?? '.', COLS = Number(opt('cols') ?? 8), ROWS = Number(opt('rows') ?? 6), MATCH = Number(opt('match') ?? 20000), allFrames = args.includes('--frames');
@@ -62,6 +66,7 @@ function report(rec) {
     console.log(`  bitmaps received: ${arr.length} (${Object.entries(byLayer).map(([k, v]) => `${k} ${v}`).join(', ')})`);
     if (allFrames && arr.length) console.log(`  bitmaps (t ms, layer, size, device frame): ${arr.map((a) => `${(rec.screen.t0 + a[0] - t0).toFixed(1)} ${a[1]} ${a[2]}x${a[3]}${a[4] !== null ? ` f${a[4]}` : ''}`).join('; ')}`);
     for (const e of rec.screen.events ?? []) console.log(`  event at ${(rec.screen.t0 + e[0] - t0).toFixed(1)} ms: ${e[1]}${e[2] !== null && e[2] !== undefined ? ` ${e[2]}` : ''}`);
+    for (const line of pacing(rec)) console.log(`  ${line}`);
   } else console.log('--- no screen strip');
   // (the alignment: which back buffer each new screen picture shows)
   let al = null;
@@ -83,6 +88,27 @@ function report(rec) {
   if (al) alignSheets(`align-${S}`, B, C, al);
 }
 
+/**
+ * The screen strip's pacing: the refreshes each frame stayed (a new device frame on the top canvas — its picture when
+ * the page was not told the frame — from the animation frame's refresh on), and the alignment replayed on the strip's
+ * arrivals and animation frames (FramePacer: what the page does since 2026-11-18 for a device waiting for the retrace).
+ */
+function pacing(rec) {
+  const s = rec.screen; if (!s?.frames?.length) return [];
+  const clock = new RefreshClock(), meter = new PaceMeter(), byFrame = s.frames.some((f) => Number.isFinite(f.df)); let prev;
+  for (const f of s.frames) {
+    const i = clock.tick(f.t); if (byFrame && !Number.isFinite(f.df)) continue; // (before the first frame named)
+    const k = byFrame ? f.df : f.img; if (k !== prev) { if (prev !== undefined) meter.visible(i); prev = k; }
+  }
+  const out = [`as shown: ${paceText(paceWindow(null, { ...meter.counters(), hz: 1000 / clock.period })) ?? 'no frame change'}${rec.page?.pace !== undefined && rec.page?.pace !== null ? ` (alignment ${rec.page.pace ? 'on' : 'off'}, the device waiting for ${rec.page.vsync ?? '?'} refresh(es))` : ''}`];
+  const arr = s.arrivals ?? []; if (!arr.length) return out;
+  let now = 0;
+  const p = new FramePacer({ show: () => {}, now: () => now, setTimeout: () => {} });
+  const ev = [...s.frames.map((f) => ({ t: f.t })), ...arr.map((a) => ({ t: a[0], layer: a[1] }))].sort((x, y) => x.t - y.t || (x.layer ? -1 : 1));
+  for (const e of ev) { now = e.t; if (e.layer) p.arrive(null, e.layer, e.layer === 'gl' && rec.page?.vsync !== 0); else p.tick(e.t); }
+  out.push(`aligned (replayed on the same arrivals): ${paceText(paceWindow(null, p.counters())) ?? 'no frame'}`);
+  return out;
+}
 /** a strip's pictures decoded (RGBA, luminance), its frames, its analysis made again on them */
 function load(s, name) {
   if (!s?.frames) return null;
