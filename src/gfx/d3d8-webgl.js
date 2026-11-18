@@ -15,8 +15,8 @@ import { FlickerProbe } from './flicker-probe.js';
 import { RenderScale, glRect, glEdgeX, glEdgeY, scaledSize, scaledLevel, resampleRgba } from './render-scale.js';
 import { gpuInfo, gpuClass } from '../web/gpu-class.js';
 
-/** the depth formats with stencil bits: D15S1, D24S8, D24X4S4, D24FS8 */
-const STENCIL_FORMATS = new Set([73, 75, 79, 82]);
+/** the depth formats with stencil bits: D15S1, D24S8, D24X4S4, D24FS8 (83; 82 is D32F_LOCKABLE: none) */
+const STENCIL_FORMATS = new Set([73, 75, 79, 83]);
 
 const D3D_OK = 0;
 const PT = { POINTLIST: 1, LINELIST: 2, LINESTRIP: 3, TRIANGLELIST: 4, TRIANGLESTRIP: 5, TRIANGLEFAN: 6 };
@@ -716,16 +716,18 @@ export class WebGLDevice {
    * Orientation: back buffers are stored with GL rows going up, every other target top row first (bindTarget). A storage's
    * contents follow the target last drawn with it (`o`: 0 top row first, 1 rows going up, -1 not drawn yet); attached
    * to a target of the other orientation they are mirrored once (orientDepth) — or only relabelled when the clear about
-   * to run replaces them all (`discard`).
+   * to run replaces them all (`discard`); not at all for a draw that neither tests depth nor stencil (`uses` false: a
+   * post-process quad drawn into the back buffer with Z off after a scene drawn into a texture would otherwise pay two
+   * full-screen blits a frame) — they are mirrored at the first draw or clear of that orientation that uses them.
    */
-  syncDepth(f, discard) {
+  syncDepth(f, discard, uses = true) {
     const ds = this.dev.depthTarget ?? null;
     let rb = null;
     if (ds !== null) {
       let d = f.dsSurf === ds ? f.dsStore : null;
       if (d === null || d.dead) { d = this.depthStore(ds, f.w, f.h); f.dsSurf = ds; f.dsStore = d; }
       const o = f.flip ? 0 : 1;
-      if (d.o !== o) { if (d.o < 0 || discard) d.o = o; else this.orientDepth(d, o); }
+      if (d.o !== o && uses) { if (d.o < 0 || discard) d.o = o; else this.orientDepth(d, o); }
       rb = d.rb;
     }
     if (f.depth !== rb) {
@@ -1225,7 +1227,7 @@ export class WebGLDevice {
     const f = this.bindTarget(), r = this.tmpRect;
     const v = dev.viewport, gs = this.gs;
     // (a clear of the whole depth storage, and its stencil when it has one, replaces what an orientation change would mirror)
-    this.syncDepth(f, (flags & 2) !== 0 && ((flags & 4) !== 0 || !STENCIL_FORMATS.has(dev.depthTarget?.fmt)) && !(n && rects) && v.x === 0 && v.y === 0 && v.w >= f.dw && v.h >= f.dh);
+    this.syncDepth(f, (flags & 2) !== 0 && ((flags & 4) !== 0 || !STENCIL_FORMATS.has(dev.depthTarget?.fmt)) && !(n && rects) && v.x === 0 && v.y === 0 && v.w >= f.dw && v.h >= f.dh, (flags & 6) !== 0);
     // (the masks and the scissor are set directly below and the GL state cache told what they are now — not dropped: a
     // dropped cache made the next draw bind its program, textures, samplers, vertex array and every capability again,
     // 8 clears per frame in Age of the Ring's play; the raster states are compared again at the next draw)
@@ -1621,7 +1623,7 @@ export class WebGLDevice {
   applyState(P, info, type = 0, count = 0, ib = -1) {
     const gl = this.gl, dev = this.dev;
     const tgt = this.bindTarget(), { h, flip } = tgt;
-    this.syncDepth(tgt, false);
+    this.syncDepth(tgt, false, this.rs(RS.ZENABLE, 1) !== 0 || this.rs(RS.STENCILENABLE, 0) !== 0);
     if (this.sigOn) { this.sigDraw(P, info, type, count, ib); if (this.dprobe !== null) this.dprobe.state(this, P, info, tgt); } // (the frame's signature, for the flicker probe: sigMix; the draw probe's values, before the cached ones are compared)
     const v = dev.viewport, gs = this.gs;
     // (a scaled target: the viewport and scissor rectangles in its GL storage — render-scale.js; the u_viewport uniform

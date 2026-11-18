@@ -88,7 +88,7 @@ export class ContentTwins {
     const bySize = new Map(); // size -> Map(file key -> file)
     let n = 0;
     for await (const p of typeof places === 'function' ? places() : places) {
-      if (++n % 2000 === 0) await new Promise((r) => setImmediate(r)); // (the server's requests in between)
+      if (++n % 200 === 0) await new Promise((r) => setImmediate(r)); // (the server's requests in between: ~10 ms of listing at most)
       if (!p?.file || !(p.size >= this.minBytes)) continue;
       const k = `${p.store}\n${p.path}`;
       let e = at.get(k);
@@ -102,6 +102,9 @@ export class ContentTwins {
       }
       e.versions.add(p.version);
     }
+    // (the groups the cache already knows published at once — a server restarted, a new file to hash, a loaded machine
+    // pausing the hashing: players' twins stay listed meanwhile —, then made again once the new files are hashed)
+    if (!this.passes && this.hashes.size) this.publish(at);
     // (every file version looked at: the cache keeps those only — a file of a size no other file has is never hashed)
     const seen = new Set();
     for (const s of bySize.values()) for (const k of s.keys()) seen.add(k);
@@ -123,6 +126,18 @@ export class ContentTwins {
     }
     for (const g of byFirst.values()) if (g.size > 1) await pass(g, true);
     if (this.stopped) return null;
+    const { groups, twinned } = this.publish(at);
+    this.passes++;
+    for (const k of [...this.hashes.keys()]) if (!seen.has(k)) { this.hashes.delete(k); this.dirty = true; }
+    this.save(true);
+    const ms = performance.now() - t0;
+    this.stats = { hashed: stats.hashed, bytes: stats.bytes, ms, places: at.size, groups: twinned, versions: groups.size };
+    if (stats.hashed) this.log(`content twins: ${stats.hashed} files hashed (${(stats.bytes / 1048576).toFixed(0)} MiB) in ${(ms / 1000).toFixed(0)} s; ${twinned} groups of identical files, read by ${groups.size} versions`);
+    return this.stats;
+  }
+
+  /** The versions' groups made from the places `at` (scan's) and the hashes known, and replaced at once. */
+  publish(at) {
     // (the places by content: a group is two places or more)
     const byHash = new Map();
     for (const e of at.values()) {
@@ -141,15 +156,9 @@ export class ContentTwins {
         l.push(all ?? [g[0].size, [...g.filter((e) => e.versions.has(v)), ...g.filter((e) => !e.versions.has(v))].slice(0, TWIN_PLACES).map(place)]);
       }
     }
-    // (the versions' groups replaced at once; the cache without the file versions no place has any longer)
-    this.groups = groups; this.json = new Map(); this.passes++;
-    for (const k of [...this.hashes.keys()]) if (!seen.has(k)) { this.hashes.delete(k); this.dirty = true; }
-    this.save(true);
-    const ms = performance.now() - t0;
-    const twinned = [...byHash.values()].filter((g) => g.length > 1).length;
-    this.stats = { hashed: stats.hashed, bytes: stats.bytes, ms, places: at.size, groups: twinned, versions: groups.size };
-    if (stats.hashed) this.log(`content twins: ${stats.hashed} files hashed (${(stats.bytes / 1048576).toFixed(0)} MiB) in ${(ms / 1000).toFixed(0)} s; ${twinned} groups of identical files, read by ${groups.size} versions`);
-    return this.stats;
+    // (the versions' groups replaced at once)
+    this.groups = groups; this.json = new Map();
+    return { groups, twinned: [...byHash.values()].filter((g) => g.length > 1).length };
   }
 
   /**

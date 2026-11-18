@@ -769,7 +769,12 @@ export function d3dCore(vm) {
     shadowFvf() { if (this.shadow) this.shadowSet(SHADOW_FVF, this.fvf && this.vertexDecl ? undefined : this.fvf); }
     /** the filter on unless a state block records (or a measurement switched it off: Vm.setApiFastPaths) */
     shadowOn() { if (this.shadow) mem.write32(this.shadow, this.recording || vm.stateFilterOff ? 0 : 1); }
-    destroy() { if (this.shadow) { mem.write32(this.ptr + 12, 0); mem.write32(this.shadow, 0); } vm.d3dDevices?.delete(this); this.releaseImplicit(); this.gfx?.destroy?.(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
+    destroy() {
+      if (this.shadow) { mem.write32(this.ptr + 12, 0); mem.write32(this.shadow, 0); } vm.d3dDevices?.delete(this);
+      // (the blocks' references released: a Direct3D 8 token never deleted would keep its textures and buffers for ever)
+      for (const sb of this.stateBlocks?.values() ?? []) SB.release(sb);
+      this.stateBlocks?.clear(); if (this.recording) { SB.release(this.recording); this.recording = null; }
+      this.releaseImplicit(); this.gfx?.destroy?.(); if (this.modeOwned) { this.modeOwned = false; vm.wm?.setDisplayMode?.(0, 0, 32, false); } }
     // ---- housekeeping
     TestCooperativeLevel() { return this.lost === 1 ? D3DERR_DEVICELOST : this.lost === 2 ? D3DERR_DEVICENOTRESET : D3D_OK; }
     GetAvailableTextureMem() { return 256 * 1024 * 1024; }

@@ -32,7 +32,7 @@ const freePort = () => new Promise((resolve) => { const s = net.createServer(); 
 execFileSync('cp', ['-a', path.join(pristine, 'learn'), path.join(work, 'learn')]);
 const sport = await freePort();
 const srv = spawn(process.execPath, [path.join(code, 'src/server/server.js'), '--port', String(sport), '--learn', path.join(work, 'learn'), '--br-cache', path.join(pristine, 'brcache'), '--br-cache-frozen',
-  '--covers', 'off', '--games-dir', opt('games-dir', DEFAULT_GAMES_DIR), '--engines-dir', opt('engines-dir', DEFAULT_ENGINES_DIR)], { stdio: ['ignore', 'pipe', 'inherit'] });
+  '--covers', 'off', '--games-dir', opt('games-dir', DEFAULT_GAMES_DIR), '--engines-dir', opt('engines-dir', DEFAULT_ENGINES_DIR), '--no-content-twins'], { stdio: ['ignore', 'pipe', 'inherit'] }); // (no content hashing behind a measurement: content-twins.js)
 await new Promise((r) => { srv.stdout.on('data', (d) => { if (String(d).includes('orthros: http')) r(); }); setTimeout(r, 30000); });
 const catalog = await (await fetch(`http://127.0.0.1:${sport}/api/manifests`)).json();
 

@@ -1,5 +1,5 @@
 // The render worker's replay loop (docs/render-worker.md section 5.6): replay what the emulator published, publish the
-// words consumed (its fences, readbacks and frame pacing wait on them), sleep on the head word when caught up, return
+// words consumed (its fences, readbacks and frame pacing wait on them), sleep on its SLEEP word when caught up (the emulator wakes it: RenderLink.wakeWorker), return
 // to the event loop regularly. Shared by the browser render worker (render-worker.js) and the tests (a Node worker).
 import { CTL, TWO32, OP_NAMES } from './cmd-ring.js';
 

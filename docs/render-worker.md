@@ -414,7 +414,7 @@ backend's garbage and GC move off the emulator's thread.
 | `src/gfx/cmd-ring.js` | the command table (name and argument kinds of every command), `RingWriter` / `RingReader` over a ring of 32-bit words, the control-block layout |
 | `src/gfx/d3d-recorder.js` | emulator side: `Recorder` (a device's `gfx` in place of the backend) and `RenderLink` (the ring, ids and slots, fences, renames, deferred releases, waits) |
 | `src/gfx/d3d-mirror.js` | replay side: mirror resources (`MSurface`, `MTexture`, `MBuffer`), `DeviceMirror`, `Replayer`; `compareDevice` (mirror == device, field by field) |
-| `src/gfx/render-loop.js` | the render worker's loop (replay, publish the words consumed, sleep on the head word, yield to the event loop) |
+| `src/gfx/render-loop.js` | the render worker's loop (replay, publish the words consumed, sleep on its SLEEP word (woken by the emulator), yield to the event loop) |
 | `src/gfx/render-worker.js` | the render worker: its `OffscreenCanvas` and WebGL2 context, frames posted to the page, readbacks, learned programs, statistics |
 | `src/gfx/render-host.js` | `host.gfx` objects of the modes below, for the emulator worker |
 

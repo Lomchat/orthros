@@ -823,7 +823,7 @@ export class Recorder {
       const n = sr[k], rr = s.sRes[n], b = rr?.buf;
       if (!b || !rr.model) continue;
       const x = d.streams[n], ext = sr[k + 1], stride = x.stride || ext, off = x.offset ?? 0, div = ni > 0 ? streamDivisor(x) : 0;
-      const one = (v) => { const lo = off + (div ? 0 : base + v) * stride, at = same(rr, b, lo, lo + ext); if (at >= 0) bad = `stream ${n} buffer #${b.id} byte ${at} (vertex ${v}, base ${base}, stride ${stride}, offset ${off}${idx ? `, indices ${first}+${nIdx}` : `, vertices ${start}+${nIdx}`})`; };
+      const one = (v) => { const lo = off + (div ? v : base + v) * stride, at = same(rr, b, lo, lo + ext); if (at >= 0) bad = `stream ${n} buffer #${b.id} byte ${at} (vertex ${v}, base ${base}, stride ${stride}, offset ${off}${idx ? `, indices ${first}+${nIdx}` : `, vertices ${start}+${nIdx}`})`; };
       if (div) { for (let e = 0; e <= Math.floor((ni - 1) / div) && off + e * stride < b.length && bad === null; e++) one(e); } // (instance data: element e at off + e * stride)
       else if (idx) { const seen = new Set(); for (const v of idx) { if (seen.has(v)) continue; seen.add(v); one(v); if (bad !== null) break; } } else for (let v = start; v < start + nIdx && bad === null; v++) one(v);
     }

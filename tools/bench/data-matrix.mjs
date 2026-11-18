@@ -84,7 +84,7 @@ async function main() {
   fs.mkdirSync(scratch, { recursive: true });
   // (the catalog from a throwaway server over the pristine copy: every version, hidden ones too)
   const port = await freePort();
-  const srv = spawn(process.execPath, [path.join(root, 'src/server/server.js'), '--port', String(port), '--games-dir', gamesDir, '--engines-dir', enginesDir], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const srv = spawn(process.execPath, [path.join(root, 'src/server/server.js'), '--port', String(port), '--games-dir', gamesDir, '--engines-dir', enginesDir, '--no-content-twins'], { stdio: ['ignore', 'pipe', 'inherit'] }); // (no content hashing behind a measurement: content-twins.js)
   await new Promise((r) => { srv.stdout.on('data', (d) => { if (String(d).includes('orthros: http')) r(); }); setTimeout(r, 20000); });
   const catalog = await (await fetch(`http://127.0.0.1:${port}/api/manifests`)).json(); srv.kill();
   const only = opt('only')?.split(','), skip = opt('skip')?.split(',') ?? [];

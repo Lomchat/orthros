@@ -46,11 +46,12 @@ for (const recorded of [false, true]) {
     calls.length = 0;
     call('BeginScene');
     clear(CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL); // 1: the back buffer, its automatic depth
-    call('SetRenderTarget', 0, level); clear(CLEAR_TARGET); // 2: a texture with the same depth (its contents kept: mirrored)
+    call('SetRenderTarget', 0, level); clear(CLEAR_TARGET | CLEAR_ZBUFFER); // 2: a texture with the same depth (its stencil kept: mirrored)
     call('SetDepthStencilSurface', own); clear(CLEAR_TARGET | CLEAR_ZBUFFER); // 3: the texture with a depth surface of its own
     call('SetDepthStencilSurface', 0); clear(CLEAR_TARGET); // 4: no depth
     call('SetRenderTarget', 0, smallLevel); call('SetDepthStencilSurface', auto); clear(CLEAR_TARGET); // 5: a smaller texture with the automatic depth (Direct3D: its top-left part)
-    call('SetRenderTarget', 0, back); clear(CLEAR_TARGET); // 6: the back buffer and its depth again
+    call('SetRenderTarget', 0, back); clear(CLEAR_TARGET | CLEAR_ZBUFFER); // 6: the back buffer and its depth again (mirrored back)
+    call('SetRenderTarget', 0, level); clear(CLEAR_TARGET); // 7: the texture again, color only: depth attached, not mirrored
     call('EndScene');
     com.release(com.objectAt(own)); // (its storage goes with it)
     link?.publish(true);
@@ -67,7 +68,7 @@ for (const recorded of [false, true]) {
       else if (k === 'clear') clears.push({ fbo: draw, depth: att.get(draw) ?? null });
       else if (k === 'blitFramebuffer' && (a[8] & gl.DEPTH_BUFFER_BIT)) blits.push({ from: att.get(read), to: att.get(draw), src: [a[1], a[3]], dst: [a[5], a[7]] });
     }
-    const [c1, c2, c3, c4, c5, c6] = clears.slice(-6); // (the render worker's backend, made as the work is replayed, clears the canvas first)
+    const [c1, c2, c3, c4, c5, c6, c7] = clears.slice(-7); // (the render worker's backend, made as the work is replayed, clears the canvas first)
     assert.ok(c1.depth, 'the automatic depth-stencil attached to the back buffer');
     assert.notEqual(c2.fbo, c1.fbo, 'the texture: a framebuffer of its own');
     assert.equal(c2.depth, c1.depth, 'with the same depth-stencil storage');
@@ -78,8 +79,10 @@ for (const recorded of [false, true]) {
     assert.ok(c5.depth); assert.notEqual(c5.depth, c1.depth); assert.equal(size.get(c5.depth), '128x128', 'a storage of the smaller target\'s size');
     assert.equal(c6.fbo, c1.fbo); assert.equal(c6.depth, c1.depth, 'the back buffer with its depth again');
     assert.equal(size.get(c1.depth), '320x240');
+    assert.equal(c7.fbo, c2.fbo); assert.equal(c7.depth, c1.depth);
     // the automatic depth went from the back buffer (rows going up) to the texture (top row first) and back: mirrored
-    // twice, through a scratch storage (rows reversed on the way in, copied straight back)
+    // twice, through a scratch storage (rows reversed on the way in, copied straight back); a clear or draw that uses
+    // neither depth nor stencil does not mirror it (a post-process pass would pay two full blits a frame)
     assert.equal(blits.length, 4, 'two mirrorings of two blits each');
     for (const [i, b] of blits.entries()) {
       if (i % 2 === 0) { assert.equal(b.from, c1.depth); assert.deepEqual(b.dst, b.src.slice().reverse(), 'rows reversed'); } else { assert.equal(b.to, c1.depth); assert.deepEqual(b.dst, b.src, 'copied back'); }

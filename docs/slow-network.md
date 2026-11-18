@@ -731,7 +731,10 @@ fetched and stored them twice. Now they are found by content, for every game:
   the cores or more; kept by file version (`dev:ino:size:mtime`) in `<learn>/content-hashes.json` (written every 30 s
   while a pass hashes; a file version no place has any longer forgotten). The first pass 20 s after the start, then
   every 30 minutes — skipped when every tree is the same object as at the last pass (none listed again: no folder
-  changed). `--no-content-twins` turns it off.
+  changed); its first pass after a start publishes the groups the cached hashes already give before hashing anything
+  new (a restart, a new file, a loaded machine pausing the hashing: the players' twins stay listed). `--no-content-twins`
+  turns it off — the tools whose server serves a measurement pass it (prepare-bench, data-matrix, net-proxy, OpenMW's
+  dev-serve: no hashing in the background, no groups appearing mid-run).
 - **`/api/twins/<version>`**: the groups of identical files the version reads, `{ v: 1, groups: [[size, [[store, path,
   mtime, light], ...]], ...], passes }` (brotli/gzip like the tree: Age of the Ring's 174 KB, 15.7 KB brotli). Each
   place of a group is the same bytes; a group lists 16 places at most (the version's own first). Empty before the

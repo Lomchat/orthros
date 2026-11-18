@@ -171,7 +171,7 @@ export const freePort = () => new Promise((resolve, reject) => { const s = net.c
 export async function startOrigin({ tree, learn, telemetry, brcache, frozen = true, covers = 'off', gamesDir, enginesDir, log, warmSrc = true }) {
   const port = await freePort();
   const srv = spawn(process.execPath, [path.join(tree, 'src/server/server.js'), '--port', String(port), '--learn', learn, '--telemetry', telemetry,
-    '--br-cache', brcache, ...(frozen ? ['--br-cache-frozen'] : []), '--covers', covers, '--games-dir', gamesDir, '--engines-dir', enginesDir], { cwd: tree, stdio: ['ignore', 'pipe', 'pipe'] });
+    '--br-cache', brcache, ...(frozen ? ['--br-cache-frozen'] : []), '--covers', covers, '--games-dir', gamesDir, '--engines-dir', enginesDir, '--no-content-twins'], { cwd: tree, stdio: ['ignore', 'pipe', 'pipe'] }); // (no content hashing behind a measurement, its groups appearing mid-run: content-twins.js)
   if (log) { const w = fs.createWriteStream(log); srv.stdout.pipe(w); srv.stderr.pipe(w); }
   const exited = new Promise((r) => srv.on('exit', r));
   await new Promise((resolve) => { const on = (d) => { if (String(d).includes('orthros: http')) { srv.stdout.off('data', on); resolve(); } }; srv.stdout.on('data', on); srv.on('exit', resolve); setTimeout(resolve, 30000); });
