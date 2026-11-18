@@ -92,6 +92,12 @@ test('a later snapshot of the same key posted while the first is still compresse
     await store.put('g', 'fr', KEY3, src(800), { mode: '2560x1440' }); await wait();
     await store.put('g', 'fr', K4, src(700), { mode: '2560x1440' });
     assert.deepEqual([KEY, KEY2, KEY3, K4].map((k) => !!store.meta('g', 'fr', k)), [true, false, true, true]);
+    // (the warm jobs' mode kept whatever modes are published after it: two 404s at other modes dropped it, then the
+    // queue's retry delay left most new players without a snapshot for hours)
+    await wait(); await store.put('g', 'fr', 'e'.repeat(32), src(600), { mode: '1920x1080' });
+    for (const [c, mode] of [['f', '1366x768'], ['0', '1600x900'], ['1', '1280x1024'], ['2', '1440x900']]) { await wait(); await store.put('g', 'fr', c.repeat(32), src(500), { mode }); }
+    assert.ok(store.meta('g', 'fr', 'e'.repeat(32)), 'the warm mode kept');
+    assert.ok(!store.meta('g', 'fr', 'f'.repeat(32)), 'MODES_KEPT modes in all');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

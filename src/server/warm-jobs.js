@@ -48,13 +48,23 @@ export class ModeUse {
   /** A page of `name` in `lang` asked at display mode `mode` from client network `who` (server.js seedReporter). */
   add(name, lang, mode, who) {
     const all = this.read(), now = this.now(), old = now - MODE_DAYS * 86400e3;
-    const byMode = ((all[name] ??= {})[lang ?? ''] ??= {}), nets = byMode[mode] ??= {};
-    nets[who] = now;
-    for (const [m, n] of Object.entries(byMode)) {
-      for (const [w, t] of Object.entries(n)) if (!(t > old)) delete n[w];
-      const ws = Object.keys(n); if (ws.length > 64) for (const w of ws.sort((a, b) => n[a] - n[b]).slice(0, ws.length - 64)) delete n[w];
-      if (!Object.keys(n).length) delete byMode[m];
+    const obj = (x) => x && typeof x === 'object';
+    // every entry past MODE_DAYS dropped, of every version and language (one no longer asked for leaves the file)
+    for (const [v, byLang] of Object.entries(all)) {
+      if (!obj(byLang)) { delete all[v]; continue; }
+      for (const [l, byMode] of Object.entries(byLang)) {
+        if (!obj(byMode)) { delete byLang[l]; continue; }
+        for (const [m, n] of Object.entries(byMode)) {
+          if (obj(n)) for (const [w, t] of Object.entries(n)) if (!(t > old)) delete n[w];
+          if (!obj(n) || !Object.keys(n).length) delete byMode[m];
+        }
+        if (!Object.keys(byMode).length) delete byLang[l];
+      }
+      if (!Object.keys(byLang).length) delete all[v];
     }
+    const nets = ((all[name] ??= {})[lang ?? ''] ??= {})[mode] ??= {};
+    nets[who] = now;
+    const ws = Object.keys(nets); if (ws.length > 64) for (const w of ws.sort((a, b) => nets[a] - nets[b]).slice(0, ws.length - 64)) delete nets[w];
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file + '.tmp', JSON.stringify(all)); fs.renameSync(this.file + '.tmp', this.file);
   }

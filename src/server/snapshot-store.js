@@ -15,7 +15,7 @@ import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { learnCommand, learnTimeout } from './warm-jobs.js';
+import { learnCommand, learnTimeout, WARM_MODE } from './warm-jobs.js';
 import { profileIniUsesMode } from '../vfs/profile-ini.js';
 import { COMMON_MODES, parseMode } from '../win32/display-modes.js';
 import { pipeline } from 'node:stream/promises';
@@ -137,12 +137,16 @@ export class SnapshotStore {
       for (const f of files) { const m = /^(.+)-([0-9a-f]{32})\.json$/.exec(f); if (m && !f.endsWith('.brp.json')) await this.pieces(name, m[1], m[2]).catch(() => null); }
     }
   }
-  /** Only the `keep` most recent keys of a game version, language and display mode — of MODES_KEPT modes at most. */
+  /**
+   * Only the `keep` most recent keys of a game version, language and display mode — of MODES_KEPT modes at most, WARM_MODE
+   * always one of them (the most players' mode: two 404s at other modes would otherwise drop the warm jobs' fresh one,
+   * which the queue then does not make again within its retryMs — hours of cold starts for most new players).
+   */
   prune(name, lang) {
     const dir = path.join(this.dir, safe(name)), prefix = `${safe(lang || 'none')}-`;
     let recs; try { recs = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith('.json') && !f.endsWith('.brp.json')); } catch { return; }
     const modeOf = (f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).mode ?? ''; } catch { return ''; } };
-    const byAge = recs.map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs, mode: modeOf(f) })).sort((a, b) => b.t - a.t);
+    const byAge = recs.map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs, mode: modeOf(f) })).sort((a, b) => (b.mode === WARM_MODE) - (a.mode === WARM_MODE) || b.t - a.t);
     const perMode = new Map();
     for (const { f, mode } of byAge) {
       const n = perMode.get(mode) ?? 0;

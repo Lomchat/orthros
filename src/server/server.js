@@ -2144,7 +2144,10 @@ export function createServer(opts = {}) {
         const mode = publishMode(man, url.searchParams.get('mode')); // (null: a mode no publishing session can run at)
         // (a page's first request — the whole snapshot, or its first piece: a resumed download asks from a later one — at
         // a display mode of the key's: counted for the warm jobs, which make the modes new players use, warm-jobs.js ModeUse)
-        if (mode && (piece === null || piece === '0')) try { modeUse.add(m[1], lang, mode, seedReporter(req, '')); } catch { /* not counted */ }
+        // (only in a language the version declares — markLang —, or its language-less key: not any word a client makes up,
+        // each one kept in mode-use.json)
+        const declared = markLang(man, lang) === lang || (lang === '' && !(man.languages ?? []).length);
+        if (mode && declared && (piece === null || piece === '0')) try { modeUse.add(m[1], lang, mode, seedReporter(req, '')); } catch { /* not counted */ }
         if (!f || (f.meta.seed ?? null) !== seed) {
           if (mode !== null) snapshotJobs?.want(m[1], lang, key, 'publish', { mode });
           return send(res, 404, 'none yet');

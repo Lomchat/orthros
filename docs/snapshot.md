@@ -279,7 +279,9 @@ other key is as before) and in its request (`/api/snapshot/<m>?key=&lang=&mode=W
 session at that mode (`publishMode`: a mode a player's machine can list — a common mode or the game's own display —,
 else none, as no session could make that key) and `tools/snapshot-publish.mjs --screen WxH` opens the page with
 `?screen=`, whose largest mode is that one (the publishing session's key is the player's). The store keeps the two
-most recent keys per version, language **and mode**, of 4 modes at most (`MODES_KEPT`). Warm jobs publish at
+most recent keys per version, language **and mode**, of 4 modes at most (`MODES_KEPT`), `WARM_MODE` always one of
+them (two 404s at other modes dropped the wave's fresh 1920x1080 snapshot, which the queue then did not make again
+within its 6 h retry delay). Warm jobs publish at
 `WARM_MODE` (1920x1080, the most common screen); a player with another screen asks for theirs, which queues it, and
 starts cold meanwhile (then from their own snapshot).
 
@@ -289,7 +291,8 @@ the harness's, 2026-09-24 → 11-18) shows 2560x1440 in 23 sessions and 1920x108
 new players ask their shared snapshot at (`ModeUse`, `<learn>/snapshots/mode-use.json`: the first request of each page
 — the whole snapshot or its piece 0, a resumed download asks from a later one — at a mode `publishMode` accepts; per
 version, language and mode, the client networks that asked, as for the profile seeds: a player reloading counts once;
-a mode stays wanted 14 days after its last request, `MODE_DAYS`). The warm jobs make those modes too, at most
+a mode stays wanted 14 days after its last request, `MODE_DAYS`; only in a language the version declares — any
+word a client sends would otherwise be kept —, every expired entry dropped at each count). The warm jobs make those modes too, at most
 `WARM_MODES_MORE` (2) per version and language besides `WARM_MODE`, most networks first — with `WARM_MODE` that is 3
 of the store's 4 modes, one left for a mode a player's 404 asks for — and each after every version's `WARM_MODE` job of
 that language: with `--warm-langs fr`, every version's French 1920x1080 snapshot (or its learn job), then the French
