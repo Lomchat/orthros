@@ -15,6 +15,7 @@ import { acct, C as ACCT } from '../core/frame-acct.js';
 import { PARK } from '../core/sched.js';
 import { SHADOW_BYTES, SHADOW_RS, SHADOW_TSS, SHADOW_SAMP, SHADOW_TEX, SHADOW_STREAM, SHADOW_IB, SHADOW_FVF, SHADOW_LIGHTON, SHADOW_LIGHT, SHADOW_MATERIAL, SHADOW_XFORM, XFORM_WORDS, xformSlot, SHADOW_LIGHTS, LIGHT_WORDS, MATERIAL_WORDS, SURF_DESC_BYTES, SHADOW_OWNER, SURF_LOCK_BYTES, LK_LOCKED, LK_ARMED, LK_PEND, LK_BLOCKS, LK_NONE } from '../cpu/jit/runtime.js';
 import { resAlloc, resFree, outOfAddressSpace, OutOfAddressSpace } from './res-mem.js';
+import { stateBlocks, emptyBlock } from './d3d-stateblock.js';
 
 const NEVER = () => false; // (Present's pacing wait: its timeout alone wakes it)
 
@@ -172,6 +173,7 @@ export function surfaceBytes(fmt, w, h) {
 export function d3dCore(vm) {
   if (vm.d3dCore) return vm.d3dCore;
   const mem = vm.mem, com = vm.com;
+  const SB = stateBlocks({ com, noteState, TSS_NOTE_GROUPS, SAMP_NOTE_GROUPS }); // (functions only: the blocks are the devices')
   // snapshot: diagnostics
   let lockFailures = 0;
   /**
@@ -884,6 +886,7 @@ export function d3dCore(vm) {
     SetTransform(c) {
       const st = c.arg(1), p = c.arg(2);
       if (!p) return D3DERR_INVALIDCALL;
+      if (this.recording) { const m = new Float32Array(16); for (let i = 0; i < 16; i++) m[i] = mem.readF32(p + 4 * i); SB.rec.transform(this.recording, st, m); return D3D_OK; }
       // games re-send the same view/projection before every object: an identical matrix changes nothing
       const cur = this.transforms.get(st);
       if (cur) { let same = true; for (let i = 0; i < 16; i++) if ((mem.read32(p + 4 * i) >>> 0) !== f32bits(cur[i])) { same = false; break; } if (same) { this.shadowTransform(st); return D3D_OK; } }
@@ -896,12 +899,13 @@ export function d3dCore(vm) {
     }
     GetTransform(c) { const m = this.transforms.get(c.arg(1)), p = c.arg(2); if (!p) return D3DERR_INVALIDCALL; for (let i = 0; i < 16; i++) mem.writeF32(p + 4 * i, m ? m[i] : (i % 5 === 0 ? 1 : 0)); return D3D_OK; }
     MultiplyTransform(c) { const st = c.arg(1), p = c.arg(2); this.touchTransform(st); const a = this.transforms.get(st) ?? Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]); const b = new Float32Array(16); for (let i = 0; i < 16; i++) b[i] = mem.readF32(p + 4 * i); const r = new Float32Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { let s = 0; for (let k = 0; k < 4; k++) s += b[i * 4 + k] * a[k * 4 + j]; r[i * 4 + j] = s; } this.transforms.set(st, r); this.shadowTransform(st); this.gfx?.setTransform?.(st, r); return D3D_OK; }
-    SetViewport(c) { this.viewportVersion++; const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; this.viewport = { x: mem.read32(p), y: mem.read32(p + 4), w: mem.read32(p + 8), h: mem.read32(p + 12), minZ: mem.readF32(p + 16), maxZ: mem.readF32(p + 20) }; this.gfx?.setViewport?.(this.viewport); return D3D_OK; }
+    SetViewport(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; const v = { x: mem.read32(p), y: mem.read32(p + 4), w: mem.read32(p + 8), h: mem.read32(p + 12), minZ: mem.readF32(p + 16), maxZ: mem.readF32(p + 20) }; if (this.recording) { this.recording.viewport = v; return D3D_OK; } this.viewportVersion++; this.viewport = v; this.gfx?.setViewport?.(this.viewport); return D3D_OK; }
     GetViewport(c) { const p = c.arg(1), v = this.viewport; if (!p) return D3DERR_INVALIDCALL; mem.write32(p, v.x); mem.write32(p + 4, v.y); mem.write32(p + 8, v.w); mem.write32(p + 12, v.h); mem.writeF32(p + 16, v.minZ); mem.writeF32(p + 20, v.maxZ); return D3D_OK; }
-    SetMaterial(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; let same = true; for (let i = 0; i < 17; i++) { const v = mem.readF32(p + 4 * i); if (v !== this.material[i]) { same = false; this.material[i] = v; } } this.shadowMaterial(); if (same) return D3D_OK; this.lightVersion++; this.gfx?.setMaterial?.(this.material); return D3D_OK; }
+    SetMaterial(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; if (this.recording) { const m = new Float32Array(17); for (let i = 0; i < 17; i++) m[i] = mem.readF32(p + 4 * i); this.recording.material = m; return D3D_OK; } let same = true; for (let i = 0; i < 17; i++) { const v = mem.readF32(p + 4 * i); if (v !== this.material[i]) { same = false; this.material[i] = v; } } this.shadowMaterial(); if (same) return D3D_OK; this.lightVersion++; this.gfx?.setMaterial?.(this.material); return D3D_OK; }
     GetMaterial(c) { const p = c.arg(1); if (!p) return D3DERR_INVALIDCALL; for (let i = 0; i < 17; i++) mem.writeF32(p + 4 * i, this.material[i]); return D3D_OK; }
     SetLight(c) {
       const i = c.arg(1), p = c.arg(2); if (!p) return D3DERR_INVALIDCALL;
+      if (this.recording) { const l = new Float32Array(26); for (let k = 1; k < 26; k++) l[k] = mem.readF32(p + 4 * k); l[0] = mem.read32(p); SB.rec.light(this.recording, i, l); return D3D_OK; }
       // games re-send the same lights before every object: an unchanged light must not re-upload the light block
       const old = this.lights.get(i);
       const l = old ?? new Float32Array(26);
@@ -911,23 +915,30 @@ export function d3dCore(vm) {
       if (same) { this.shadowLight(i); return D3D_OK; }
       this.lightVersion++; this.lights.set(i, l); this.shadowLight(i); this.shadowLightOn(i); this.gfx?.setLight?.(i, l); return D3D_OK; }
     GetLight(c) { const l = this.lights.get(c.arg(1)), p = c.arg(2); if (!l || !p) return D3DERR_INVALIDCALL; for (let k = 0; k < 26; k++) mem.writeF32(p + 4 * k, l[k]); mem.write32(p, l[0]); return D3D_OK; }
-    LightEnable(c) { const i = c.arg(1), want = c.arg(2) !== 0; if (this.lightEnabled.has(i) !== want) { this.lightVersion++; this.stateVersion++; this.programVersion++; } if (want) this.lightEnabled.add(i); else this.lightEnabled.delete(i); if (!this.lights.has(i)) { const l = new Float32Array(26); l[0] = 3; l[1] = l[2] = l[3] = l[4] = 1; l[19] = 1; this.lights.set(i, l); this.shadowLight(i); } this.shadowLightOn(i); this.gfx?.lightEnable?.(i, c.arg(2) !== 0); return D3D_OK; }
+    LightEnable(c) { const i = c.arg(1), want = c.arg(2) !== 0; if (this.recording) { SB.rec.lightOn(this.recording, i, want); return D3D_OK; } this.enableLight(i, want); return D3D_OK; }
+    /** light `i` switched on or off (a light never set is made with the default values, white directional) */
+    enableLight(i, want) { if (this.lightEnabled.has(i) !== want) { this.lightVersion++; this.stateVersion++; this.programVersion++; } if (want) this.lightEnabled.add(i); else this.lightEnabled.delete(i); if (!this.lights.has(i)) { const l = new Float32Array(26); l[0] = 3; l[1] = l[2] = l[3] = l[4] = 1; l[19] = 1; this.lights.set(i, l); this.shadowLight(i); } this.shadowLightOn(i); this.gfx?.lightEnable?.(i, want); }
     GetLightEnable(c) { c.out32(2, this.lightEnabled.has(c.arg(1)) ? 1 : 0); return D3D_OK; }
-    SetClipPlane(c) { const p = c.arg(2); const v = new Float32Array(4); for (let i = 0; i < 4; i++) v[i] = mem.readF32(p + 4 * i); this.clipPlanes.set(c.arg(1), v); this.gfx?.setClipPlane?.(c.arg(1), v); return D3D_OK; }
+    SetClipPlane(c) { const p = c.arg(2); if (!p) return D3DERR_INVALIDCALL; const v = new Float32Array(4); for (let i = 0; i < 4; i++) v[i] = mem.readF32(p + 4 * i); if (this.recording) { SB.rec.clip(this.recording, c.arg(1), v); return D3D_OK; } this.clipPlanes.set(c.arg(1), v); this.gfx?.setClipPlane?.(c.arg(1), v); return D3D_OK; }
     GetClipPlane(c) { const v = this.clipPlanes.get(c.arg(1)), p = c.arg(2); for (let i = 0; i < 4; i++) mem.writeF32(p + 4 * i, v ? v[i] : 0); return D3D_OK; }
     // redundant state sets (same value) are the common case in engines: they must not invalidate the program memo
     // nor re-upload the state uniforms
     SetRenderState(c) { const s = c.arg(1), v = c.arg(2); if (this.recording) { this.recording.rs.set(s, v); return D3D_OK; } if (this.rs.get(s) === v) return D3D_OK; this.stateVersion++; if (PROGRAM_RS.has(s)) this.programVersion++; this.rs.set(s, v); noteState(this, 'rs', s, v); this.gfx?.setRenderState?.(s, v); return D3D_OK; }
     GetRenderState(c) { c.out32(2, this.rs.get(c.arg(1)) ?? 0); return D3D_OK; }
-    BeginStateBlock() { if (this.recording) return D3DERR_INVALIDCALL; if (this.shadow) mem.write32(this.shadow, 0); this.recording = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; return D3D_OK; }
+    // ---- state blocks (d3d-stateblock.js: the predefined sets, recording, Capture, Apply). A block is kept by its
+    // token (Direct3D 8) or its IDirect3DStateBlock9 object's id; while one records, the setters write into it and the
+    // device keeps its state — the issued-state shadow is off meanwhile (every set reaches the setters).
+    BeginStateBlock() { if (this.recording) return D3DERR_INVALIDCALL; if (this.shadow) mem.write32(this.shadow, 0); this.recording = emptyBlock(); return D3D_OK; }
     EndStateBlock(c) { if (!this.recording) return D3DERR_INVALIDCALL; const id = this.nextSB++; this.stateBlocks.set(id, this.recording); this.recording = null; this.shadowOn(); c.out32(1, id); return D3D_OK; }
-    // (only what the block holds — states, textures, transforms, shaders — and, for the transforms, only the slots whose
-    // matrix differs: effects restore their state with a block around every object, and a blanket invalidation made the
-    // backend re-send every matrix and light at every draw)
-    ApplyStateBlock(c) { const sb = this.stateBlocks.get(c.arg(1)); if (!sb) return D3DERR_INVALIDCALL; this.stateVersion++; this.programVersion++; for (const [s, v] of sb.rs) { this.rs.set(s, v); this.gfx?.setRenderState?.(s, v); } for (const [k, v] of sb.tss) { const [st, ty] = k.split(':').map(Number); this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); } for (const [st, t] of sb.textures) { this.textures[st] = t; this.gfx?.setTexture?.(st, t ? com.implAt(t) : null); } for (const [st, m] of sb.transforms) { const cur = this.transforms.get(st); if (m && cur && cur.length === m.length && cur.every((x, i) => Object.is(x, m[i]))) continue; if (m) this.transforms.set(st, m.slice()); else this.transforms.delete(st); this.touchTransform(st); this.gfx?.setTransform?.(st, m); } if (sb.vs !== undefined) { this.vertexShader = sb.vs; this.gfx?.setVertexShader?.(sb.vs, this.vertexShaders.get(sb.vs)); } if (sb.ps !== undefined) { this.pixelShader = sb.ps; this.gfx?.setPixelShader?.(sb.ps, this.pixelShaders.get(sb.ps)); } this.syncRefShadow(); this.shadowTransforms(); return D3D_OK; }
-    CaptureStateBlock(c) { const sb = this.stateBlocks.get(c.arg(1)); if (!sb) return D3DERR_INVALIDCALL; for (const s of sb.rs.keys()) sb.rs.set(s, this.rs.get(s) ?? 0); for (const k of sb.tss.keys()) { const [st, ty] = k.split(':').map(Number); sb.tss.set(k, this.tss[st].get(ty) ?? 0); } for (const st of sb.textures.keys()) sb.textures.set(st, this.textures[st]); for (const st of sb.transforms.keys()) sb.transforms.set(st, this.transforms.get(st)?.slice()); if (sb.vs !== undefined) sb.vs = this.vertexShader; if (sb.ps !== undefined) sb.ps = this.pixelShader; return D3D_OK; }
-    DeleteStateBlock(c) { return this.stateBlocks.delete(c.arg(1)) ? D3D_OK : D3DERR_INVALIDCALL; }
-    CreateStateBlock(c) { const type = c.arg(1), pp = c.arg(2); if (!pp) return D3DERR_INVALIDCALL; const sb = { rs: new Map(), tss: new Map(), textures: new Map(), transforms: new Map(), vs: undefined, ps: undefined }; if (type === 1 || type === 3) { for (const [s, v] of this.rs) sb.rs.set(s, v); for (let st = 0; st < MAX_STAGES; st++) for (const [ty, v] of this.tss[st]) sb.tss.set(`${st}:${ty}`, v); sb.ps = this.pixelShader; } if (type === 2 || type === 3) { for (const [s, m] of this.transforms) sb.transforms.set(s, m.slice()); sb.vs = this.vertexShader; } if (type === 3) for (let st = 0; st < MAX_STAGES; st++) sb.textures.set(st, this.textures[st]); const id = this.nextSB++; this.stateBlocks.set(id, sb); mem.write32(pp, id); return D3D_OK; }
+    /** a predefined block of `type` (D3DSBT_ALL 1, PIXELSTATE 2, VERTEXSTATE 3) captured now: its id, 0 for another type */
+    newStateBlock(type) { const sb = SB.create(this, type); if (!sb) return 0; const id = this.nextSB++; this.stateBlocks.set(id, sb); return id; }
+    /** the block `id`, its references released, forgotten */
+    dropStateBlock(id) { const sb = this.stateBlocks.get(id); if (!sb) return false; this.stateBlocks.delete(id); SB.release(sb); return true; }
+    // (Apply and Capture are refused while a block records, as Direct3D does)
+    ApplyStateBlock(c) { const sb = this.stateBlocks.get(c.arg(1)); if (!sb || this.recording) return D3DERR_INVALIDCALL; SB.apply(this, sb); return D3D_OK; }
+    CaptureStateBlock(c) { const sb = this.stateBlocks.get(c.arg(1)); if (!sb || this.recording) return D3DERR_INVALIDCALL; SB.capture(this, sb); return D3D_OK; }
+    DeleteStateBlock(c) { return this.dropStateBlock(c.arg(1)) ? D3D_OK : D3DERR_INVALIDCALL; }
+    CreateStateBlock(c) { const pp = c.arg(2); if (!pp) return D3DERR_INVALIDCALL; const id = this.newStateBlock(c.arg(1)); if (!id) return D3DERR_INVALIDCALL; mem.write32(pp, id); return D3D_OK; }
     SetClipStatus() { return D3D_OK; }
     GetClipStatus(c) { const p = c.arg(1); if (p) { mem.write32(p, 0); mem.write32(p + 4, 0); } return D3D_OK; }
     GetTexture(c) { const st = c.arg(1), pp = c.arg(2); if (st >= MAX_STAGES || !pp) return D3DERR_INVALIDCALL; const t = this.textures[st]; mem.write32(pp, t); if (t) com.addRef(com.objectAt(t)); return D3D_OK; }
@@ -938,7 +949,7 @@ export function d3dCore(vm) {
     bindTexture(st, t) {
       const o = t ? com.objectAt(t) : null;
       if (t && !o?.impl) return D3DERR_INVALIDCALL;
-      if (this.recording) { this.recording.textures.set(st, t); return D3D_OK; }
+      if (this.recording) { SB.rec.texture(this.recording, st, t); return D3D_OK; }
       const old = this.textures[st];
       if (old === t) this.sameSets++; // (measurement: sets that change nothing and still reach JavaScript, see the harness's mark report)
       if (old !== t) {
@@ -950,12 +961,12 @@ export function d3dCore(vm) {
       this.gfx?.setTexture?.(st, o ? o.impl : null); return D3D_OK;
     }
     GetTextureStageState(c) { const st = c.arg(1); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; c.out32(3, this.tss[st].get(c.arg(2)) ?? 0); return D3D_OK; }
-    SetTextureStageState(c) { const st = c.arg(1), ty = c.arg(2), v = c.arg(3); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (this.recording) { this.recording.tss.set(`${st}:${ty}`, v); return D3D_OK; } if (this.tss[st].get(ty) === v) return D3D_OK; this.stateVersion++; if (PROGRAM_TSS.has(ty)) this.programVersion++; noteState(this, TSS_NOTE_GROUPS[st] ?? 'tss' + st, ty, v); this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); return D3D_OK; }
+    SetTextureStageState(c) { const st = c.arg(1), ty = c.arg(2), v = c.arg(3); if (st >= MAX_STAGES) return D3DERR_INVALIDCALL; if (this.recording) { SB.rec.tss(this.recording, st, ty, v); return D3D_OK; } if (this.tss[st].get(ty) === v) return D3D_OK; this.stateVersion++; if (PROGRAM_TSS.has(ty)) this.programVersion++; noteState(this, TSS_NOTE_GROUPS[st] ?? 'tss' + st, ty, v); this.tss[st].set(ty, v); this.gfx?.setTextureStageState?.(st, ty, v); return D3D_OK; }
     ValidateDevice(c) { c.out32(1, 1); return D3D_OK; }
     GetInfo() { return S_FALSE; }
     SetPaletteEntries(c) { const n = c.arg(1), p = c.arg(2); const pal = new Uint32Array(256); for (let i = 0; i < 256; i++) pal[i] = mem.read32(p + 4 * i); this.palettes.set(n, pal); return D3D_OK; }
     GetPaletteEntries(c) { const pal = this.palettes.get(c.arg(1)), p = c.arg(2); if (!pal) return D3DERR_INVALIDCALL; for (let i = 0; i < 256; i++) mem.write32(p + 4 * i, pal[i]); return D3D_OK; }
-    SetCurrentTexturePalette(c) { this.currentPalette = c.arg(1); return D3D_OK; }
+    SetCurrentTexturePalette(c) { if (this.recording) { this.recording.palette = c.arg(1); return D3D_OK; } this.currentPalette = c.arg(1); return D3D_OK; }
     GetCurrentTexturePalette(c) { c.out32(1, this.currentPalette); return D3D_OK; }
     // ---- drawing
     DrawPrimitive(c) { const type = c.arg(1), start = c.arg(2), count = c.arg(3); this.draws++; if (this.gfx) { if (!acct.drawTimed()) this.gfx.drawPrimitive?.(type, start, count); else { const ap = acct.enter(ACCT.draw), d0 = acct.acc[ACCT.draw]; try { this.gfx.drawPrimitive?.(type, start, count); } finally { acct.drawEnd(ap, d0); } } } return D3D_OK; }
@@ -978,19 +989,19 @@ export function d3dCore(vm) {
     SetVertexShader(c) { const h = c.arg(1); if (this.recording) { this.recording.vs = h; return D3D_OK; } if (this.vertexShader !== h) this.programVersion++; this.vertexShader = h; this.gfx?.setVertexShader?.(h, this.vertexShaders.get(h)); return D3D_OK; }
     GetVertexShader(c) { c.out32(1, this.vertexShader); return D3D_OK; }
     DeleteVertexShader(c) { const sh = this.vertexShaders.get(c.arg(1)); if (!sh) return D3DERR_INVALIDCALL; this.vertexShaders.delete(c.arg(1)); this.programVersion++; this.gfx?.deleteVertexShader?.(sh); return D3D_OK; }
-    SetVertexShaderConstant(c) { this.constVersion++; this.vsConstVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 96) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.vsConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(0, reg * 4, (reg + n) * 4); this.gfx?.setVertexShaderConstant?.(reg, n, this.vsConst); return D3D_OK; }
+    SetVertexShaderConstant(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 96) return D3DERR_INVALIDCALL; if (this.recording) { SB.rec.consts(this, this.recording, 'vsF', reg, n, (i) => mem.readF32(p + 4 * i)); return D3D_OK; } this.constVersion++; this.vsConstVersion++; for (let i = 0; i < n * 4; i++) this.vsConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(0, reg * 4, (reg + n) * 4); this.gfx?.setVertexShaderConstant?.(reg, n, this.vsConst); return D3D_OK; }
     GetVertexShaderConstant(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); for (let i = 0; i < n * 4; i++) mem.writeF32(p + 4 * i, this.vsConst[reg * 4 + i]); return D3D_OK; }
     GetVertexShaderDeclaration(c) { const sh = this.vertexShaders.get(c.arg(1)), p = c.arg(2), ps = c.arg(3); if (!sh) return D3DERR_INVALIDCALL; const size = mem.read32(ps); mem.write32(ps, sh.decl.length * 4); if (!p) return D3D_OK; if (size < sh.decl.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < sh.decl.length; i++) mem.write32(p + 4 * i, sh.decl[i]); return D3D_OK; }
     GetVertexShaderFunction(c) { const sh = this.vertexShaders.get(c.arg(1)), p = c.arg(2), ps = c.arg(3); if (!sh) return D3DERR_INVALIDCALL; const code = sh.code ?? new Uint32Array(0); const size = mem.read32(ps); mem.write32(ps, code.length * 4); if (!p) return D3D_OK; if (size < code.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < code.length; i++) mem.write32(p + 4 * i, code[i]); return D3D_OK; }
-    SetStreamSource(c) { const n = c.arg(1), vb = c.arg(2), stride = c.arg(3); if (n >= MAX_STREAMS) return D3DERR_INVALIDCALL; const s = this.streams[n]; if (s.vb !== vb) { if (vb) com.addRef(com.objectAt(vb)); if (s.vb) com.release(com.objectAt(s.vb)); s.vb = vb; } s.stride = stride; this.gfx?.setStreamSource?.(n, vb ? com.implAt(vb) : null, stride); return D3D_OK; }
+    SetStreamSource(c) { const n = c.arg(1), vb = c.arg(2), stride = c.arg(3); if (n >= MAX_STREAMS) return D3DERR_INVALIDCALL; if (this.recording) { SB.rec.stream(this.recording, n, vb, 0, stride); return D3D_OK; } const s = this.streams[n]; if (s.vb !== vb) { if (vb) com.addRef(com.objectAt(vb)); if (s.vb) com.release(com.objectAt(s.vb)); s.vb = vb; } s.stride = stride; this.gfx?.setStreamSource?.(n, vb ? com.implAt(vb) : null, stride); return D3D_OK; }
     GetStreamSource(c) { const n = c.arg(1); if (n >= MAX_STREAMS) return D3DERR_INVALIDCALL; const s = this.streams[n]; c.out32(2, s.vb); if (s.vb) com.addRef(com.objectAt(s.vb)); c.out32(3, s.stride); return D3D_OK; }
-    SetIndices(c) { const ib = c.arg(1), base = c.arg(2); if (this.indices.ib !== ib) { if (ib) com.addRef(com.objectAt(ib)); if (this.indices.ib) com.release(com.objectAt(this.indices.ib)); this.indices.ib = ib; } this.indices.base = base; this.gfx?.setIndices?.(ib ? com.implAt(ib) : null, base); return D3D_OK; }
+    SetIndices(c) { const ib = c.arg(1), base = c.arg(2); if (this.recording) { SB.rec.indices(this.recording, ib, base); return D3D_OK; } if (this.indices.ib !== ib) { if (ib) com.addRef(com.objectAt(ib)); if (this.indices.ib) com.release(com.objectAt(this.indices.ib)); this.indices.ib = ib; } this.indices.base = base; this.gfx?.setIndices?.(ib ? com.implAt(ib) : null, base); return D3D_OK; }
     GetIndices(c) { c.out32(1, this.indices.ib); if (this.indices.ib) com.addRef(com.objectAt(this.indices.ib)); c.out32(2, this.indices.base); return D3D_OK; }
     CreatePixelShader(c) { const fn = c.arg(1), pp = c.arg(2); if (!fn || !pp) return D3DERR_INVALIDCALL; const code = readShaderTokens(mem, fn); const h = this.nextShader++; const sh = { handle: h, code: Uint32Array.from(code) }; this.pixelShaders.set(h, sh); mem.write32(pp, h); this.gfx?.createPixelShader?.(sh); return D3D_OK; }
     SetPixelShader(c) { const h = c.arg(1); if (this.recording) { this.recording.ps = h; return D3D_OK; } if (this.pixelShader !== h) this.programVersion++; this.pixelShader = h; this.gfx?.setPixelShader?.(h, this.pixelShaders.get(h)); return D3D_OK; }
     GetPixelShader(c) { c.out32(1, this.pixelShader); return D3D_OK; }
     DeletePixelShader(c) { const sh = this.pixelShaders.get(c.arg(1)); if (!sh) return D3DERR_INVALIDCALL; this.pixelShaders.delete(c.arg(1)); this.programVersion++; this.gfx?.deletePixelShader?.(sh); return D3D_OK; }
-    SetPixelShaderConstant(c) { this.constVersion++; this.psConstVersion++; const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 8) return D3DERR_INVALIDCALL; for (let i = 0; i < n * 4; i++) this.psConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(1, reg * 4, (reg + n) * 4); this.gfx?.setPixelShaderConstant?.(reg, n, this.psConst); return D3D_OK; }
+    SetPixelShaderConstant(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); if (reg + n > 8) return D3DERR_INVALIDCALL; if (this.recording) { SB.rec.consts(this, this.recording, 'psF', reg, n, (i) => mem.readF32(p + 4 * i)); return D3D_OK; } this.constVersion++; this.psConstVersion++; for (let i = 0; i < n * 4; i++) this.psConst[reg * 4 + i] = mem.readF32(p + 4 * i); this.gfx?.constTouched?.(1, reg * 4, (reg + n) * 4); this.gfx?.setPixelShaderConstant?.(reg, n, this.psConst); return D3D_OK; }
     GetPixelShaderConstant(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); for (let i = 0; i < n * 4; i++) mem.writeF32(p + 4 * i, this.psConst[reg * 4 + i]); return D3D_OK; }
     GetPixelShaderFunction(c) { const sh = this.pixelShaders.get(c.arg(1)), p = c.arg(2), ps = c.arg(3); if (!sh) return D3DERR_INVALIDCALL; const size = mem.read32(ps); mem.write32(ps, sh.code.length * 4); if (!p) return D3D_OK; if (size < sh.code.length * 4) return D3DERR_MOREDATA; for (let i = 0; i < sh.code.length; i++) mem.write32(p + 4 * i, sh.code[i]); return D3D_OK; }
     DrawRectPatch() { return D3DERR_INVALIDCALL; }
@@ -1006,7 +1017,7 @@ export function d3dCore(vm) {
   // its own: a restored resource is one no backend has seen, which they create and upload whole at its first use)
   // snapshot: constant
   const resourceSnap = { skip: ['rec', 'glOwner', 'glRec', 'glGen', 'texJob'] }; // (texJob: settled before a snapshot, vm-snapshot.js)
-  vm.d3dCore = { deviceSnap, resourceSnap, Resource, Surface, Texture, CubeTexture, Volume, VolumeTexture, Buffer, Device, writeCaps, displayMode, writeMode, modes, RS_DEFAULTS, TSS_DEFAULTS, MAX_STAGES, MAX_STREAMS, allocResId: () => resIds.next++ };
+  vm.d3dCore = { stateBlocks: SB, deviceSnap, resourceSnap, Resource, Surface, Texture, CubeTexture, Volume, VolumeTexture, Buffer, Device, writeCaps, displayMode, writeMode, modes, RS_DEFAULTS, TSS_DEFAULTS, MAX_STAGES, MAX_STREAMS, allocResId: () => resIds.next++ };
   return vm.d3dCore;
 }
 
