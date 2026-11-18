@@ -339,6 +339,31 @@ test('parameter blocks: an entry whose parameter has not changed since the block
   }
 });
 
+// The BFME2 engine (Age of the Ring, a building under construction) records the blocks of its moving materials again
+// at every frame — DeleteParameterBlock, BeginParameterBlock, the setters, EndParameterBlock — beside the blocks of the
+// materials that never change. Handles drawn from a ring gave the latter's handle to one of the former every few
+// frames: the whole scene took turns drawing with another material's values (owner's report, 2026-11-18).
+test('parameter blocks: a live block keeps its handle to itself, however many blocks are deleted and recorded around it', () => {
+  const S = session(false), { mem } = S, fx = S.fxs[0];
+  const h = (nm) => fx.fx.GetParameterByName(S.ctx([fx.ptr, 0, S.name(nm)])) >>> 0;
+  const call = (name, ...a) => (S.run(() => fx.fx[name](S.ctx([fx.ptr, ...a]))) ?? 0) >>> 0;
+  const color = h('Color'), words = () => Array.from(fx.fx.param(color).words);
+  const record = (vals) => { call('BeginParameterBlock'); vals.forEach((v, i) => mem.writeF32(S.scratch + 4 * i, v)); call('SetVector', color, S.scratch); return call('EndParameterBlock'); };
+  const kept = record([1, 2, 3, 4]), wa = words(); // (a material that never changes)
+  let moving = record([5, 6, 7, 8]);
+  for (let frame = 0; frame < 300; frame++) {
+    assert.equal(call('DeleteParameterBlock', moving), 0);
+    moving = record([5, 6, 7, frame]);
+    assert.notEqual(moving, kept, `frame ${frame}: the kept block's handle handed out again`);
+    assert.equal(call('ApplyParameterBlock', moving), 0);
+    assert.equal(call('ApplyParameterBlock', kept), 0, `frame ${frame}: the kept block is gone`);
+    assert.deepEqual(words(), wa, `frame ${frame}: the kept block applies its own values`);
+  }
+  assert.equal(call('DeleteParameterBlock', moving), 0);
+  assert.notEqual(call('ApplyParameterBlock', moving), 0, 'a deleted block no longer applies');
+  assert.equal(fx.fx.blocks.size, 1);
+});
+
 /**
  * An effect whose passes pick their vertex shader in an array by an expression of a parameter (pickShader: the pick
  * cached per element, the device's shader compared with the element's): pass 0 indexes VSArr by round(Sel), pass 1 by
