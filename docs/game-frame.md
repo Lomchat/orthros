@@ -64,7 +64,10 @@ What it records (`src/shared/display-report.js`), at the same time:
 - **the back buffers** (`src/gfx/frame-report.js`, in the renderer — the render worker, or the emulator's worker with
   `?glworker=0`): every presented back buffer downscaled on the GPU (halving blits, then ≤ 320x180, read back through
   pixel buffers and fences: no stall), its device frame, present time, the framebuffer blitted to the canvas, the
-  back-buffer surface, the gamma pass and the frame's command signature. The page asks for it through the worker debug
+  back-buffer surface, the gamma pass, the frame's command signature and its values record (`vsig`: a hash of the color
+  values the draws read — TEXTUREFACTOR, material, ambient, alpha reference, fog —, `tf`: the draws whose
+  TEXTUREFACTOR changed since the previous frame; `d3d8-webgl.js` valDraw: under one command signature, a picture that
+  changes with the values is the game's, one that changes without them is GL's). The page asks for it through the worker debug
   global `ORTHROS_FLICKER_REPORT=<id>` (the worker's `dbg` message, forwarded to the render worker): `src/web/worker.js`,
   a snapshot source, is unchanged;
 - **the screen** (`src/web/screen-report.js`, in the page): at every requestAnimationFrame, the visible game canvases
@@ -82,6 +85,9 @@ the figures. The renderer's window starts when the emulator's thread passes the 
 page records until that window's end too. `window.orthros.reportDisplay()` does the same from the console or a harness.
 `tools/with-browser-slot.sh node tools/check/display-report-check.mjs` checks both halves and the tool without a game
 (a square drawn every other frame, a red picture and a stale one shown on purpose: both must be found, and nothing else).
+Its automatic companion, without any click: the **draw probe** (`src/gfx/draw-probe.js`, docs/aotr-play.md "The draw
+probe"): on a still screen that stays, or a flicker under the same commands, a few seconds of what each of the frame's
+last draws did to the picture and the values it was drawn with, sent once per session (`tools/dev/draw-probe.mjs`).
 
 ## Another window: the game keeps playing (Windows games, 2026-11-17)
 

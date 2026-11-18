@@ -13,7 +13,8 @@ import { refreshApiOpt } from '../core/api-opt.js';
 let ctl = null, port = null, replayer = null, backend = null, canvas = null;
 const lastSf = { frames: 0 };
 const replay = { ms: 0, frames: 0, commands: 0, waitMs: 0, reused: 0 };
-const log = (msg) => port?.postMessage({ type: 'log', kind: 'gfx', msg });
+// (the draw probe's request for the game's own values at each draw goes to the emulator, which records them: render-host.js)
+const log = (msg) => { if (msg?.event === 'draw-probe-stamp') self.postMessage({ type: 'stamp', on: !!msg.on }); else port?.postMessage({ type: 'log', kind: 'gfx', msg }); };
 
 self.onmessage = (e) => {
   const m = e.data;

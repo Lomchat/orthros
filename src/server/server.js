@@ -41,6 +41,7 @@ import { moduleGraph, withPreloads } from './module-graph.js';
 import { PERF_MAX_BYTES, sanitizePerfRecord } from '../shared/perf-record.js';
 import { CAPTURE_POST_MAX_BYTES, sanitizeFlickerRecord } from '../shared/flicker-record.js';
 import { REPORT_POST_MAX_BYTES, REPORT_GAP_MS, sanitizeDisplayReport } from '../shared/display-report.js';
+import { DRAW_PROBE_POST_MAX_BYTES, sanitizeDrawProbe } from '../shared/draw-probe.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import { portProfileDb } from '../vfs/profile-share.js';
@@ -111,6 +112,12 @@ export function loadManifests(dir, extra = null) {
  */
 const FLICKER_CAPTURES_PER_DAY = 100, FLICKER_CAPTURES_PER_CLIENT = 2, FLICKER_CLIENT_WINDOW_MS = 15 * 60_000;
 /**
+ * Draw probes the telemetry takes (src/gfx/draw-probe.js: a session sends one at most, up to DRAW_PROBE_POST_MAX_BYTES):
+ * the flicker captures' rules with their own counts — one per session a day, DRAW_PROBES_PER_CLIENT per client network
+ * in FLICKER_CLIENT_WINDOW_MS, DRAW_PROBES_PER_DAY in all (~25 MB).
+ */
+const DRAW_PROBES_PER_DAY = 100, DRAW_PROBES_PER_CLIENT = 2;
+/**
  * Display reports the telemetry takes (a player's "report a display problem": src/shared/display-report.js, up to
  * REPORT_POST_MAX_BYTES each): one per session in REPORT_GAP_MS, DISPLAY_REPORTS_PER_CLIENT per client network in
  * FLICKER_CLIENT_WINDOW_MS (the address kept in memory for that long only), DISPLAY_REPORTS_PER_DAY in all (~60 MB).
@@ -169,6 +176,9 @@ export function createServer(opts = {}) {
   /** flicker captures written today (/api/telemetry): their count and sessions; the client networks of the last minutes */
   let flickerCaptures = { day: null, n: 0, sessions: new Set() };
   const flickerClients = new Map(); // (client network -> { n, until })
+  /** draw probes written today (/api/telemetry): their count and sessions; the client networks of the last minutes */
+  let drawProbes = { day: null, n: 0, sessions: new Set() };
+  const drawProbeClients = new Map(); // (client network -> { n, until })
   /** display reports written today, the sessions' last report times, the client networks of the last minutes */
   let displayReports = { day: null, n: 0 };
   const reportSessions = new Map(), reportClients = new Map(); // (session -> time; client network -> { n, until })
@@ -1921,7 +1931,8 @@ export function createServer(opts = {}) {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         // (256 KB per batch; a flicker capture — one per session, src/shared/flicker-record.js — up to CAPTURE_POST_MAX_BYTES,
         // within the day's limits: FLICKER_CAPTURES_PER_DAY; a display report — src/shared/display-report.js — up to
-        // REPORT_POST_MAX_BYTES, within its own: DISPLAY_REPORTS_PER_DAY)
+        // REPORT_POST_MAX_BYTES, within its own: DISPLAY_REPORTS_PER_DAY; a draw probe — src/shared/draw-probe.js — up to
+        // DRAW_PROBE_POST_MAX_BYTES: DRAW_PROBES_PER_DAY)
         const POST_MAX = Math.max(CAPTURE_POST_MAX_BYTES, REPORT_POST_MAX_BYTES);
         const chunks = []; let size = 0;
         req.on('data', (d) => { size += d.length; if (size <= POST_MAX) chunks.push(d); });
@@ -1947,6 +1958,19 @@ export function createServer(opts = {}) {
               if (c.n >= DISPLAY_REPORTS_PER_DAY) return send(res, 429, 'enough display reports today');
               c.n++; reportSessions.set(v.rec.session, now);
               if (cl) cl.n++; else reportClients.set(client, { n: 1, until: now + FLICKER_CLIENT_WINDOW_MS });
+            } else if (rec?.event === 'draw-probe') {
+              if (size > DRAW_PROBE_POST_MAX_BYTES) return send(res, 413, 'too large');
+              const v = sanitizeDrawProbe(rec); if (!v.ok) return send(res, 400, v.error);
+              line = JSON.stringify({ at: new Date().toISOString(), ...v.rec }) + '\n'; // (before it is counted: one that cannot be written takes no place)
+              const now = Date.now(), day = new Date(now).toISOString().slice(0, 10), c = drawProbes.day === day ? drawProbes : (drawProbes = { day, n: 0, sessions: new Set() });
+              for (const [k, x] of drawProbeClients) if (x.until <= now) drawProbeClients.delete(k);
+              const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim(), client = clientNet(fwd || String(req.socket.remoteAddress ?? ''));
+              const cl = drawProbeClients.get(client);
+              if (c.sessions.has(v.rec.session)) return send(res, 429, 'this session sent its draw probe');
+              if ((cl?.n ?? 0) >= DRAW_PROBES_PER_CLIENT) return send(res, 429, 'too many draw probes, try later');
+              if (c.n >= DRAW_PROBES_PER_DAY) return send(res, 429, 'enough draw probes today');
+              c.n++; c.sessions.add(v.rec.session);
+              if (cl) cl.n++; else drawProbeClients.set(client, { n: 1, until: now + FLICKER_CLIENT_WINDOW_MS });
             } else if (rec?.event === 'flicker-capture') {
               const v = sanitizeFlickerRecord(rec); if (!v.ok) return send(res, 400, v.error);
               line = JSON.stringify({ at: new Date().toISOString(), ...v.rec }) + '\n'; // (before it is counted: one that cannot be written takes no place)
