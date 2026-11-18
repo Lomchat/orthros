@@ -1134,7 +1134,7 @@ the execution it covers. Prototype: src/cpu/jit/tier2.js, `ORTHROS_JIT_AB={"tier
   guest instructions, printed by startbench at each `ORTHROS_PERF_CTL` switch; the counters cost time), `ORTHROS_TIER2_LOG=1`
   (the selection and build).
 
-## Library kernels recognised by content (2026-11-12, D122): exact, off by default
+## Library kernels recognised by content (2026-11-12, D122): exact; memcmp on, inline, since 2026-11-18
 
 The C runtime the SAGE games ship (msvcr71.dll 7.10.3052.4, the same file in BFME1, BFME2, RotWK and AotR) runs 8.7 %
 of RotWK's executed guest bytes in play (the study of 2026-11-12: `floor` 3.71 %, `fabs` 0.82 %, `ldexp` 0.81 %, `memcmp`
@@ -1210,10 +1210,10 @@ their content (DECISIONS.md D122): a library is recognised, never a game.
 - RotWK in-session A/B (startbench, real clock, tools/scenarios/rotwk-libk-ab.txt: 25 s phases after a 5 s warm-up
   following each switch), guest ns per instruction on / off: 2.257 / 2.404, 2.004 / 2.273, 2.295 / 2.254 (medians 2.257
   / 2.273); guest ms per frame 14.4 / 15.9, 15.0 / 17.5, 16.2 / 16.0.
-- Off by default (integration of 2026-11-12): fewer host instructions on both games in every round and every kernel
-  faster than its translation per call, but no time measure beyond the spread on any game, which the rule for a default
-  asks for (`JIT_DEFAULTS.libKernels`; `?jitopts={"libKernels":true}` or `dbg:ORTHROS_JIT_AB={"libKernels":true}` to
-  run them). The `memcpy` kernel catches almost nothing (102 calls on BFME1, none seen on RotWK): the study's hot copy is
+- Off by default (integration of 2026-11-12; `memcmp` on since 2026-11-18, run inline: below): fewer host instructions
+  on both games in every round and every kernel faster than its translation per call, but no time measure beyond the
+  spread on any game, which the rule for a default asks for (`JIT_DEFAULTS.libKernels`; `?jitopts={"libKernels":true}`
+  or `dbg:ORTHROS_JIT_AB={"libKernels":true}` to run them all). The `memcpy` kernel catches almost nothing (102 calls on BFME1, none seen on RotWK): the study's hot copy is
   most likely `memmove`, a separate function, not recognised. Under exact SMC invalidation a kernel is still dropped
   by page (its fingerprinted ranges span helpers and constants, not blocks).
 
@@ -1252,6 +1252,34 @@ the caller's region for the function, its `ret` chains back to the return site),
   inline. tests/jit-lib-kernels.test.js runs both forms against the interpreter and the JIT without kernels (registers,
   flags read after the call, stack, instructions), checks that every call after the first ran inline and that a drop
   clears `LIB_LIVE`.
+- Per call (tools/bench/libkernel-bench.mjs, 16 equal bytes, 4 M calls, median of 5, `--no-liftoff`, the server at
+  load 25-50): through the import stub (`--stub`) translated 77.6 ns, kernel 65.9, inline 51.7; through `call [slot]`
+  75.6 / 64.8 / 48.7. The inline form saves twice what the kernel saves (−26 against −11 ns a call). It adds ~1.2 KB of
+  WASM to each region holding the stub (AotR's start: 86 sites, +0.12 MB of 71.9 MB translated).
+- AotR to its first frame, Node (`startbench aotr-10 --child --virtual --dbg ORTHROS_SLEEP0_SPIN_INSNS=0`, a scenario
+  ending at the first Direct3D frame: the same 102.5 G guest instructions in every run), three rounds of off / memcmp
+  kernel / memcmp inline in rotated order, under `perf stat -e cycles:u,instructions:u` (whole process), the server at
+  load 12-57 from other sessions. Off: emulator thread CPU 99.8, 95.7, 104.4 s, process 415, 400, 434 G cycles, 994 G
+  instructions. Kernel: 111.0, 109.7, 90.6 s, 451, 467, 382 G cycles, 951 G instructions (−4.4 %; the two slow runs at
+  load 32-33, the third at 16 matches its instruction count). Inline: 87.9, 89.2, 85.3 s (median −11.9 %), 380, 375,
+  363 G cycles (−9.6 %), 902 G instructions (−9.3 %) — every inline run under every off run. Per call, the kernel saves
+  ~147 host instructions, the inline form ~310 (the transitions as much again). 295.8 M calls, none off the path.
+- AotR in Chrome (tools/headless.mjs through the slot guard, a fresh profile, Esc through the intro, the run ending at
+  the menu), two pairs off / inline: first frame 178 / 176 s, 172 / 150 s; menu 202 / 201 s, 197 / 176 s — the same
+  direction, the spread of this loaded machine (load 17-64 at the starts) larger than the effect.
+- RotWK 2.02 (`rotwk-202 --child`) and BFME 1.08, the same A/B to the first frame: RotWK calls memcmp 16.4 M times
+  (27.2 G guest instructions), 97 inline sites: instructions −0.4 % (kernel) / −0.6 % (inline), thread CPU 33.4 / 32.7 /
+  33.9 s (medians off / kernel / inline): neutral. BFME 1.08 calls none before its first frame (no kernel installed;
+  33.1 G guest instructions): thread CPU 31.5 / 31.8 / 30.7 s, neutral — but the arms with kernels on ran +0.5 % host
+  instructions, the probe's own cost: `ORTHROS_LIBKERNELS` read from Node's `process.env` (a native lookup, ~0.3 µs)
+  for every block a region registers; read once since (BFME1 inline arm: 354.6 G instructions, as off: 354.4-355.2).
+- Play: RotWK 2.02 skirmish, in-session A/B on a real clock (tools/scenarios/rotwk-libk-ab.txt, off =
+  `{"libKernels":false,"libInline":false}`, 25 s phases after a 5 s warm-up following each switch): guest ns per
+  instruction inline 2.478, 2.500, 2.582 / off 2.530, 2.475, 2.417; emulator thread CPU per frame 21.5, 22.2, 23.2 /
+  22.6, 23.1, 23.5 ms — neutral (memcmp is called far less in play).
+- **Default since 2026-11-18**: `libKernels: ["memcmp"]`, `libInline: true` — AotR's start to its first frame −9 to
+  −12 % CPU in Node beyond the spread, the other games and play neutral; the other kernels stay off (their case of
+  2026-11-12 unchanged). The persistent translation cache keys on `JIT_DEFAULTS`: every player's cache starts over once.
 
 ## The four 2026-11-12 branches combined, measured against main
 

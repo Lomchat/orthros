@@ -39,8 +39,12 @@ const MAX_FPU_VERSIONS = 4; // (24/53-bit precision x nearest/truncation: the fo
  * (EXIT_STEP at its entry: an input its path does not cover), looked at every LIB_FALLBACK_CHECK such calls
  */
 const LIB_FALLBACK_CHECK = 4096;
-/** ORTHROS_LIBKERNELS=0 (debug global or environment): no library kernels (libkernels.js) */
-const libKernelsOff = () => { const g = globalThis.ORTHROS_LIBKERNELS ?? globalThis.process?.env?.ORTHROS_LIBKERNELS; return g === 0 || g === '0' || g === false || g === 'false'; };
+/**
+ * ORTHROS_LIBKERNELS=0 (debug global, or the environment — read once: Node's process.env is a native lookup, ~0.3 µs,
+ * and this is asked for every block a region registers): no library kernels (libkernels.js)
+ */
+const LIBKERNELS_ENV = globalThis.process?.env?.ORTHROS_LIBKERNELS;
+const libKernelsOff = () => { const g = globalThis.ORTHROS_LIBKERNELS ?? LIBKERNELS_ENV; return g === 0 || g === '0' || g === false || g === 'false'; };
 
 /** Fold a pending lazy flag operation (left in the state block by JIT'd code) into the thread's EFLAGS. */
 function foldLazyFlags(cpu) {
