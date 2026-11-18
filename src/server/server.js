@@ -64,6 +64,7 @@ import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64, see
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { CodeShare, servedHeat, servedRegions } from './code-share.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
+import { ContentTwins, treePlaces } from './content-twins.js';
 import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY, publishMode } from './snapshot-store.js';
 import { Warmer, LearnedScenarios, learnScenarios } from './warm-jobs.js';
 import { pipeline } from 'node:stream/promises';
@@ -214,10 +215,12 @@ export function createServer(opts = {}) {
    * Half-Life, 1.3 MB for Morrowind — 2.9 and 13 s at 100 KB/s; brotli 9: 43 KB for Half-Life), made once per tree.
    */
   const treeEncoded = new Map(); // id -> { json, br, gz }
-  const sendTree = (req, res, id, man) => {
-    const json = gameTreeJson(id, man), accept = String(req.headers['accept-encoding'] ?? '');
-    let c = treeEncoded.get(id);
-    if (c?.json !== json) treeEncoded.set(id, c = { json, br: null, gz: null });
+  const sendTree = (req, res, id, man) => sendJsonEncoded(req, res, id, gameTreeJson(id, man));
+  /** A JSON answer, brotli or gzip when the browser takes it, each made once per text under `key` (sendTree's). */
+  const sendJsonEncoded = (req, res, key, json) => {
+    const accept = String(req.headers['accept-encoding'] ?? '');
+    let c = treeEncoded.get(key);
+    if (c?.json !== json) treeEncoded.set(key, c = { json, br: null, gz: null });
     const type = { 'Content-Type': 'application/json', 'Vary': 'Accept-Encoding' };
     if (/\bbr\b/.test(accept)) {
       c.br ??= zlib.brotliCompressSync(json, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: json.length } });
@@ -228,6 +231,31 @@ export function createServer(opts = {}) {
   };
   // (the folders' listings the requests resolve paths with, each checked by a stat of its folder: DirListings)
   const listings = new DirListings(opts.listingNames);
+  /**
+   * Files identical by content (content-twins.js, /api/twins): opts.contentTwins — true, or { rate, delayMs, everyMs } —,
+   * the hashes kept in opts.learnDir/content-hashes.json. A pass over every version's tree (its files' places: owner
+   * marks, the files served — resolved with a listing memo of its own, not the requests') delayMs after the start, then
+   * every everyMs: a file added, changed or removed found at the next one.
+   */
+  const twinOpts = opts.contentTwins ? (typeof opts.contentTwins === 'object' ? opts.contentTwins : {}) : null;
+  const twins = twinOpts ? new ContentTwins({ file: opts.learnDir ? path.join(opts.learnDir, 'content-hashes.json') : null, rate: twinOpts.rate, busy: twinOpts.busy, log: twinOpts.log ?? ((m) => console.log(`orthros: ${m}`)) }) : null;
+  /** the trees the last pass read, by version: a pass whose trees are all the same objects (none listed again) is skipped */
+  const twinTrees = new Map();
+  const twinPlaces = function* () {
+    const memo = new Map(); twinTrees.clear();
+    for (const [id, man] of manifests) { let tree; try { tree = gameTree(id, man); } catch { continue; } twinTrees.set(id, tree); yield* treePlaces(id, tree, (rel) => resolveGameFile(man, rel, memo)); }
+  };
+  const twinsChanged = async () => {
+    if (!twins.passes || twinTrees.size !== manifests.size) return true;
+    for (const [id, man] of manifests) { await new Promise((r) => setImmediate(r)); let t = null; try { t = gameTree(id, man); } catch { /* none */ } if (t !== twinTrees.get(id)) return true; }
+    return false;
+  };
+  let twinTimer = null;
+  const twinPass = () => {
+    twinTimer = null;
+    twinsChanged().then((c) => (c ? twins.update(twinPlaces) : null)).catch((e) => console.warn(`orthros: content twins: ${e?.message ?? e}`))
+      .finally(() => { if (!twins.stopped) { twinTimer = setTimeout(twinPass, twinOpts.everyMs ?? 30 * 60_000); twinTimer.unref?.(); } });
+  };
   const getManifest = (id) => { if (!manifests.has(id) && !manifestDir) refreshCatalog(); return manifests.get(id); };
   // (the players' profiles, one a game unless a version keeps its own — docs/profiles.md: key -> its versions, made once
   // per catalog)
@@ -1994,6 +2022,9 @@ export function createServer(opts = {}) {
       }
       m = /^\/api\/tree\/([^/]+)$/.exec(p);
       if (m) { const man = dataManifest(m[1]); if (!man) return send(res, 404, 'no such manifest'); return sendTree(req, res, m[1], man); }
+      // (the groups of files identical by content the version reads: content-twins.js — none known yet, or off: empty)
+      m = /^\/api\/twins\/([^/]+)$/.exec(p);
+      if (m) { if (!getManifest(m[1])) return send(res, 404, 'no such manifest'); return sendJsonEncoded(req, res, 'twins\n' + m[1], twins ? twins.twinsJson(m[1]) : '{"v":1,"groups":[],"passes":0}'); }
       // compressed ranges: /gamez/<manifest>/<path>?r=<start>-<end> (end exclusive), the bytes encoded with zstd, brotli
       // or gzip when that saves enough (a unit made ahead at brotli 11 when there is one: br-cache.js) (Content-Encoding: the browser decodes before the page sees them), else sent as they are;
       // /gamez/<manifest>/.light/<path>: the file's light copy (light-copies.js), when the version has them
@@ -2372,7 +2403,9 @@ export function createServer(opts = {}) {
   server.mmo = mmo;
   const closeServer = server.close.bind(server);
   server.close = (cb) => { mmo.close(); brCache?.close(); return closeServer(cb); };
-  server.on('close', () => { mmo.close(); brCache?.close(); if (launchTurn) clearImmediate(launchTurn); launchTurn = null; launchesDue.clear(); });
+  server.on('close', () => { mmo.close(); brCache?.close(); if (launchTurn) clearImmediate(launchTurn); launchTurn = null; launchesDue.clear(); twins?.stop(); clearTimeout(twinTimer); });
+  if (twins) server.on('listening', () => { if (!twinTimer && !twins.running) { twinTimer = setTimeout(twinPass, twinOpts.delayMs ?? 20_000); twinTimer.unref?.(); } });
+  server.contentTwins = twins; server.twinPass = () => twins?.update(twinPlaces); // (tests, tools: a pass now, its groups)
   server.brCache = brCache; // (tests: its state, drain)
   server.simLink = link; // (testing: the simulated link of opts.net — tools/headless.mjs `net:<ms>,<Mbit/s>` changes it during a run)
   server.launchesKept = () => [...launches].flatMap(([n, byLang]) => [...byLang.keys()].map((l) => `${n}:${l}`)).sort(); // (tests: the summaries kept)
@@ -2399,9 +2432,11 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   // (--no-home-preload: the home without its modulepreload links — a trial's other arm, sendHome)
   // (--br-cache-frozen: the units served as they are, none made — a measurement's copy of another server's)
   const brCacheOptions = args.includes('--br-cache-frozen') ? { generate: false } : undefined;
-  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), warmJobs: args.includes('--warm-jobs') ? { ...(arg('--warm-only') ? { only: arg('--warm-only').split(',') } : {}), ...(arg('--warm-delay') ? { delayMs: Number(arg('--warm-delay')) * 1000 } : {}), ...(arg('--warm-every') ? { everyMs: Number(arg('--warm-every')) * 1000 } : {}), ...(arg('--warm-poll') ? { pollMs: Number(arg('--warm-poll')) * 1000 } : {}), ...(arg('--warm-langs') ? { langs: arg('--warm-langs').split(',').filter(Boolean) } : {}) } : false, learnBorrow: !args.includes('--no-learn-borrow'), codeShare: !args.includes('--no-code-share'), homePreload: !args.includes('--no-home-preload') });
+  const server = createServer({ prewarmSrc: true, coverDir, brCacheDir, brCacheBytes, brCacheOptions, manifests: arg('--manifests'), gamesDir: arg('--games-dir'), enginesDir: arg('--engines-dir'), defaultManifest: arg('--default'), telemetryDir, learnDir, accountsDir, mmoDir, profileSeedQuorum: arg('--profile-seed-quorum') ? Number(arg('--profile-seed-quorum')) : undefined, snapshotJobs: args.includes('--snapshot-jobs') || (args.includes('--snapshot-queue') && 'queue'), warmJobs: args.includes('--warm-jobs') ? { ...(arg('--warm-only') ? { only: arg('--warm-only').split(',') } : {}), ...(arg('--warm-delay') ? { delayMs: Number(arg('--warm-delay')) * 1000 } : {}), ...(arg('--warm-every') ? { everyMs: Number(arg('--warm-every')) * 1000 } : {}), ...(arg('--warm-poll') ? { pollMs: Number(arg('--warm-poll')) * 1000 } : {}), ...(arg('--warm-langs') ? { langs: arg('--warm-langs').split(',').filter(Boolean) } : {}) } : false, learnBorrow: !args.includes('--no-learn-borrow'), codeShare: !args.includes('--no-code-share'), homePreload: !args.includes('--no-home-preload'),
+    // (--no-content-twins: files identical by content not looked for, /api/twins empty)
+    contentTwins: !args.includes('--no-content-twins') });
   server.listen(port, '127.0.0.1', () => console.log(`orthros: http://127.0.0.1:${port}/`));
   // (a restart — every deployment — saves the shared worlds' last changes and the units' miss queue first: they are
   // written a few seconds after)
-  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.brCache?.flush(); server.mmo.flush(); } catch (e) { console.error('flush:', e); } finally { process.exit(0); } });
+  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { server.brCache?.flush(); server.mmo.flush(); server.contentTwins?.save(true); } catch (e) { console.error('flush:', e); } finally { process.exit(0); } });
 }

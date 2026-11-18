@@ -27,7 +27,7 @@
 // is read, kept and learned-ahead through that version's part (game-data.js partOf, learnedOrders): its store, its URLs.
 // The Windows games' emulator (src/web/worker.js, through data-link.js) has the same worker: `w32` below — its reads
 // answered from shared memory (shared-blocks.js), their misses here.
-import { openVersion, openStore, openLegacyStore, learnedOrders, partOf, PartsBackend, UnderStore } from './game-data.js';
+import { openVersion, openStore, openLegacyStore, learnedOrders, partOf, PartsBackend, UnderStore, TwinStore } from './game-data.js';
 import { MemBlockStore } from './opfs-store.js';
 import { SharedBlocks, fileKeys } from './shared-blocks.js';
 import { BLOCK, CHUNK } from './http-backend.js';
@@ -109,7 +109,7 @@ function dispatch(m) {
   if (m.light) { upgrade(m.light.name, m.light.path, !!m.light.soon); return; }
   if ('whole' in m) { m.whole ? wholeDownload() : (W.whole && (W.whole.stop = true)); return; }
   if (m.migrate) { migrate(m.migrate); return; }
-  if (m.close) { W.stop = true; report(true); for (const t of W.timers) clearInterval(t); for (const p of W.parts.values()) try { p.files?.stopFill?.(); p.store?.close(); } catch { /* closed */ } }
+  if (m.close) { W.stop = true; report(true); for (const t of W.timers) clearInterval(t); for (const p of W.parts.values()) try { p.files?.stopFill?.(); p.store?.close(); } catch { /* closed */ } for (const s of W.version?.twinStores ?? []) try { s.close(); } catch { /* closed */ } }
 }
 
 /**
@@ -123,7 +123,8 @@ async function init(o) {
   W.data = new Uint8Array(o.data); W.session = o.session ?? ''; W.lang = typeof o.lang === 'string' && o.lang ? o.lang : null; W.prefetchAt = o.prefetch ?? 'none'; W.reloads = !!o.reloads;
   const kept = {};
   // (legacy: the stores of the game's other versions that kept its shared base's files before — ownerLegacy —, closed
-  // with the shared part's store)
+  // with the shared part's store; and those of other versions keeping files identical to its own — game-data.js
+  // TwinStore —, closed with the parts': W.version.twinStores)
   W.version = await openVersion(o.name, { bw: o.bw, tree: o.tree, manifest: o.manifest, cacheBlocks: o.cacheBlocks, kept: (n) => kept[n], legacy: openLegacyStore, store: async (n) => {
     const s = await openStore(n); kept[n] = !!s;
     return s ?? new MemBlockStore(o.memBytes ?? 512 << 20);
@@ -695,6 +696,7 @@ async function w32Init(o) {
   const v = W.version;
   for (const p of v.parts) W.parts.set(p.name, p);
   for (const p of v.parts) if (p.store instanceof UnderStore) log(`block store (${p.name}): its files, kept before in ${p.store.below.length} other store(s), moved there as read`);
+  for (const p of v.parts) if (p.files.store instanceof TwinStore) { const d = p.files.store.describe(); log(`block store${p.name === o.name ? '' : ` (${p.name})`}: ${d.files} files identical by content to files of ${d.stores.join(', ')} (${Math.round(d.bytes / 1048576)} MiB), read there when kept`); }
   // (the shared blocks: as many as the parts' memory caches had — a mounted version's budget each, game-data.js openVersion)
   const units = Math.max(1, v.parts.filter((p) => !p.name.endsWith('@base')).length);
   X.blocks = new SharedBlocks(SharedBlocks.create(cacheBlocks * units), true);
