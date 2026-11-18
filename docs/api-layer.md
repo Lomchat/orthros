@@ -896,3 +896,40 @@ uploaded again (in-thread nor in the render worker). Now (d3d8.js `Volume`, shar
 Tests: `tests/d3d-volume.test.js` (Direct3D 8 and 9 levels, descriptions, boxes, the D3DX loads — a slice box among kept slices — and
 the mips against a direct computation, UpdateTexture; a destination box ignored fails one; a mutation restoring `E_NOTIMPL` fails 5 of 6, the box offset or the volume mips one
 each), the render-worker replay tests (a mirror that does not mark the level dirty fails 4).
+
+## Hardware instancing (2026-11-18)
+
+`IDirect3DDevice9::SetStreamSourceFreq` answered `D3D_OK` and kept the setting, but nothing read it: the backend made
+an ordinary draw, so a game drawing N instances of a mesh saw one, its instance data read per vertex (out of the
+instance buffer's range: garbage geometry, black under robust buffer access). Now (d3d9-shaders.js `FREQ_*`,
+`instanceCount`, `streamDivisor`):
+
+- Stream 0 with `D3DSTREAMSOURCE_INDEXEDDATA | n` draws an indexed draw's geometry n times (0: nothing); a stream with
+  `D3DSTREAMSOURCE_INSTANCEDATA | d` is read once per instance, advancing every d instances, from the stream's offset
+  (the draw's BaseVertexIndex moves only the indexed data). Only `DrawIndexedPrimitive` instances, as Direct3D 9: the
+  other draws, and a plain divider without a flag (the vs_3_0 vertex frequency divider — the device reports vertex
+  shaders 2.0), read every stream per vertex. `SetStreamSourceFreq` refuses what Direct3D 9 refuses: a setting of 0,
+  both flags at once, instance data on stream 0.
+- The device's `freqMask` (bit n: stream n's setting is not the default 1) is zero for a game that never sets a
+  frequency: its draws take the paths they took before (one field read per indexed draw). Otherwise the backend issues
+  `drawElementsInstanced` and gives the instance data streams' attributes their divisor (`vertexAttribDivisor`, VAO
+  state: the divisor is part of the VAO's key, the instance streams' base offset leaves out the base vertex).
+- Render worker: `STREAM_FREQ` carries a setting to the mirror (sent when it changes, a plain setter for static
+  frames); a dynamic instance buffer whose bytes travel in the ring is copied from its first element to the last one the
+  instances read (Recorder.readBuffers), not by the index range.
+
+Tests: `tools/pe/dx9.c` draws a quad as four instances (offsets per instance from a dynamic buffer refilled with
+DISCARD between two draws, colors per two instances, BaseVertexIndex 4 over a decoy) and reads the pixels back:
+`tests/browser.test.js` checks them in Chromium in the four render modes, `tests/render-worker.test.js` the same WebGL
+calls and reads in-thread and replayed (a recorder copying instance data by the index range fails it;
+`tests/render-worker-host.test.js` compares exact calls, so its render worker copies buffer bytes at Unlock), `tests/pe.test.js`
+the refused settings; the randomized replay sessions set frequencies too. Before the change, the same program in
+Chromium: none of the four instances, and the instance data read per vertex drew black triangles over the textured one.
+
+No change for games that never set a frequency: Node `startbench --virtual --gfx backend --until-insns 40000` with
+every WebGL call hashed (names, arguments, buffer and uniform bytes), base commit and this change — BFME 1.08
+(`bfme1-108-quick`: menu, setup, load) 1,755 presents, 135,535 draws, 1.64 M calls; RotWK 2.02 (`rotwk-quick`: menu,
+load, loading screen, play) 1,741 presents, 253,059 draws, 2.47 M calls: the same hash at every 250th present and at
+the end, the same guest instructions per phase, no stream frequency ever set (`freqMask` 0 throughout). Per draw (`backend-draw-bench.mjs
+d3d9 300 100`, two alternated runs each): backend 5.45 / 5.48 us base, 5.42 / 5.65 us after; recorder 4.53 / 4.74,
+4.41 / 4.85 (the machine's noise).

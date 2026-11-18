@@ -6,7 +6,7 @@
 // sampler states, shader objects (SM 1.x–2.x), stream offsets, base vertices, MRT/scissor.
 import { FMT, FLOAT_FORMATS, surfacePitch, surfaceBytes, readFloatTexels, writeFloatTexels, floatsToRgba8, texKindOf, texChannels } from '../win32/d3d8.js';
 import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, ffProgramFromKey, flatVaryings, translateVertexShader, translatePixelShader, leanShaders, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
-import { translateVertexShader9, translatePixelShader9, semName, disasmShader9, OPN } from './d3d9-shaders.js';
+import { translateVertexShader9, translatePixelShader9, semName, disasmShader9, OPN, instanceCount, streamDivisor } from './d3d9-shaders.js';
 import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION } from './program-id.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { apiOpt } from '../core/api-opt.js';
@@ -994,7 +994,7 @@ export class WebGLDevice {
     const gl = this.gl, counts = this.glCallCounts; this.glCallCounts = null;
     for (const k of Object.keys(gl)) if (typeof gl[k] === 'function') delete gl[k];
     let total = 0; for (const v of counts.values()) total += v;
-    const draws = frames > 1 ? (counts.get('drawElements') ?? 0) + (counts.get('drawArrays') ?? 0) : this.frameDraws;
+    const draws = frames > 1 ? (counts.get('drawElements') ?? 0) + (counts.get('drawElementsInstanced') ?? 0) + (counts.get('drawArrays') ?? 0) : this.frameDraws;
     const f = (v) => (frames > 1 ? (v / frames).toFixed(1) : v);
     return `${f(total)} (${(total / Math.max(1, draws)).toFixed(1)}/draw): ` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${f(v)}`).join(', ');
   }
@@ -1883,8 +1883,11 @@ export class WebGLDevice {
    * stride), found by numbers, whose attribute offsets are re-pointed when the draw's base offset moves (dynamic
    * buffers filled at a moving position: a VAO per base offset was created for ~2% of all draws, then all of them
    * dropped every 8192). Several streams or a UP draw: one VAO per (program, buffers, strides, base offsets).
+   * `inst`: an indexed draw on a device with stream frequencies set (hardware instancing, d3d9-shaders.js) — the
+   * instance data streams' attributes advance per instance (their divisor, VAO state: in the key), from the stream's
+   * offset whatever the base vertex.
    */
-  bindAttributes(P, L, upStride = 0, baseVertex = 0) {
+  bindAttributes(P, L, upStride = 0, baseVertex = 0, inst = false) {
     const gl = this.gl, dev = this.dev;
     const vaos = this.vaos ?? (this.vaos = new Map());
     // VAOs are per (program, vertex layout): keys of other layouts can share a program (their generated sources are
@@ -1898,7 +1901,7 @@ export class WebGLDevice {
     if (!Q) { Q = { vid: this.nextVid = this.nextVid + 1, vaoKeys: P.vaoKeys }; P.vaoOwners.set(lsig, Q); }
     P.vaoLayout = lsig; P.vaoOwner = Q;
     const streams = L.layout.streamList ?? (L.layout.streamList = L.layout.streams ? [...L.layout.streams] : [[0, { attrs: L.layout.attrs, stride: L.layout.stride }]]);
-    if (!upStride && streams.length === 1) {
+    if (!upStride && streams.length === 1 && !(inst && streamDivisor(dev.streams[streams[0][0]]) !== 0)) {
       const s0 = streams[0], s = dev.streams[s0[0]], vb = s ? this.comImpl(s.vb) : null;
       if (vb) {
         const stride = s.stride || s0[1].stride, base = (s.offset ?? 0) + baseVertex * stride;
@@ -1941,24 +1944,26 @@ export class WebGLDevice {
       for (let k = 0; k < streams.length && same; k++) {
         const [n, st] = streams[k], s = dev.streams[n], vb = this.comImpl(s?.vb);
         if (!vb) { same = lm.ids[k] === -1; continue; }
-        const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
+        const div = inst ? streamDivisor(s) : 0, stride = s.stride || st.stride, base = (s.offset ?? 0) + (div !== 0 ? 0 : baseVertex * stride);
         this.glBuffer(vb, 'vb'); // (uploads pending data)
-        same = lm.ids[k] === vb.id && lm.strides[k] === stride && lm.bases[k] === base;
+        same = lm.ids[k] === vb.id && lm.strides[k] === stride && lm.bases[k] === base && (lm.divs === null ? 0 : lm.divs[k]) === div;
       }
       if (same) { const v = lm.v; if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; } this.curVao = v; return true; }
     }
     let key = upStride ? `${Q.vid}|up${upStride}` : `${Q.vid}`;
-    const bound = []; // [n, attrs, stride, base, glBuffer, resource id]
+    const bound = []; // [n, attrs, stride, base, glBuffer, resource id, divisor]
     const ids = upStride ? null : new Array(streams.length).fill(-1), strides = upStride ? null : [], bases = upStride ? null : [];
+    let divs = null; // (instance data streams' divisors, by layout stream: none without one)
     for (const [n, st] of streams) {
       if (upStride) { bound.push([n, st.attrs, upStride, 0, this.upVbo, -1]); continue; }
       const s = dev.streams[n], vb = this.comImpl(s?.vb), k = strides.length;
       strides.push(0); bases.push(0);
       if (!vb) continue;
-      const stride = s.stride || st.stride, base = (s.offset ?? 0) + baseVertex * stride;
+      const div = inst ? streamDivisor(s) : 0, stride = s.stride || st.stride, base = (s.offset ?? 0) + (div !== 0 ? 0 : baseVertex * stride);
       const buf = this.glBuffer(vb, 'vb').buf; // uploads pending data (ARRAY_BUFFER binding is not VAO state)
       key += `|${vb.id}:${stride}:${base}`;
-      bound.push([n, st.attrs, stride, base, buf, vb.id]);
+      if (div !== 0) { key += `/${div}`; (divs ??= new Array(streams.length).fill(0))[k] = div; }
+      bound.push([n, st.attrs, stride, base, buf, vb.id, div]);
       ids[k] = vb.id; strides[k] = stride; bases[k] = base;
     }
     let v = vaos.get(key);
@@ -1970,14 +1975,14 @@ export class WebGLDevice {
       if (upStride && streams.length === 1) (Q.upVaos ??= new Map()).set(upStride, v);
       for (const id of v.bufs) { let set = (this.vaosByBuf ??= new Map()).get(id); if (!set) this.vaosByBuf.set(id, (set = new Set())); set.add(key); }
       gl.bindVertexArray(v.vao); this.gs.vao = v.vao;
-      for (const [, attrs, stride, base, buf] of bound) {
+      for (const [, attrs, stride, base, buf, , div] of bound) {
         gl.bindBuffer(gl.ARRAY_BUFFER, buf);
         const sp = this.attrSpecs(P, L, attrs);
-        for (let i = 0; i < sp.length; i += 5) { gl.enableVertexAttribArray(sp[i]); gl.vertexAttribPointer(sp[i], sp[i + 1], sp[i + 2], sp[i + 3] !== 0, stride, base + sp[i + 4]); }
+        for (let i = 0; i < sp.length; i += 5) { gl.enableVertexAttribArray(sp[i]); gl.vertexAttribPointer(sp[i], sp[i + 1], sp[i + 2], sp[i + 3] !== 0, stride, base + sp[i + 4]); if (div) gl.vertexAttribDivisor(sp[i], div); }
       }
     } else if (this.gs.vao !== v.vao) { gl.bindVertexArray(v.vao); this.gs.vao = v.vao; }
     this.curVao = v;
-    if (!upStride) Q.lastMulti = { n: streams.length, ids, strides, bases, v };
+    if (!upStride) Q.lastMulti = { n: streams.length, ids, strides, bases, divs, v };
     return true;
   }
   /**
@@ -2060,7 +2065,8 @@ export class WebGLDevice {
     const ib = this.comImpl(dev.indices.ib); if (!ib) return;
     const info = this.program(); const P = info.p;
     this.applyState(P, info, type, count, ib.id);
-    if (!this.bindAttributes(P, info.L, null, baseVertex | 0)) return;
+    const inst = dev.freqMask ? instanceCount(dev) : -1; // (hardware instancing, d3d9-shaders.js: the instances drawn; -1 no stream frequency set)
+    if (!this.bindAttributes(P, info.L, null, baseVertex | 0, inst >= 0)) return;
     this.bindIndices(this.glBuffer(ib, 'ib').buf);
     const short = ib.fmt === FMT.INDEX16;
     if (this.capturing) {
@@ -2077,7 +2083,11 @@ export class WebGLDevice {
     }
     if (this.glValidate && (this.stats.draws < 3000 || this.stats.draws % 97 === 0)) this.validateGlState();
     if (this.probe?.hot) this.probe.draw();
-    gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
+    if (inst < 0) gl.drawElements(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4));
+    else {
+      gl.drawElementsInstanced(this.glMode(type), this.vertexCount(type, count), short ? gl.UNSIGNED_SHORT : gl.UNSIGNED_INT, start * (short ? 2 : 4), inst);
+      if (this.sigOn) for (let m = dev.freqMask; m !== 0; m &= m - 1) { const n = 31 - Math.clz32(m & -m); this.sigMix(n, dev.streams[n].freq | 0, -6, 0); } // (the frame's signature: the settings it drew with)
+    }
     this.stats.draws++; this.frameDraws++; if (globalThis.ORTHROS_GL_FLUSH > 0) this.flushEarly();
     if (this.capturing) this.dumpTarget('dip');
     void minIdx;

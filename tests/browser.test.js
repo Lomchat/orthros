@@ -111,6 +111,7 @@ test('browser host: dx9.exe renders a textured triangle through the WebGL2 backe
   assert.match(text, /px_chk10=0x00ffffff/);
   assert.match(text, /px_chk33=0x00000000/);
   assert.match(text, /px_chk_out=0x0000ff00/, 'the quad covers exactly pixels 100..103');
+  for (const k of ['px_inst0=0x00ff0000', 'px_inst1=0x00ff0000', 'px_inst2=0x00ffff00', 'px_inst3=0x00ffff00', 'px_inst4=0x000000ff']) assert.ok(text.includes(k), `hardware instancing (four instances, an offset each, a color per two; not a fifth): ${k} in\n${text}`);
   assert.ok(r.logs.some((l) => l.includes('render worker: ready')), 'the render worker by default (?glworker=0 for the in-thread backend)');
 });
 
@@ -125,7 +126,7 @@ for (const mode of ['inline', '1', '0']) {
     assert.equal(r.pixel(60, 60), 0x007f00, 'triangle through the gamma ramp');
     assert.equal(r.pixel(300, 200), 0x00007f, 'clear color through the gamma ramp');
     const text = r.logs.filter((l) => l.startsWith('[stdout] ')).map((l) => l.slice(9)).join('');
-    for (const k of ['px_tri=0x0000ff00', 'px_clear=0x000000ff', 'px_chk00=0x00000000', 'px_chk10=0x00ffffff', 'px_chk33=0x00000000', 'px_chk_out=0x0000ff00']) assert.ok(text.includes(k), `${k} in\n${text}`);
+    for (const k of ['px_tri=0x0000ff00', 'px_clear=0x000000ff', 'px_chk00=0x00000000', 'px_chk10=0x00ffffff', 'px_chk33=0x00000000', 'px_chk_out=0x0000ff00', 'px_inst0=0x00ff0000', 'px_inst1=0x00ff0000', 'px_inst2=0x00ffff00', 'px_inst3=0x00ffff00', 'px_inst4=0x000000ff']) assert.ok(text.includes(k), `${k} in\n${text}`);
     if (mode === '1') assert.ok(r.logs.some((l) => l.includes('render worker: ready')), 'the render worker rendered');
     if (mode === '0') assert.ok(!r.logs.some((l) => l.includes('render worker: ready')), 'the backend in the emulator\'s thread');
   });

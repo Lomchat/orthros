@@ -113,6 +113,54 @@ void __stdcall start(void) {
   C3(dev, 69, 0, 5, 2); // MAGFILTER linear (MINFILTER is already linear)
   line(out, "drawup", C4(dev, 83, 5, 2, q, sizeof(VERTEX)), 1);
   C2(dev, 65, 0, tex);
+  // hardware instancing (SetStreamSourceFreq): a 20x20 quad (stream 0, INDEXEDDATA | 4: four instances, its vertices
+  // from BaseVertexIndex 4 — the first four are a decoy off screen), moved per instance by stream 1 (INSTANCEDATA | 1:
+  // an offset each) and colored by stream 2 (INSTANCEDATA | 2: one color per two instances), through vs_2_0 / ps_2_0.
+  // Expected: red quads at x 120 and 160, yellow at 200 and 240 (y 208..228); the fifth offset (x 280) is not drawn.
+  {
+    #define FREQ_INDEXED 0x40000000u
+    #define FREQ_INSTANCE 0x80000000u
+    static const DWORD vsc[] = { 0xfffe0200, 0x0200001f, 0x80000000, 0x900f0000, 0x0200001f, 0x80000005, 0x900f0001, 0x0200001f, 0x8000000a, 0x900f0002, // dcl_position v0, dcl_texcoord v1, dcl_color v2
+      0x03000002, 0xc00f0000, 0x90e40000, 0x90e40001, 0x02000001, 0xd00f0000, 0x90e40002, 0x0000ffff }; // add oPos, v0, v1; mov oD0, v2
+    static const DWORD psc[] = { 0xffff0200, 0x0200001f, 0x80000000, 0x900f0000, 0x02000001, 0x800f0800, 0x90e40000, 0x0000ffff }; // dcl v0; mov oC0, v0
+    D3DVERTEXELEMENT9 ie[] = { { 0, 0, 3, 0, 0, 0 }, { 1, 0, 3, 0, 5, 0 }, { 2, 0, 4, 0, 10, 0 }, { 0xff, 0, 17, 0, 0, 0 } };
+    void *idecl = 0, *ivs = 0, *ips = 0, *gvb = 0, *ovb = 0, *cvb = 0, *ib = 0;
+    line(out, "inst_decl", C2(dev, 86, ie, &idecl), 1);
+    line(out, "inst_vs", C2(dev, 91, vsc, &ivs), 1);
+    line(out, "inst_ps", C2(dev, 106, psc, &ips), 1);
+    float* g = 0; C6(dev, 26, 8 * 16, 0, 0, 1, &gvb, 0); C4(gvb, 11, 0, 0, &g, 0);
+    for (int i = 0; i < 8; i++) { int r = i & 1, b = (i >> 1) & 1; float s = i < 4 ? 0.0625f : 0.125f, t = i < 4 ? 0.04f : 0.1666667f;
+      g[4 * i] = (i < 4 ? 2.0f : -1.0f) + r * s; g[4 * i + 1] = 1.0f - b * t; g[4 * i + 2] = 0.5f; g[4 * i + 3] = 1.0f; }
+    C0(gvb, 12);
+    // (the instance data in dynamic buffers, as games refill it each frame: DYNAMIC | WRITEONLY, locked with DISCARD;
+    // the offsets' one sized for 2560 instances — a render worker copies what the draw reads of it, not all of it)
+    C6(dev, 26, 2560 * 16, 0x208, 0, 0, &ovb, 0);
+    DWORD* col = 0; C6(dev, 26, 3 * 4, 0x208, 0, 0, &cvb, 0); C4(cvb, 11, 0, 0, &col, 0x2000);
+    col[0] = 0xffff0000; col[1] = 0xffffff00; col[2] = 0xffff00ff;
+    C0(cvb, 12);
+    WORD* ix = 0; line(out, "inst_ib", C6(dev, 27, 6 * 2, 0, 101, 1, &ib, 0), 1); C4(ib, 11, 0, 0, &ix, 0);
+    ix[0] = 0; ix[1] = 1; ix[2] = 2; ix[3] = 2; ix[4] = 1; ix[5] = 3;
+    C0(ib, 12);
+    line(out, "freq_inst0", C2(dev, 102, 0, FREQ_INSTANCE | 1), 1); // (refused: instance data on stream 0, both flags, 0)
+    line(out, "freq_both", C2(dev, 102, 1, FREQ_INSTANCE | FREQ_INDEXED | 1), 1);
+    line(out, "freq_zero", C2(dev, 102, 1, 0), 1);
+    C1(dev, 87, idecl); C1(dev, 92, ivs); C1(dev, 107, ips); C1(dev, 104, ib);
+    C4(dev, 100, 0, gvb, 0, 16); C4(dev, 100, 1, ovb, 0, 16); C4(dev, 100, 2, cvb, 0, 4);
+    line(out, "freq0", C2(dev, 102, 0, FREQ_INDEXED | 4), 1);
+    line(out, "freq1", C2(dev, 102, 1, FREQ_INSTANCE | 1), 1);
+    line(out, "freq2", C2(dev, 102, 2, FREQ_INSTANCE | 2), 1);
+    DWORD f2 = 0; C2(dev, 103, 2, &f2); line(out, "getfreq2", f2, 1);
+    C2(dev, 57, 22, 1); C2(dev, 57, 7, 0); // CULLMODE none, ZENABLE false
+    for (int pass = 0; pass < 2; pass++) { // (a first frame's instances off screen, then the buffer refilled for the second)
+      float* o = 0; C4(ovb, 11, 0, 0, &o, 0x2000);
+      for (int i = 0; i < 5; i++) { o[4 * i] = (pass ? 120 + 40 * i : 480) / 160.0f; o[4 * i + 1] = -208 / 120.0f; o[4 * i + 2] = 0; o[4 * i + 3] = 0; }
+      C0(ovb, 12);
+      line(out, pass ? "inst_draw" : "inst_draw0", C6(dev, 82, 4, 4, 0, 4, 0, 2), 1);
+    }
+    C2(dev, 102, 0, 1); C2(dev, 102, 1, 1); C2(dev, 102, 2, 1); // (back to plain draws, as applications do)
+    C1(dev, 92, 0); C1(dev, 107, 0); C1(dev, 87, decl); C1(dev, 104, 0); C4(dev, 100, 0, vb, 0, sizeof(VERTEX)); C4(dev, 100, 1, 0, 0, 0); C4(dev, 100, 2, 0, 0, 0);
+    RELEASE(gvb); RELEASE(ovb); RELEASE(cvb); RELEASE(ib); RELEASE(idecl); RELEASE(ivs); RELEASE(ips);
+  }
   line(out, "end", C0(dev, 42), 1);
   line(out, "present", C4(dev, 17, 0, 0, 0, 0), 1);
   void* bb = 0; line(out, "backbuffer", C4(dev, 18, 0, 0, 0, &bb), 1);
@@ -127,6 +175,7 @@ void __stdcall start(void) {
   line(out, "px_chk10", ((DWORD*)((BYTE*)lr2.bits + 100 * lr2.pitch))[101] & 0xffffff, 1);
   line(out, "px_chk33", ((DWORD*)((BYTE*)lr2.bits + 103 * lr2.pitch))[103] & 0xffffff, 1);
   line(out, "px_chk_out", ((DWORD*)((BYTE*)lr2.bits + 104 * lr2.pitch))[104] & 0xffffff, 1);
+  for (int i = 0; i < 5; i++) { char k[] = "px_inst0"; k[7] = (char)('0' + i); line(out, k, ((DWORD*)((BYTE*)lr2.bits + 218 * lr2.pitch))[130 + 40 * i] & 0xffffff, 1); } // (the instances' centers)
   C0(off, 14);
   // gamma ramp halving every channel: applies to what reaches the screen, not to the back buffer
   WORD ramp[768]; for (int i = 0; i < 256; i++) ramp[i] = ramp[256 + i] = ramp[512 + i] = (WORD)(i * 257 / 2);

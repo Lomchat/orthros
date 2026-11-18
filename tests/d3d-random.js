@@ -146,7 +146,7 @@ export function randomSession(gfx, seed, api9, after, shared = false) {
       case 11: call('SetViewport', words([rnd(50), rnd(50), 10 + rnd(300), 10 + rnd(200), u32of(rnd(2) / 2), u32of(1)])); break;
       case 12: if (api9) call('SetScissorRect', words([rnd(20), rnd(20), 50 + rnd(300), 50 + rnd(200)])); break;
       case 13: if (api9) call('SetFVF', pick([0x142, 0x152, 0x44, 0x102, 0x112])); else call('SetVertexShader', pick([0x142, 0x152, 0x44, 0x102, 0x112, ...shaders])); break;
-      case 14: if (api9) { const elems = words([0 | (0 << 16), 2 | (0 << 8) | (0 << 16), 0 | (12 << 16), 4 | (10 << 16), 0 | (16 << 16), 1 | (5 << 16), 0xff, 17]); if (call('CreateVertexDeclaration', elems, out) === 0) decls.push(mem.read32(out)); } break;
+      case 14: if (api9) { const s1 = rnd(2), elems = words([0 | (0 << 16), 2 | (0 << 8) | (0 << 16), s1 | ((s1 ? 0 : 12) << 16), 4 | (10 << 16), s1 | ((s1 ? 4 : 16) << 16), 1 | (5 << 16), 0xff, 17]); if (call('CreateVertexDeclaration', elems, out) === 0) decls.push(mem.read32(out)); } break; // (s1: color and texture coordinates from stream 1)
       case 15: if (api9 && decls.length) call('SetVertexDeclaration', rnd(4) === 0 ? 0 : pick(decls)); break;
       case 16: {
         if (api9) { const vs = rnd(2) === 0, code = words([vs ? 0xfffe0200 : 0xffff0200, 0x0000ffff]); if (call(vs ? 'CreateVertexShader' : 'CreatePixelShader', code, out) === 0) shaders.push(mem.read32(out)); }
@@ -162,7 +162,7 @@ export function randomSession(gfx, seed, api9, after, shared = false) {
       case 23: if (textures.length && com.implAt(textures.at(-1))?.fmt) call('SetTexture', api9 ? pick([0, 1, 2, 7, 15, 257]) : rnd(8), rnd(5) === 0 ? 0 : pick(textures)); break;
       case 24: if (rnd(3) === 0) release(textures); else lockTexture(); break;
       case 25: if (buffers.length < 6) createBuffer(false); else if (ibs.length < 4) createBuffer(true); else release(rnd(2) ? buffers : ibs); break;
-      case 26: if (buffers.length) { const st = rnd(3), vb = rnd(5) === 0 ? 0 : pick(buffers); if (api9) call('SetStreamSource', st, vb, 4 * rnd(8), pick([24, 28, 32])); else call('SetStreamSource', st, vb, pick([24, 28, 32])); } break;
+      case 26: if (buffers.length) { const st = rnd(3), vb = rnd(5) === 0 ? 0 : pick(buffers); if (api9) { call('SetStreamSource', st, vb, 4 * rnd(8), pick([24, 28, 32])); if (rnd(2) === 0) call('SetStreamSourceFreq', st, pick([1, 1, 0x40000000 | rnd(4), 0x80000000 | rnd(3), 0x80000000 | 1, 2])); } else call('SetStreamSource', st, vb, pick([24, 28, 32])); } break; // (frequencies: hardware instancing)
       case 27: if (ibs.length) { if (api9) call('SetIndices', rnd(5) === 0 ? 0 : pick(ibs)); else call('SetIndices', rnd(5) === 0 ? 0 : pick(ibs), rnd(5)); } break;
       case 28: { const all = [...buffers, ...ibs]; if (all.length) fillBuffer(pick(all), pick([0, 0x2000, 0x2000, 0x1000, 0x10])); break; }
       case 29: if (rnd(2)) { if (call('BeginStateBlock') === 0) { for (let i = 0; i < 4; i++) call('SetRenderState', pick(RS), value()); call('SetTextureStageState', rnd(8), 1 + rnd(32), value()); call('SetTransform', 256, floats(16)); if (api9) call('SetSamplerState', rnd(4), 1 + rnd(13), value()); call('EndStateBlock', out); blocks.push(api9 ? mem.read32(out) : mem.read32(out)); } } else if (call('CreateStateBlock', 1 + rnd(2), out) === 0) blocks.push(mem.read32(out)); break; // (no textures in state blocks: Direct3D layer does not reference-count them)

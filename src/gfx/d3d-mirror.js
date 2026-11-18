@@ -49,7 +49,7 @@ export class DeviceMirror {
     this.id = id; this.api9 = !!api9; this.pp = pp; this.proc = { mem }; this.mirror = true;
     this.com = { implAt: (rid) => replayer.res.get(rid) ?? null };
     this.rs = new StateTable(256); this.tss = []; if (api9) this.samplers = [];
-    this.textures = []; this.streams = []; this.indices = { ib: 0, base: 0 };
+    this.textures = []; this.streams = []; this.indices = { ib: 0, base: 0 }; this.freqMask = 0; // (freqMask: d3d9-shaders.js FREQ_*)
     this.viewport = { x: 0, y: 0, w: pp.width, h: pp.height, minZ: 0, maxZ: 1 };
     this.vertexShader = 0; this.pixelShader = 0; this.vertexShaders = new Map(); this.pixelShaders = new Map();
     if (api9) { this.scissor = null; this.fvf = 0; this.vertexDecl = null; this.vsObj = null; this.psObj = null; }
@@ -195,7 +195,8 @@ export class Replayer {
       case OP.PS9: { const s = a[0] ? this.shaders.get(a[0]) ?? null : null; m.psObj = s; m.pixelShader = s ? s.handle : 0; break; }
       case OP.VS8: m.vertexShader = a[0]; if (a[1]) m.vertexShaders.set(a[0], this.shaders.get(a[1])); else m.vertexShaders.delete(a[0]); break;
       case OP.PS8: m.pixelShader = a[0]; if (a[1]) m.pixelShaders.set(a[0], this.shaders.get(a[1])); else m.pixelShaders.delete(a[0]); break;
-      case OP.STREAMS: m.streams = Array.from({ length: a[0] }, () => (m.api9 ? { vb: 0, offset: 0, stride: 0 } : { vb: 0, stride: 0 })); break;
+      case OP.STREAMS: m.streams = Array.from({ length: a[0] }, () => (m.api9 ? { vb: 0, offset: 0, stride: 0, freq: 1 } : { vb: 0, stride: 0 })); m.freqMask = 0; break;
+      case OP.STREAM_FREQ: { const n = a[0], s = m.streams[n]; if (!s) break; s.freq = a[1]; if (a[1] === 1) m.freqMask &= ~(1 << n); else m.freqMask |= 1 << n; break; }
       case OP.STREAM: { const s = m.streams[a[0]]; s.vb = a[1]; s.stride = a[2]; if (a[3] !== undefined || 'offset' in s) s.offset = a[3]; break; }
       case OP.INDICES: m.indices.ib = a[0]; m.indices.base = a[1]; break;
       case OP.TEXTURES: m.textures = new Array(a[0]).fill(0); break;
@@ -307,7 +308,8 @@ export function compareDevice(d, m, max = 20) {
   d.textures.forEach((p, i) => { if (idOf(p) !== (m.textures[i] || 0)) bad(`textures[${i}] #${idOf(p)} / #${m.textures[i]}`); });
   d.textures.forEach((p, i) => { const t = p ? d.com.implAt(p) : null, mt = m.textures[i] ? m.com.implAt(m.textures[i]) : null; if (t && mt && (t.lod ?? 0) !== (mt.lod ?? 0)) bad(`texture #${t.id} LOD ${t.lod} / ${mt.lod}`); });
   if (d.streams.length !== m.streams.length) bad(`streams.length ${d.streams.length} / ${m.streams.length}`);
-  d.streams.forEach((s, i) => { const t = m.streams[i]; if (!t || idOf(s.vb) !== (t.vb || 0) || s.stride !== t.stride || (s.offset ?? 0) !== (t.offset ?? 0)) bad(`streams[${i}] #${idOf(s.vb)}/${s.stride}/${s.offset} / #${t?.vb}/${t?.stride}/${t?.offset}`); });
+  d.streams.forEach((s, i) => { const t = m.streams[i]; if (!t || idOf(s.vb) !== (t.vb || 0) || s.stride !== t.stride || (s.offset ?? 0) !== (t.offset ?? 0) || (s.freq ?? 1) !== (t.freq ?? 1)) bad(`streams[${i}] #${idOf(s.vb)}/${s.stride}/${s.offset}/${s.freq} / #${t?.vb}/${t?.stride}/${t?.offset}/${t?.freq}`); });
+  if ((d.freqMask | 0) !== (m.freqMask | 0)) bad(`freqMask ${d.freqMask} / ${m.freqMask}`);
   if (idOf(d.indices.ib) !== (m.indices.ib || 0) || d.indices.base !== m.indices.base) bad(`indices #${idOf(d.indices.ib)}/${d.indices.base} / #${m.indices.ib}/${m.indices.base}`);
   for (const k of ['x', 'y', 'w', 'h', 'minZ', 'maxZ']) if (!Object.is(d.viewport[k], m.viewport[k])) bad(`viewport.${k} ${d.viewport[k]} / ${m.viewport[k]}`);
   if (d.api9) {
