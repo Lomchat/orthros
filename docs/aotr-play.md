@@ -430,7 +430,8 @@ once per session (telemetry `event: 'draw-probe'`, ≤ 230 KB). **The player doe
 — at a sample whose three frames had the same commands and flickered where nothing moved (`alt`, or still A-B-A ≥ 1 %),
 or at a still screen that stays (two samples in a row, the second 2 s after the first, each with three equal command
 signatures: the pause menu, ~2-12 s after Escape). When nothing varied (no frame came back A-B-A, no value moved) it
-sends nothing and tries again at the next such screen, 30 s later at least, 10 times at most (menus and loading screens
+sends nothing — a gfx log line, sent with the telemetry, says it ran: `draw probe (still, try k of 10): N frames …
+not sent` — and tries again at the next such screen, 30 s later at least, 10 times at most (menus and loading screens
 before the game leave tries for its pause). `?dbg=ORTHROS_DRAW_PROBE=1` starts one now and sends it whatever it finds;
 `ORTHROS_DRAW_PROBE=0` never.
 - **Phases**: the device signs its frames (command signature and values record); with the render worker, the emulator
@@ -474,6 +475,10 @@ before the game leave tries for its pause). `?dbg=ORTHROS_DRAW_PROBE=1` starts o
   veil with alpha x 0.3 one frame in three while the game, the mirror and the cache all say 0xcc: d3d8-webgl.js
   fakeTfDraw) → "draw 3 from the end … the same values in every frame … what GL makes of the same commands and values",
   in-thread and through the command ring (stamps); the game setting 0x28 one frame in three → "the game's own
-  TEXTUREFACTOR changed with it"; nothing varying → tried once, nothing sent. `tests/draw-probe.test.js`: it starts by
+  TEXTUREFACTOR changed with it"; nothing varying → tried once, nothing sent. On the game (RotWK 2.02, headless,
+  render worker, its still main menu — the scenario's clicks miss 2.02's menu, so not its pause): three tries by
+  themselves (a same-commands flicker sample, then still screens 30 s apart), 67-93 frames each with the game's
+  TEXTUREFACTOR stamped through the ring, no frame back A-B-A, nothing sent; `ORTHROS_DRAW_PROBE=1`: a 44 KB record of
+  92 frames reached the page. `tests/draw-probe.test.js`: it starts by
   itself on a still screen, copies around draws only while it records, the producer's value reaches it through the ring,
   no uniform resent, one record the server takes.

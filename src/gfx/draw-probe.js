@@ -249,6 +249,7 @@ export class DrawProbe {
     const t0 = performance.now(), work = { slices: 0, longest: 0, busy: 0, over8: 0 };
     const step = async (f) => { await tick(); const t = performance.now(), v = f(); counted(work, performance.now() - t); return v; };
     const frames = this.frames.filter((f) => f.grids);
+    this.result = { frames: this.frames.length, probed: 0, odd: 0, path: this.path, stamps: !!this.stamps };
     if (!frames.length) { this.notes.push('no frame read back'); return; }
     const presents = frames.map((f) => f.grids.present);
     const ref = await step(() => medianGrid(presents));
@@ -306,7 +307,8 @@ export class DrawProbe {
     // (nothing varied — no frame came back A-B-A, no value moved —: not sent, the flicker probe tries at another screen)
     const valuesMoved = sum.draws.some((d) => d.tfP.length > 1 || d.tfM.length > 1);
     const interesting = sum.odd >= 2 || valuesMoved;
-    if (!this.force && !interesting) { this.notes.push('nothing varied: not sent'); return; }
+    this.result = { frames: sum.frames, probed: sum.probed, odd: sum.odd, path: this.path, stamps: !!this.stamps };
+    if (!this.force && !interesting) { this.notes.push('nothing varied'); return; }
     await step(() => fitDrawProbe(rec, DRAW_PROBE_MAX_BYTES - 200));
     rec.took = { ms: Math.round(performance.now() - t0), slices: work.slices, busy: Math.round(work.busy), longest: Math.round(work.longest * 10) / 10, over8: work.over8 };
     this.sent = true;

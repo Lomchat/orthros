@@ -248,7 +248,12 @@ export class FlickerProbe {
       if (this.dp.active) return this.dp.present(fbo, w, h, dev, sig);
       this.dp.present(fbo, w, h, dev, sig); // (its readbacks polled, its record made)
       if (this.dp.done) {
-        if (this.dp.sent) this.dpSent = true; else { this.dpTries++; this.dpNext = this.now() + DP_RETRY_MS; this.sameRun = 0; } // (nothing sent: another try later, DP_TRIES in all)
+        if (this.dp.sent) this.dpSent = true;
+        else { // (nothing sent: another try later, DP_TRIES in all — the log line says it ran)
+          this.dpTries++; this.dpNext = this.now() + DP_RETRY_MS; this.sameRun = 0;
+          const r = this.dp.result;
+          this.log?.(`d3d-webgl: draw probe (${this.dp.trigger?.why ?? '?'}, try ${this.dpTries} of ${DP_TRIES}): ${r ? `${r.frames} frames (${r.probed} probed, ${r.path}${r.stamps ? ", the game's values stamped" : ''}), ${r.odd} odd` : 'no record'}; ${this.dp.notes.slice(-2).join('; ') || 'nothing varied'}: not sent`);
+        }
         this.dp = null; this.next = this.now() + PERIOD_MS;
       }
       return null;
