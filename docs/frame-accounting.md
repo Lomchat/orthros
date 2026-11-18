@@ -166,7 +166,8 @@ locks now succeed: 83.6 → 108.9 G instructions in ten minutes).
 that ran a ready thread, throttled ones, why their streaks ended), `--threads --slow-threads <ms>` (each thread's guest
 instructions in the frames over that), `--slow-apis <ms>`, `--cpu-prof <file> --cpu-prof-window <phase>:<from>:<to>[,...]` (a
 V8 profile of a window of a phase; several windows write `<file>.1`, `<file>.2`...; `tools/dev/guest-profile.mjs` reads
-them per guest function, below), `--api-seq <n>@<s>` (the next n API calls after s seconds).
+them per guest function, below), `--api-seq <n>@<s>` (the next n API calls after s seconds), `--queued-hist` (each phase's
+calls per frame by API, the deferred queue's drained calls included: docs/api-layer.md "A big battle").
 
 `rotwk-phases.txt` (rotwk-202, 1024x768) needs a rotwk profile; `bfme-phases.txt` (bfme-vanilla, 800x600) a profile
 saved by an earlier run (`/tmp/orthros-profiles/bfme-vanilla`). `--gl-discard` measures the CPU side (headless

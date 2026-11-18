@@ -520,6 +520,73 @@ as a precomputed plan in one call. Measured here first — AotR skirmish (`fixes
   run (d3dx9-effect.js 0.26 or 0.98 M instructions per frame in two runs of one tree, the rest in its callers), so
   compare the API path as a whole, and in-process A/B (dbg switches) rather than separate runs.
 
+## A big battle (2026-11-18): the API layer measured, its structural routes judged
+
+An outside audit (Node, Age of the Ring at High: API 4.1 ms per frame, the drain 3.25 ms in 288 drains, `BeginPass` 0.86
+ms) asked whether the Direct3D layer should run in WebAssembly (setters and draw recording writing the command ring
+without JavaScript dispatch) or on another worker fed by a guest-memory queue, the earlier no-go (raw setters to the
+ring, docs/frame-accounting.md "CPU margin along a skirmish": at most 0.29 ms per frame) having been measured on BFME1,
+whose drain is ~3x smaller. The owner's telemetry agrees on the share: Age of the Ring play on his laptop (render
+worker, 350-530 draws per frame) spends 4.2-6.1 ms of `api` in 21-23 ms of work per frame (19-28 %).
+
+**The battle.** `tools/scenarios/aotr-battle.txt`: aotr-endurance's skirmish (the player and a Death March AI against a
+Death March AI, the fixed start position), a mark every minute of play for 15 min. Node, virtual clock (the same guest
+work in every run), `--gfx recorder --gfx-hash`, the profile at StaticGameLOD High, 1024x768. The armies come from the
+6th minute; from the 11th the enemy takes the player's fortress in view. Per frame (`startbench --queued-hist`: the calls
+per frame by API, the drained ones included):
+
+| phase | draws | queued calls | drains | api ms | drain ms | `BeginPass` ms | guest ms | thread CPU ms | ring words |
+|---|---|---|---|---|---|---|---|---|---|
+| play, minutes 1-5 | 424-428 | 8 500-8 600 | 297-301 | 3.8-4.0 | 2.9-3.1 | 0.82-0.86 | 14-18 | 19-23 | 84 k |
+| battle, minutes 12-15 | 1 850-2 490 | 30 000-35 300 | 832-863 | 15.0-17.6 | 13.2-16.4 | 2.0-2.1 | 45-52 | 64-76 | 1.15-1.62 M |
+
+In the battle the API is 22 % of the emulator thread; the guest's own code is 70 %. Per queued call the drain stays
+~0.45 µs: the work grows with the draws (each drawn unit: its parameters, a commit, a draw), not per call.
+
+**Where the drain goes** (V8 profile, 30 s windows, ms per frame, play minute 1 → battle minute 12): effect commits
+(`CommitChanges`) 0.50 → 5.0, of it `bindShader` 3.4 — 78 % of that in one line, the compare-and-copy of a binding's
+float words into the registers (`setFloatPlan`); draws 0.70 → 3.6, of it the recorder's `syncConsts` 1.7 (the copy of
+the changed constants into the ring: 92 % one line); the queue loop itself 0.44 → 1.5 (~50 ns per record); the effect
+parameter setters 0.43 → 1.8; the device setters 0.39 → 1.0; `Begin` / `End` / `SetTechnique` 0.14 → 0.5. Outside the
+drain, `BeginPass` 0.75 → 1.9 (its own `bindShader` 0.5) and `ApplyParameterBlock` 0.14 → 0.85. **Shader constants are
+~45 % of the battle's API time** — the parameters written (1.3 ms), bound to the registers (3.9), copied into the ring
+(1.7): 1.2 M words compared per frame in 5 800 bindings, 97 % of them in contiguous plans (2 430 bindings of ~470 words:
+the units' bone palettes, set by `SetRawValue`), 1 840 bindings finding their parameter unchanged and the registers
+equal. Dispatch is not the cost: the queue loop and `Com.callQueued` are 1.7 ms of the battle's 16.
+
+**Kept: contiguous bindings copied as runs** (`setFloatPlan`; `planOf` notes `run`, the first parameter word, when every
+component takes the next word). Compared up to the first difference, then one typed-array copy of the rest: the same
+registers and the same changed flag as the word loop, so the same `constTouched` ranges, versions and commands. Battle
+minute 13 (identical frames, same profile window): `bindShader` 4.09 → 2.03 ms per frame, the drain 11.45 → 9.71 ms;
+control minute 12 (both arms off) 4.70 / 4.71 and 13.59 / 13.29. Play minute 1: 0.73 → 0.69 (nothing to see: 19 k
+contiguous words per frame). Command stream identical (`--gfx-hash` at all 22 marks, 4.66 G words, the switch flipped
+every minute). Micro-benchmark (one binding of 144 contiguous words, changed / unchanged): word loop 376 / 370 ns, runs
+94 / 196 ns. `dbg:ORTHROS_FX_RUNS=0` (or `ORTHROS_FX_BIND_OFF`): the word loop. The randomized binding test
+(`d3dx9-effect-bind.test.js`: row matrices, vector arrays, a binding clipped at the last register) catches a run copied
+one word short and a wrong changed flag.
+
+**Route 1, the API layer in WebAssembly: no-go.** What it could remove without moving the device, the effects and the
+recorder into guest memory is the dispatch (1.7 ms in the battle) and the setters' own JavaScript (2.8 ms); the commits
+and passes (7 ms) and the draw recording (3.6 ms) read JavaScript state — the effect system, the device's tables, the
+recorder's resources — and would have to be ported whole (weeks, every Direct3D 8 / 9 and D3DX path twice). The part
+where WebAssembly measurably beats JavaScript is the constants' data movement, over guest memory: a binding's v128
+compare-and-copy 34 / 47 ns against the runs' 94 / 196 ns (144 words), `memory.copy` inside a shared memory 0.4-0.9 ns
+per word against 1.1-2.5 ns for a JavaScript copy into the ring's SharedArrayBuffer. That needs the effect parameters,
+the device's constant registers and the command ring in the guest's memory (a ring of 16-64 MiB taken from the 2 GiB the
+game also needs, docs/address-space.md): about −2 ms per frame in this battle (3 % of the thread), nothing in normal play.
+Not started.
+
+**Route 2, the Direct3D layer on another worker: no-go now.** Every call handled in JavaScript that touches the device
+must wait for that worker to catch up: the battle makes ~1 130 such calls per frame (`BeginPass` 363,
+`ApplyParameterBlock` 341, buffer and surface locks 400), and a round trip between two threads (`Atomics.wait` /
+`notify`, Node on this server) takes 23 µs (p50; 0.5 µs spinning, which burns a core) — ~26 ms per frame to save 16.
+Prerequisite, if ever: make those calls asynchronous first — `BeginPass` and `ApplyParameterBlock` queued as `Begin`
+already is (both return D3D_OK once the pass or block is valid, which the effect's slots can answer), then the buffer
+locks (their pointer answered from the buffer's memory, the unlocked bytes taken into the queue) — and measure again:
+below ~20 synchronous calls per frame a Direct3D worker could take the 16 ms off the emulator thread.
+
+Tools kept: `startbench --queued-hist` (the [queued] lines), `tools/scenarios/aotr-battle.txt`.
+
 ## WebGL backend (src/gfx/d3d8-webgl.js, applyState)
 
 - The GL state cache (`gs`: program, framebuffer, vertex array, units' textures and samplers, capabilities, raster
@@ -762,6 +829,7 @@ fast path, `dbg:ORTHROS_DXT_WASM=0` puts the image kernels (and the helpers' enc
 string cache, the header-only TGA / BMP information, DDS files read in place and the lighter `LockRect` have no switch;
 `dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches (its per-program uniform caches included);
 `dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths; `dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods);
+`dbg:ORTHROS_FX_RUNS=0` only the contiguous bindings copied as runs ("A big battle");
 `dbg:ORTHROS_FX_DEFER_OFF=1` only the queued `SetTechnique` / `Begin` / `End` (also off with the D3DX fast paths).
 Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders),
 `{bfme2,rotwk}-fxbind-ab.txt` the same for the effect binding, `{bfme2,rotwk}-fxdefer-{ab,ba}.txt` for the queued

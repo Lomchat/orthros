@@ -118,7 +118,9 @@ const siteReport = () => {
   for (const e of all.slice(0, Number(opt('jit-sites-top', 40)))) console.log(`  ${e.kind} ${sym(e.addr)} ${(e.n / 1e6).toFixed(2)}M changes ${(100 * e.ch / Math.max(1, e.n)).toFixed(1)}% last ${sym(e.last)}`);
 };
 // --log <kinds>: the emulator log kinds printed (default crash; e.g. crash,warn — null-page faults are warnings)
-let vm = new Vm({ vfs, clock, host, logKinds: (opt('log') ?? 'crash').split(','), sharedMemory: bgWanted });
+// --queued-hist: with a scenario, each phase's calls per frame by API — the deferred queue's drained calls included (Vm
+// apiHist: every call dispatched to JavaScript or drained; --api-hist has the dispatched ones alone) — [queued] lines
+let vm = new Vm({ vfs, clock, host, logKinds: (opt('log') ?? 'crash').split(','), sharedMemory: bgWanted, apiHist: args.includes('--queued-hist') });
 const rootVm = vm;
 // (measurement: ORTHROS_PERF_FIFO=<perf record/stat --control fifo>: a scenario's dbg:ORTHROS_PERF_CTL=1 / 0 enables / disables
 // the counting, so that perf measures one phase only)
@@ -332,6 +334,17 @@ const scenario = scenarioFile ? new NodeScenario(fs.readFileSync(scenarioFile, '
 if (stallRep) { const fh = vm.host.frameHook; vm.host.frameHook = () => { stallRep.frameAt = performance.now(); stallRep.hist.clear(); return fh?.(); }; }
 if (scenario && opt('slow-apis')) scenario.enableSlowApis(Number(opt('slow-apis')));
 if (scenario && apiHist) (scenario.phaseReports ??= []).push(apiPhase);
+if (scenario && args.includes('--queued-hist')) {
+  let last = new Map(), lastVm = null;
+  (scenario.phaseReports ??= []).push((label, frames) => {
+    const cur = vm.apiHist() ?? new Map(), f = Math.max(1, frames), d = [];
+    if (lastVm !== vm) { last = new Map(); lastVm = vm; }
+    for (const [k, v] of cur) { const x = v - (last.get(k) ?? 0); if (x) d.push([k.replace(/^[^!]*!/, ''), x]); }
+    last = cur;
+    const tot = d.reduce((t, [, x]) => t + x, 0);
+    console.log(`[queued] ${label} per frame (${frames} frames): all ${(tot / f).toFixed(0)}; ${d.sort((a, c) => c[1] - a[1]).slice(0, 40).map(([k, v]) => `${k} ${(v / f).toFixed(1)}`).join(', ')}`);
+  });
+}
 if (scenario && gfx?.link?.streamHash) (scenario.phaseReports ??= []).push((label) => console.log(`[gfxhash] ${label}: ${gfx.link.streamHash()}`));
 // --gc <ms>: with a scenario, this thread's garbage collections per phase and in the frames longer than that ([gc] lines)
 if (scenario && opt('gc')) scenario.enableGc(Number(opt('gc')), await import('node:v8'));
