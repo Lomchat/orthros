@@ -1134,7 +1134,7 @@ the execution it covers. Prototype: src/cpu/jit/tier2.js, `ORTHROS_JIT_AB={"tier
   guest instructions, printed by startbench at each `ORTHROS_PERF_CTL` switch; the counters cost time), `ORTHROS_TIER2_LOG=1`
   (the selection and build).
 
-## Library kernels recognised by content (2026-11-12, D122): exact; memcmp on, inline, since 2026-11-18
+## Library kernels recognised by content (2026-11-12, D122): exact; memcmp, _stricmp, tolower, strtok on since 2026-11-18
 
 The C runtime the SAGE games ship (msvcr71.dll 7.10.3052.4, the same file in BFME1, BFME2, RotWK and AotR) runs 8.7 %
 of RotWK's executed guest bytes in play (the study of 2026-11-12: `floor` 3.71 %, `fabs` 0.82 %, `ldexp` 0.81 %, `memcmp`
@@ -1280,6 +1280,84 @@ the caller's region for the function, its `ret` chains back to the return site),
 - **Default since 2026-11-18**: `libKernels: ["memcmp"]`, `libInline: true` — AotR's start to its first frame −9 to
   −12 % CPU in Node beyond the spread, the other games and play neutral; the other kernels stay off (their case of
   2026-11-12 unchanged). The persistent translation cache keys on `JIT_DEFAULTS`: every player's cache starts over once.
+
+### The C runtime's string functions and copy / fill loops at a SAGE game's start (2026-11-18)
+
+An audit of main (2026-11-18, Node profiles) put msvcr71's string functions at 15.7 % of AotR's guest code before its
+first frame (23.5 % for BFME II) and a decompressor's byte copy loop at 12.4 %. Checked with block counts
+(`startbench --jit-opts '{"blockCounts":true}' --counts-out`, a fresh profile, `--virtual`, up to the first Direct3D
+frame), as shares of the guest bytes executed: AotR (102.5 G guest instructions) — msvcr71 39 %: `_stricmp` 13.5 %
+(100.5 M calls, ~1.5 bytes compared a call), `strncpy` 6.2 % (2.5 M calls; its zero padding: 688 M iterations of a
+4-instruction dword fill), `strtok` 3.6 % (6.8 M calls), `_CIpow` 3.3 %, `tolower` 2.9 % (34.0 M calls), `strstr` 1.0 %,
+`_memicmp` 0.8 %, `strcmp` 0.7 %; BFME II (25.3 G) — msvcr71 29 %: `_CIpow` 7.1 %, `_stricmp` 6.5 %, `strncpy` 3.7 %,
+`tolower` 2.6 %, `strtok` 2.2 %, `strcmp` 1.5 %. `_splitpath` does not show. The decompressor (game.dat's RefPack copy
+loops at 0xaa1901 / 0xaa1931 / 0xaa1960) never ran before the first frame in these runs, nor in 600 G more instructions
+of a run that did not reach the menu.
+
+- **String kernels** (libkernels.js): `_stricmp` and `tolower` in the "C" locale, run inline like memcmp, and `strtok`,
+  entered through the hash table (inline, its ~1.4-2 KB in each of the 900-1100 regions calling it made BFME1's
+  translations 3.8 % larger and its start 2.8 % more host instructions, more than the calls saved). All three go through `_getptd` (emitGetptd): GetLastError, TlsGetValue / FlsGetValue through the library's pointer and
+  SetLastError are reproduced as the fast APIs run them (each slot must hold that fast API's thunk, no parked call being
+  resumed, a TLS index below 64, the thread's data allocated), the last error ending as it was. `_stricmp` / `tolower`
+  need the library's current locale data (`__ptlocinfo`, else `__updatetlocinfo`) with a 0 LC_CTYPE handle
+  (`__ascii_stricmp`, `_tolower_lk`'s "C" path); anything else takes the exact way. `strtok` writes its frame (the
+  cookie, the 32-byte delimiter bitmap) before reading the strings, as the code does, so that the exact way taken after
+  it (a string reaching the frame or USER_END, translated code under the 0 it writes) finds the frame it writes itself;
+  it checks __security_check_cookie's compare. Every register, flag, frame word (the slot of `_getptd`'s last return
+  address as the interpreter writes it: the translation's inline fast APIs push none), the last error, `_token` and
+  the instruction count are reproduced; tests/jit-lib-kernels.test.js runs all three at their entry, through an import
+  stub and through `call [slot]` (strtok's inline form included), at the DLL's base and relocated, against the
+  interpreter and the JIT without them.
+- **Copy and fill loops** (`loopBulk`, translate.js bulkLoopOf / emitBulkLoop): a block that branches back to itself on
+  JNE, moving one 1-, 2- or 4-byte element per iteration through registers stepping by its size (an LZ literal or
+  match copy, strncpy's padding, `rep`-less fills), its counter (or a pointer against an end) stepping by 1, 2 or 4.
+  Its body is executed symbolically once at translation (every register an induction, another's value plus a
+  constant, a constant, or the element loaded). At the block's top, the iterations that would go round again with
+  budget left after them (at least 16) run at once — memory.copy (a forward copy whose destination is less than its
+  length ahead of its source repeats its first bytes: copied in doubling chunks; less than one element ahead: one by
+  one), memory.fill (or the element repeated) —, the registers set as after them, the instructions charged; the next
+  iteration runs as translated (the flags, the loop's exit or the time slice's end exactly as before). A destination
+  page holding translated code, watched or never mapped, an address range leaving [64 KiB, USER_END): one by one, the
+  stores' own exits. The back edge goes round an inner loop past the top (a loop of 8 iterations is not slower).
+  tests/jit-rep-string.test.js: eight loop shapes, random counts, overlaps, page boundaries, a code page, the null page
+  and time slices of any length, slice by slice against the element loop, and against the interpreter at the end.
+- Per call / iteration (scratch micro-benchmark, `--no-liftoff`, the server at load 24-30): `_stricmp` through an
+  import stub, 16-byte strings differing at their 9th byte, translated 103.5 ns, kernel 39.7, inline 22.7; differing at
+  the first byte 58.4 / 30.7 / 14.0; `tolower` 31.9 / 25.7 / 9.3; `strtok("  ArmorSet = Foo", " =\t")` 131.6 / 44.9 /
+  29.4. Byte copy (LZ literal) per iteration, loop / bulk:
+  8 bytes 2.56 / 2.33 ns, 20 bytes 2.93 / 0.73, 250 bytes 2.15 / 0.08, 4 KiB 2.11 / 0.01; LZ match 3 bytes behind: 8
+  bytes 1.92 / 1.90, 64 bytes 1.75 / 0.65, 4 KiB 1.64 / 0.03; strncpy's dword fill: 8 dwords 1.81 / 1.27, 250 dwords
+  1.54 / 0.07.
+
+- Boot to the first frame, Node (`startbench <id> --until-api none --virtual --dbg ORTHROS_SLEEP0_SPIN_INSNS=0`, a fresh
+  profile, a scenario ending at the first Direct3D frame: the same guest instructions in every run of a game), whole
+  process under `perf stat -e cycles:u,instructions:u`, variants alternated, one game process at a time, the server at
+  load 6-86 from other sessions (instructions repeat within 0.3 %; cycles and CPU follow the load). Shipped configuration
+  against main's defaults, two pairs each (load 8-43), instructions / emulator thread CPU:
+  AotR (102.5 G guest instructions) 902.0, 900.3 → 759.5, 758.9 G (−15.8 %) / 85.2, 101.5 → 75.2, 73.5 s;
+  BFME II (25.3 G) 349.9, 349.4 → 329.3, 328.7 G (−5.9 %) / 29.3, 29.1 → 26.9, 26.9 s (−7.9 %);
+  RotWK 2.02 (27.2 G) 373.4, 373.0 → 353.4, 350.8 G (−5.7 %) / 31.3, 31.4 → 30.3, 30.2 s (−3.5 %);
+  BFME 1.08 (33.1 G) 357.4, 356.2 → 334.1, 334.2 G (−6.3 %) / 31.2, 41.1 (a load spike) → 28.5, 28.4 s.
+  Earlier rounds the same way: AotR, three pairs (strtok then inline, load 7-39), 95.3, 99.0, 86.4 → 74.2, 74.2, 74.4 s;
+  BFME II, RotWK, BFME1, three pairs without strtok (load 17-33): 31.2, 30.3, 33.2 → 28.3, 29.1, 29.0 s; 32.6, 30.9,
+  31.3 → 29.2, 29.8, 30.0 s; 30.5, 30.4, 30.3 → 29.7, 29.2, 28.6 s. Every run with them below every run without, in every
+  game. Kernel calls before the first frame, none off their path: AotR `_stricmp` 100.5 M, `tolower` 34.0 M, `strtok`
+  6.8 M; BFME II 20.8 / 13.9 / 1.9 M; RotWK 15.1 / 13.5 / 2.1 M; BFME1 40.6 / 6.3 / 1.0 M.
+- Where AotR's gain comes from (two runs each, load 22-66): `_stricmp` + `tolower` alone −4.7 % instructions, `loopBulk`
+  alone −10.1 %, both −14.9 %; `strtok` inline +0.7 % (BFME II +3.6 %, BFME1 +2.8 %: the code size above), as a kernel
+  function −1.1 % more. Of the 26 loops `loopBulk` took in AotR's start, one ran: strncpy's zero padding
+  (`mov [edi], eax ; add edi, 4 ; sub ecx, 1 ; jne`, 687.8 M iterations, 6.7 % of the guest bytes, ~135 host
+  instructions an iteration translated — the store's SMC check, the lazy flags, the budget check). BFME II and RotWK take
+  28 loops, BFME1 55.
+- Play: RotWK 2.02 skirmish, in-session A/B on a real clock (the phases of tools/scenarios/rotwk-libk-ab.txt, on = the
+  shipped options, off = main's), guest ns per instruction on 2.499, 2.425, 2.487 / off 2.286, 2.649, 2.608; emulator
+  thread CPU per frame 24.2, 27.1, 26.7 / 22.0, 26.7, 27.7 ms — neutral.
+- **Default since 2026-11-18**: `libKernels: ["memcmp", "_stricmp", "tolower", "strtok"]`, `loopBulk: true` — every SAGE
+  start faster beyond the spread, play neutral. `ORTHROS_JIT_DEFAULTS='{"loopBulk":false}'` / `{"libKernels":["memcmp"]}`
+  (ab-virtual), `dbg:ORTHROS_JIT_AB=...` in a session, `?jitopts=` in the page turn them off. Not done: `strcmp` (0.7 %,
+  1.5 %: its alignment paths and word reads), `strstr`, `_memicmp`, the copy part of `strncpy` (its magic-bits word
+  loop), `_CIpow` (7.1 % of BFME II's guest bytes: math, not a string function); loops other than a single block, the
+  backward copies, `loop` / `jecxz` counters.
 
 ## The four 2026-11-12 branches combined, measured against main
 

@@ -142,7 +142,7 @@ export function x87ModeOf(mem, base, top) {
   return top ? fpc | X87_MODE_TOP | (mem.read8(base + ST.FPU_TOP) & 7) : fpc;
 }
 
-export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: ["memcmp"], libInline: true, strSmcOne: true, divFast: true, mmxTopOnce: true, smcGroup: true, apiInline: false, x87Bounds: false, nestCalls: false, linkExits: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
+export const JIT_DEFAULTS = { nullPage: 'writes', logicRes: true, maxBlocks: 96, maxInsns: 800, ifcvt: false, layout: true, coldExits: true, coldMin: 64, visit: false, x87Top: false, chainStub: false, dispatchBlock: false, bgCompile: true, swLocal: true, x87Cold: 'call', x87ExitRotate: false, exitShare: true, x87VecMask: true, x87Live: true, x87LiveStores: true, imulDead: true, lzaFree: true, lzaSub: true, memarg: false, jumpTables: false, libKernels: ["memcmp", "_stricmp", "tolower", "strtok"], libInline: true, loopBulk: true, strSmcOne: true, divFast: true, mmxTopOnce: true, smcGroup: true, apiInline: false, x87Bounds: false, nestCalls: false, linkExits: false, ...JSON.parse(globalThis.process?.env?.ORTHROS_JIT_DEFAULTS ?? '{}') };
 
 export const MAX_BLOCKS = 96;
 /** at most this many call-return sites compared inline at one RET (the first ones in address order; a return to another
@@ -214,7 +214,7 @@ const LIB_INLINE_LOCALS = Object.freeze({ S: L_TA, G: L_TA, N: L_TV, LEN: L_T2, 
 function emitLibRun(E, lib, slow, ret) {
   const c = E.c, calls = LIB_CALLS + 4 * lib.index, L = LIB_INLINE_LOCALS;
   c.i32(0).i32load(lib.slot).i32(lib.entry).ne().i32(0).i32load(LIB_LIVE + 4 * lib.index).i32(lib.entry).ne().or().hint(false).br_if(slow);
-  emitLibInline(c, lib.def, slow, L, ret);
+  emitLibInline(c, lib.def, slow, L, ret, lib.entry);
   c.get(L_ICOUNT).get(L.N).sub().set(L_ICOUNT);
   c.i32(0).i32(0).i32load(calls).i32(1).add().i32store(calls);
   E.count(PF.libInline);
@@ -579,6 +579,96 @@ function planSmcGroups(insns) {
     if (w) for (const [key, g] of open) if ((g.base >= 0 && (w >> g.base) & 1) || (g.index >= 0 && (w >> g.index) & 1)) open.delete(key);
   }
   return lead.size ? { lead, member } : null;
+}
+
+// ---- copy and fill loops (opts.loopBulk). A block that branches back to itself while a counter has not reached zero,
+// moving one element per iteration — `mov dl, [ecx] ; mov [esi], dl ; inc esi ; inc ecx ; dec edi ; jne` (an LZ
+// decompressor's literal and match copies), `mov [edi], eax ; add edi, 4 ; sub ecx, 1 ; jnz` (a fill) — runs most of
+// its iterations at once at its top: memory.copy / memory.fill (the overlapping forward copy of a match — its source a
+// few bytes behind its destination, which repeats a pattern — in doubling chunks), the registers advanced, the
+// instructions charged. Only iterations that would have gone round again with budget left are taken at once: the last
+// iteration (or the one the time slice ends after) runs as translated, which sets the flags, leaves the loop or checks
+// the budget exactly as before. Anything the bulk form cannot reproduce exactly runs the iterations one by one: fewer
+// than BULK_MIN to take, a destination page holding translated code, watched or never mapped (the stores' SMC exit),
+// an address range leaving [64 KiB, USER_END) (a fault), a copy whose destination is less than one element ahead of its
+// source (an element reading a part of the one before).
+/** iterations taken at once at least (fewer: the loop as translated, its iterations then cost about as much) */
+const BULK_MIN = 16;
+/** iterations taken at once at most (byte ranges kept far below 2^31) */
+const BULK_MAX = 1 << 24;
+/**
+ * The copy or fill loop block `b` is (see above), or null. Its body, symbolically executed from the registers' values at
+ * the iteration's start: every register ends as an induction (its own start value plus a constant step), another
+ * register's start value plus a constant (that register an induction or not written), a constant, or the element the
+ * iteration loaded (the low byte / word, the rest unchanged); one store (at most one load before it) of an element of
+ * 1, 2 or 4 bytes addressed by inductions stepping by that size; the last flag-setting instruction computes an
+ * induction stepping by 1, 2 or 4 (minus a register not written), and JNE goes round while it is not zero.
+ * Returns { n, size, load: { x, off } | null, store: { x, off }, fill: { x, off } | null, cond: { x, off, y, step },
+ * regs: [[register, value]] } (value: { x, off } or { ld: true }), steps: per register.
+ */
+function bulkLoopOf(b) {
+  const ins = b.insns, n = ins.length, last = ins[n - 1];
+  if (b.term !== TERM_JCC || last.op !== OP.JCC || last.cc !== 5 || last.ops[0].t !== OT.REL || (last.ops[0].v >>> 0) !== b.eip || n < 3 || n > 12) return null;
+  const val = Array.from({ length: 8 }, (_, r) => ({ x: r, off: 0 }));
+  const aff = (v) => v.x !== undefined;
+  /** the address of memory operand o: { x, off }, or null (an index, a segment base, a 16-bit address, a base not affine) */
+  const addrOf = (o) => (o.t === OT.MEM && o.base >= 0 && o.index < 0 && !o.a16 && o.seg !== SEG.FS && o.seg !== SEG.GS && aff(val[o.base]) ? { x: val[o.base].x, off: (val[o.base].off + o.disp) | 0 } : null);
+  let load = null, store = null, cond = null, size = 0;
+  for (let i = 0; i < n - 1; i++) {
+    const insn = ins[i], [a, s] = insn.ops;
+    if (insn.adsize === 2 || insn.rep || insn.inlineApi || insn.libInline) return null;
+    switch (insn.op) {
+      case OP.NOP: break;
+      case OP.MOV:
+        if (a.t === OT.REG && s.t === OT.MEM) { // the load: the element, into a register whose upper part is unchanged
+          const m = addrOf(s);
+          if (load || store || !m || (a.size === 1 && a.r >= 4) || !(a.size === 4 || (val[a.r].x === a.r && val[a.r].off === 0))) return null;
+          load = m; size = a.size; val[a.r] = { ld: true };
+        } else if (a.t === OT.MEM && (s.t === OT.REG || s.t === OT.IMM)) { // the store: the element loaded, or a value
+          const m = addrOf(a);
+          if (store || !m || (load && a.size !== size) || (s.t === OT.REG && a.size === 1 && s.r >= 4)) return null;
+          const v = s.t === OT.IMM ? { x: -1, off: s.v | 0 } : val[s.r];
+          if (!!load !== !aff(v)) return null; // (a copy stores the element it loaded, a fill something else)
+          store = { ...m, v }; size = a.size;
+        } else if (a.t === OT.REG && a.size === 4 && s.t === OT.REG && s.size === 4 && aff(val[s.r])) val[a.r] = { ...val[s.r] };
+        else if (a.t === OT.REG && a.size === 4 && s.t === OT.IMM) val[a.r] = { x: -1, off: s.v | 0 };
+        else return null;
+        break;
+      case OP.LEA: { const m = addrOf(s); if (!m || a.size !== 4) return null; val[a.r] = m; break; }
+      case OP.INC: case OP.DEC: case OP.ADD: case OP.SUB: {
+        if (a.t !== OT.REG || a.size !== 4 || !aff(val[a.r]) || (s && s.t !== OT.IMM)) return null;
+        const d = insn.op === OP.INC ? 1 : insn.op === OP.DEC ? -1 : insn.op === OP.ADD ? s.v | 0 : -(s.v | 0);
+        val[a.r] = { x: val[a.r].x, off: (val[a.r].off + d) | 0 };
+        cond = { x: val[a.r].x, off: val[a.r].off, y: -1 };
+        break;
+      }
+      case OP.TEST: case OP.OR: case OP.AND:
+        if (a.t !== OT.REG || s.t !== OT.REG || a.r !== s.r || a.size !== 4 || !aff(val[a.r])) return null;
+        cond = { x: val[a.r].x, off: val[a.r].off, y: -1 };
+        break;
+      case OP.CMP:
+        if (a.t !== OT.REG || a.size !== 4 || !aff(val[a.r])) return null;
+        if (s.t === OT.IMM) cond = { x: val[a.r].x, off: (val[a.r].off - (s.v | 0)) | 0, y: -1 };
+        else if (s.t === OT.REG && s.size === 4 && aff(val[s.r]) && val[s.r].x >= 0) cond = { x: val[a.r].x, off: (val[a.r].off - val[s.r].off) | 0, y: val[s.r].x };
+        else return null;
+        break;
+      default: return null;
+    }
+  }
+  if (!store || !cond || cond.x < 0 || !(size === 1 || size === 2 || size === 4)) return null;
+  const steps = val.map((v, r) => (aff(v) && v.x === r ? v.off : null)); // (null: not an induction)
+  const known = (x) => x === -1 || steps[x] !== null;
+  if (steps[4] !== 0) return null; // (ESP left alone)
+  const regs = [];
+  for (let r = 0; r < 8; r++) {
+    const v = val[r];
+    if (aff(v) ? !known(v.x) : !load) return null;
+    if (!aff(v) || v.x !== r || v.off !== 0) regs.push([r, v]);
+  }
+  const step = steps[cond.x];
+  if (!(step === 1 || step === -1 || step === 2 || step === -2 || step === 4 || step === -4) || (cond.y >= 0 && steps[cond.y] !== 0)) return null;
+  if (steps[store.x] !== size || (load && steps[load.x] !== size) || (!load && store.v.x >= 0 && steps[store.v.x] !== 0)) return null;
+  return { n, size, load, store: { x: store.x, off: store.off }, fill: load ? null : store.v, cond: { ...cond, step }, regs, steps };
 }
 
 // ---- if-conversion. A conditional branch over one or two short arms that meet again (a triangle `jcc M ; x ; M:`, its
@@ -1209,6 +1299,8 @@ class Emitter {
     this.smcGroup = (opts.smcGroup ?? JIT_DEFAULTS.smcGroup) && this.smc && !opts.t2; // (see planSmcGroups)
     this.smcPlan = null; // grouped SMC checks of the block being emitted (planSmcGroups)
     this.apiInline = (opts.apiInline ?? JIT_DEFAULTS.apiInline) && !opts.t2; // (see emitFastThunk)
+    this.loopBulk = !!(opts.loopBulk ?? JIT_DEFAULTS.loopBulk) && !opts.t2; // (copy and fill loops: see bulkLoopOf)
+    this.bulkLoop = null; // (the copy or fill loop block being emitted: { idx, label } of its inner loop, see emitBlock)
     this.specCheck = false; // (the arm instruction being emitted has a memory operand to check: see nullCheck)
     // MMX (opts.mmxTopOnce): once an MM access of the block has re-based the x87 stack on TOP = 0 and set every tag,
     // the block's next MM accesses skip it while no x87 instruction or interpreter fallback ran in between (mmClean)
@@ -2160,6 +2252,15 @@ class Emitter {
     const b = this.byEip.get(target);
     if (!b) { if (this.t2 && this.t2.calls.has(target)) this.t2Tail(target, n); else this.exitTo(target, n); return; }
     const c = this.c;
+    if (this.bulkLoop !== null && b.index === this.cur && b.index === this.bulkLoop.idx) { // (a copy or fill loop's back edge: see emitBlock)
+      this.fpuModeGuard(target, n);
+      const s = this.x87Normalize(this.planOf(b.index));
+      this.count(PF.backward);
+      this.budget(n, target, b.flagsIn ?? FL_ALL);
+      c.br(this.bulkLoop.label);
+      this.x87Restore(s);
+      return;
+    }
     this.fpuModeGuard(target, n);
     const t = b.index, sp = this.pathOf[this.cur], tp = this.pathOf[t];
     let d = 0; // loops holding both
@@ -2705,6 +2806,13 @@ class Emitter {
     this.fcmp = null; // a float compare whose condition the next instruction evaluates directly (see pushFcmpCond)
     this.xsValid = this.xsDirty = this.xdValid = this.xdDirty = 0; // XMM lane-0 shadows (see xmmShadowSync)
     this.cur = b.index;
+    // a copy or fill loop (bulkLoopOf): its top first, then the iterations in an inner loop its back edge goes round
+    // (see jumpTo: the top runs once per entry into the loop, not once per iteration)
+    this.bulkLoop = null;
+    if (this.loopBulk && !this.ifcvt && b.term === TERM_JCC) {
+      if (b.bulk === undefined) b.bulk = bulkLoopOf(b);
+      if (b.bulk) { this.emitBulkLoop(b, b.bulk); this.bulkLoop = { idx: b.index, label: this.c.loop() }; }
+    }
     if (this.counterBase >= 0) { const a = this.counterBase + 4 * b.index; this.c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a); }
     else if (this.opts.countSlots) { const a = this.opts.countSlots.get(this.mem, b.eip); if (a >= 0) this.c.i32(0).i32(0).i32load(a).i32(1).add().i32store(a); }
     if (this.visitAt !== null && this.visitAt[b.index] >= 0) {
@@ -2729,6 +2837,7 @@ class Emitter {
       this.emitInsn(insn, b);
     }
     this.c.site = -1; // (call statistics: block-end code)
+    if (this.bulkLoop !== null) { this.c.end(); this.bulkLoop = null; } // (the inner loop of a copy or fill loop's iterations)
     // block end
     const n = b.insns.length;
     switch (b.term) {
@@ -2756,6 +2865,95 @@ class Emitter {
         return;
       default: return; // JMP/RET/INDIRECT/EXIT emitted their own exits
     }
+  }
+
+  /**
+   * The top of a copy or fill loop (bulkLoopOf, opts.loopBulk): K = the iterations after this one that go round again
+   * with budget left after them (at most BULK_MAX) run at once when there are BULK_MIN of them and the memory allows it
+   * — the elements copied or filled, every register the body writes set to its value after K iterations (computed from
+   * the values now), K iterations charged —; then this iteration runs as translated. Otherwise nothing changes.
+   */
+  emitBulkLoop(b, p) {
+    const c = this.c, R = (x) => L_REG + x, s = p.size, cond = p.cond, mag = Math.abs(cond.step);
+    const val = (x, off) => { if (x < 0) c.i32(off); else { c.get(R(x)); if (off) c.i32(off).add(); } };
+    const skip = c.block();
+    // L_T2 = K: the counter's value in this iteration to zero, by its step (not reached by it: an endless loop, skipped)...
+    if (cond.step > 0) c.i32(0);
+    val(cond.x, cond.off); if (cond.y >= 0) c.get(R(cond.y)).sub();
+    if (cond.step > 0) c.sub();
+    if (mag > 1) { c.tee(L_T2).i32(mag - 1).and().br_if(skip); c.get(L_T2).i32(mag === 4 ? 2 : 1).shr_u(); }
+    c.tee(L_T2).i32(BULK_MIN).lt_u().br_if(skip);
+    // ... at most (budget - 1) / n: budget left after each of them
+    c.get(L_ICOUNT).i32(1).sub().i32(p.n).div_s().tee(L_T3).i32(BULK_MIN).lt_s().br_if(skip);
+    c.get(L_T2).get(L_T3).get(L_T2).get(L_T3).lt_u().select().tee(L_T2).i32(BULK_MAX).get(L_T2).i32(BULK_MAX).lt_u().select().set(L_T2);
+    c.get(L_T2).i32(s === 4 ? 2 : s === 2 ? 1 : 0).shl().set(L_T3); // (the bytes)
+    // L_T4 = the destination, L_T5 = the source: within [64 KiB, USER_END); the destination 1 to size - 1 bytes ahead of
+    // the source: one by one
+    val(p.store.x, p.store.off); c.tee(L_T4).i32(NULL_PAGE_END).sub().i32(USER_END - NULL_PAGE_END).get(L_T3).sub().gt_u().br_if(skip);
+    if (p.load) {
+      val(p.load.x, p.load.off); c.tee(L_T5).i32(NULL_PAGE_END).sub().i32(USER_END - NULL_PAGE_END).get(L_T3).sub().gt_u().br_if(skip);
+      if (s > 1) c.get(L_T4).get(L_T5).sub().i32(1).sub().i32(s - 1).lt_u().br_if(skip);
+    }
+    // the destination's pages: no translated code, watch or page never mapped (the stores' own exits for those)
+    if (this.smc || this.nullPage) {
+      c.get(L_T4).i32(12).shr_u().set(L_T7);
+      c.get(L_T4).get(L_T3).add().i32(1).sub().i32(12).shr_u().set(L_TA);
+      const pages = c.loop();
+      c.get(L_T7).i32load8u(SMC_MAP_BASE).i32(SMC_CODE | SMC_WATCH | SMC_NULL).and().br_if(skip);
+      c.get(L_T7).i32(1).add().tee(L_T7).get(L_TA).le_u().br_if(pages);
+      c.end(); void pages;
+    }
+    /** the destination's bytes from L_T7 on: copies of its first ones, doubling (a pattern of L_T7 bytes repeated) */
+    const repeat = () => {
+      const lp = c.loop();
+      c.get(L_T4).get(L_T7).add().get(L_T4);
+      c.get(L_T7).get(L_T3).get(L_T7).sub().get(L_T7).get(L_T3).get(L_T7).sub().lt_u().select().tee(L_TA).memcopy();
+      c.get(L_T7).get(L_TA).add().tee(L_T7).get(L_T3).lt_u().br_if(lp);
+      c.end(); void lp;
+    };
+    if (p.load) {
+      // forward element order: memmove's result, but for a destination less than the length ahead of the source, where
+      // each element reads one copied before: the first L_T6 bytes repeated
+      c.get(L_T4).get(L_T5).sub().tee(L_T6).i32(1).sub().get(L_T3).i32(1).sub().lt_u();
+      const ov = c.if_();
+      c.get(L_T4).get(L_T5).get(L_T6).memcopy(); c.get(L_T6).set(L_T7); repeat();
+      c.else_();
+      c.get(L_T4).get(L_T5).get(L_T3).memcopy();
+      c.end(); void ov;
+    } else {
+      val(p.fill.x, p.fill.off); c.set(L_T5);
+      if (s === 1) c.get(L_T4).get(L_T5).get(L_T3).memfill();
+      else {
+        // one byte repeated (a zeroing): memory.fill; else the element stored once and repeated
+        c.get(L_T5).i32(0xff).and().i32(s === 4 ? 0x01010101 : 0x0101).mul().get(L_T5); if (s === 2) c.i32(0xffff).and();
+        c.eq();
+        const one = c.if_();
+        c.get(L_T4).get(L_T5).get(L_T3).memfill();
+        c.else_();
+        c.get(L_T4).get(L_T5); if (s === 4) c.i32store(0, 0); else c.i32store16(0);
+        c.i32(s).set(L_T7); repeat();
+        c.end(); void one;
+      }
+    }
+    // the registers the body writes, as after K iterations (all computed from the values now, then set)
+    for (const [r, v] of p.regs) {
+      if (v.ld) { // the element the last of them loaded: the one it stored
+        c.get(L_T4).get(L_T3).add().i32(s).sub();
+        if (s === 4) c.i32load(0, 0); else if (s === 2) c.i32load16u(0); else c.i32load8u(0);
+        if (s < 4) c.get(R(r)).i32(s === 1 ? ~0xff : ~0xffff).and().or();
+      } else if (v.x < 0) c.i32(v.off);
+      else { // (the register x's value at the start of iteration K - 1, plus off)
+        const st = p.steps[v.x];
+        c.get(R(v.x));
+        if (st === 1) c.get(L_T2).add(); else if (st === -1) c.get(L_T2).sub(); else if (st) c.get(L_T2).i32(st).mul().add();
+        if ((v.off - st) | 0) c.i32((v.off - st) | 0).add();
+      }
+    }
+    for (let i = p.regs.length - 1; i >= 0; i--) c.set(R(p.regs[i][0]));
+    c.get(L_ICOUNT).get(L_T2).i32(p.n).mul().sub().set(L_ICOUNT);
+    if (this.counterBase >= 0) { const a = this.counterBase + 4 * b.index; c.i32(0).i32(0).i32load(a).get(L_T2).add().i32store(a); }
+    this.stats.loopBulk = (this.stats.loopBulk ?? 0) + 1;
+    c.end(); void skip;
   }
 
   /**

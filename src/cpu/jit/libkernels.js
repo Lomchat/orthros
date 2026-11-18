@@ -22,8 +22,9 @@
 // runs each kernel against the reference interpreter running the original code on randomized inputs.
 import { ModuleBuilder, Code, T } from './wasm.js';
 import { ST } from '../state.js';
-import { SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL } from '../memory.js';
-import { REGION_PARAMS, REGION_RESULTS, REGION_ARG_OFFSETS, EXIT_STEP, LZ, FAST_STATS } from './runtime.js';
+import { SMC_MAP_BASE, SMC_CODE, SMC_WATCH, SMC_NULL, THUNK_BASE, THUNK_END } from '../memory.js';
+import { USER_END } from '../nullpage.js';
+import { REGION_PARAMS, REGION_RESULTS, REGION_ARG_OFFSETS, EXIT_STEP, LZ, FAST_STATS, FAST_TABLE, FAST } from './runtime.js';
 
 /** the calls of each kernel (u32 per definition, counted by the kernel: the share of calls off its path, see Jit.libFallback) */
 export const LIB_CALLS = FAST_STATS + 0x100;
@@ -36,6 +37,12 @@ export const LIB_LIVE = FAST_STATS + 0x180;
 // x87 status word condition codes (interp-x87.js)
 const C0 = 0x100, C1 = 0x200, C3 = 0x4000, SW_CC = 0x4700;
 const LOGIC32 = (LZ.LOGIC << 2) | 2;
+
+// msvcr71's _getptd (emitGetptd), and the data its common path and the locale check read — the import slots of
+// GetLastError and SetLastError, the TlsGetValue / FlsGetValue pointer, the TLS index, __ptlocinfo —, as offsets from a
+// kernel's entry in the reference build (the fingerprint holds their addresses relative to the entry)
+const GETPTD = 0x7c349636;
+const getptdK = (ref) => ({ gle: 0x7c37a044 - ref, tlsv: 0x7c38b428 - ref, tlsi: 0x7c38b430 - ref, sle: 0x7c37a054 - ref, ploc: 0x7c38ef44 - ref });
 
 /**
  * Kernel definitions. `ranges`: [offset from the entry, length] of the bytes the kernel depends on; `relocs`: offsets
@@ -80,6 +87,27 @@ export const LIB_KERNELS = Object.freeze([
     ranges: [[0, 0xb1], [0x7c375c77 - 0x7c374dc3, 0x24]],
     relocs: [0x46], hash: [0xbee672fa, 0xd3255eb6],
     k: { ret: 0x7c374e6b - 0x7c374dc3, n: 64 },
+  },
+  // _stricmp, the "C" locale (emitStricmp): the function, _getptd (its data present) and __ascii_stricmp
+  {
+    name: 'msvcr71!_stricmp', kind: 'stricmp', ref: 0x7c3505dc, quick: 0xa8b499f4, first: 0x55,
+    ranges: [[0, 0x69], [GETPTD - 0x7c3505dc, 0x71], [0x7c3432ec - 0x7c3505dc, 0x4e]],
+    relocs: [-0x6fa2, -0x6f9c, -0x6f94, -0x6f73, -0x6f6d, -0x6f62, -0x6f55, -0x6f3e, 0xf], hash: [0x58f7df30, 0xb6b5ad3f],
+    k: { ...getptdK(0x7c3505dc), ret: 0x7c350609 - 0x7c3505dc },
+  },
+  // tolower, the "C" locale (emitTolower): the function, _getptd and _tolower_lk
+  {
+    name: 'msvcr71!tolower', kind: 'tolower', ref: 0x7c352396, quick: 0x8ca2f045, first: 0xe8,
+    ranges: [[0, 0x22], [GETPTD - 0x7c352396, 0x71], [0x7c3522ce - 0x7c352396, 0xc8]],
+    relocs: [-0x8d5c, -0x8d56, -0x8d4e, -0x8d2d, -0x8d27, -0x8d1c, -0x8d0f, -0x8cf8, 0xa], hash: [0x58a776aa, 0x8eafd8a2],
+    k: { ...getptdK(0x7c352396), ret: 0x7c3523b5 - 0x7c352396 },
+  },
+  // strtok (emitStrtok): the function, _getptd and __security_check_cookie
+  {
+    name: 'msvcr71!strtok', kind: 'strtok', ref: 0x7c36ff6c, quick: 0x50d24028, first: 0x55,
+    ranges: [[0, 0xb5], [GETPTD - 0x7c36ff6c, 0x71], [0x7c341aed - 0x7c36ff6c, 0xd]],
+    relocs: [-0x2e47d, -0x26932, -0x2692c, -0x26924, -0x26903, -0x268fd, -0x268f2, -0x268e5, -0x268ce, 0x7], hash: [0xfb23afe, 0x2667bd8],
+    k: { ...getptdK(0x7c36ff6c), cookie: 0x7c38b118 - 0x7c36ff6c, ret: 0x7c37001f - 0x7c36ff6c, gret: 0x7c3496a2 - 0x7c36ff6c },
   },
 ]);
 
@@ -171,6 +199,9 @@ export function buildLibKernelModule(opts = {}) {
     else if (d.kind === 'fabs') emitFabs(c, d.k, fallback);
     else if (d.kind === 'memcmp') emitMemcmp(c, fallback);
     else if (d.kind === 'memcpy') emitMemcpy(c, fallback);
+    else if (d.kind === 'stricmp') emitStricmp(c, fallback, KERNEL_LOCALS, null, null, d.k);
+    else if (d.kind === 'tolower') emitTolower(c, fallback, KERNEL_LOCALS, null, null, d.k);
+    else if (d.kind === 'strtok') emitStrtok(c, fallback, KERNEL_LOCALS, null, null, d.k);
     else throw new Error(`libkernels: unknown kind ${d.kind}`);
     emitReturn(c, chainIdx, opts.chain !== false);
     c.end(); // fallback: the original code from its entry (Jit.run: EXIT_STEP; the instruction stepped charged here, as a region charges its own)
@@ -316,7 +347,7 @@ function emitFabs(c, k, fallback) {
  * `L`: the scratch locals (MEMCMP_LOCALS in the kernel, a translated region's own run inline: emitLibInline); `ret`: run
  * inline at a `call [slot]` — S = ESP - 4, the call's return address `ret` written there —, else S = ESP.
  */
-function emitMemcmp(c, fallback, L = MEMCMP_LOCALS, ret = null) {
+function emitMemcmp(c, fallback, L = KERNEL_LOCALS, ret = null) {
   const { S: L_S, N: L_N, LEN: L_LEN, B1: L_B1, B2: L_B2, I: L_I, U: L_U, J: L_J, Q: L_Q } = L;
   if (ret !== null) c.get(P.ESP).i32(4).sub().set(L_S);
   guardStack(c, fallback, 8, 16, L_S, ret !== null);
@@ -415,8 +446,11 @@ function emitMemcmp(c, fallback, L = MEMCMP_LOCALS, ret = null) {
   }
   c.end(); // done
 }
-/** memcmp's scratch locals in its kernel function (G: diffFlags' carry, written once S is no longer read: may share it) */
-const MEMCMP_LOCALS = Object.freeze({ S: L_S, G: L_G, N: L_N, LEN: L_LEN, B1: L_B1, B2: L_B2, I: L_I, U: L_U, J: L_J, Q: L_Q });
+/**
+ * the scratch locals of the kernels a region can also run inline (memcmp, _stricmp, tolower), in their kernel functions
+ * (G: memcmp's carry in diffFlags, written once S is no longer read: may share it — inline it does)
+ */
+const KERNEL_LOCALS = Object.freeze({ S: L_S, G: L_G, N: L_N, LEN: L_LEN, B1: L_B1, B2: L_B2, I: L_I, U: L_U, J: L_J, Q: L_Q });
 /** the result of a difference at byte I: CF = b1[I] < b2[I]; sbb eax, eax ; sbb eax, -1 -> -1 / 1 and that sbb's flags */
 function diffFlags(c, L) {
   c.get(L.B1).get(L.I).add().i32load8u(0).get(L.B2).get(L.I).add().i32load8u(0).lt_u().set(L.G);
@@ -424,21 +458,236 @@ function diffFlags(c, L) {
   c.i32((LZ.SBB << 2) | 2).set(P.LZOP); c.i32(0).get(L.G).sub().set(P.LZA); c.i32(-1).set(P.LZB);
 }
 
-/** the kernel kinds a translated region can run inline (emitLibInline) */
-export const LIB_INLINE_KINDS = new Set(['memcmp']);
+/**
+ * the kernel kinds a translated region runs inline (emitLibInline). Not strtok, though emitStrtok takes the inline form
+ * too: its ~1.4-2 KB of code in every region calling it (900 to 1100 sites at a SAGE game's start) made the translations
+ * of BFME1's start 3.8 % larger and its process 2.8 % more instructions — more than the calls save; its kernel function
+ * (the hash table, a chained return) saves without it.
+ */
+export const LIB_INLINE_KINDS = new Set(['memcmp', 'stricmp', 'tolower']);
 /**
  * A kernel run inline by a translated region (translate.js libInlineOf, opts.libInline): at an import stub's `jmp [slot]`
  * reached by a call (the return address on the stack: `ret` null) or at a `call [slot]` (`ret`: its return address,
- * pushed below ESP), the slot holding the function's entry. The region's locals hold the registers, the lazy flags and
- * the budget at the kernel parameters' indices (REGION_PARAMS' order: translate.js L_REG..., L_ICOUNT); `L` names its
- * scratch locals: i32 S, G (may share S), N, LEN, B1, B2, I, U, J, i64 Q. The kernel's effects but for the return: ESP
- * left as it is (the return address not popped), the function's instructions (its `ret` included) left in L.N, not
- * charged. `fallback`: an input off the kernel's path, nothing changed (but the call's push of `ret`, which the ordinary
- * call makes the same).
+ * pushed below ESP), the slot holding the function's entry `entry`. The region's locals hold the registers, the lazy
+ * flags and the budget at the kernel parameters' indices (REGION_PARAMS' order: translate.js L_REG..., L_ICOUNT); `L`
+ * names its scratch locals: i32 S, G (may share S), N, LEN, B1, B2, I, U, J, i64 Q. The kernel's effects but for the
+ * return: ESP left as it is (the return address not popped), the function's instructions (its `ret` included) left in
+ * L.N, not charged. `fallback`: an input off the kernel's path, nothing changed (but the call's push of `ret`, which the
+ * ordinary call makes the same; strtok: see emitStrtok).
  */
-export function emitLibInline(c, def, fallback, L, ret = null) {
-  if (def.kind !== 'memcmp') throw new Error(`libkernels: ${def.name} is not run inline`);
-  emitMemcmp(c, fallback, L, ret);
+export function emitLibInline(c, def, fallback, L, ret = null, entry = 0) {
+  if (def.kind === 'memcmp') emitMemcmp(c, fallback, L, ret);
+  else if (def.kind === 'stricmp') emitStricmp(c, fallback, L, ret, entry, def.k);
+  else if (def.kind === 'tolower') emitTolower(c, fallback, L, ret, entry, def.k);
+  else if (def.kind === 'strtok') emitStrtok(c, fallback, L, ret, entry, def.k);
+  else throw new Error(`libkernels: ${def.name} is not run inline`);
+}
+
+/** pushes the address entry + `off`: from the kernel's entry parameter (`ent` null), or the entry a region runs it inline at */
+function adr(c, ent, off) { if (ent === null) c.get(P.ENTRY).i32(off).add(); else c.i32((ent + off) | 0); }
+/** fallback unless the i32 in local `p` is an address in [64 KiB, USER_END - 256) (a structure the path reads) */
+function guardPtr(c, fallback, p) { c.get(p).i32(0x10000).sub().i32(USER_END - 0x10000 - 0x100).ge_u().br_if(fallback); }
+
+/**
+ * msvcr71's _getptd on its common path, the thread's data allocated: push ebx / esi, GetLastError, TlsGetValue
+ * (__tlsindex) through the pointer the library keeps (TlsGetValue or FlsGetValue), test, SetLastError(the error read
+ * first), eax = the data — 15 instructions. The three calls as the region's inline fast APIs and the dispatcher run them
+ * (translate.js emitInlineApi, runtime.js fastApi): each slot holding that fast API's thunk, no parked call being
+ * resumed, the index below 64 (the TEB's slots); the last error ends as it was. Anything else — the data not allocated
+ * yet (0), or at an address the kernel would not read — takes the exact way. Leaves the data pointer in local `ptd`
+ * (`t`: a scratch local). The stack it writes (ebx, esi, the error pushed, a return address) is the caller's to write.
+ */
+function emitGetptd(c, fallback, k, ent, ptd, t) {
+  c.get(P.STATE).i32load(ST.RESUMING).br_if(fallback);
+  for (const [off, fid] of [[k.gle, FAST.GetLastError], [k.tlsv, FAST.TlsGetValue], [k.sle, FAST.SetLastError]]) {
+    adr(c, ent, off); c.i32load(0).i32(THUNK_BASE).sub().tee(t).i32(THUNK_END - THUNK_BASE).ge_u().get(t).i32(15).and().or().br_if(fallback);
+    c.get(t).i32(4).shr_u().i32load8u(FAST_TABLE).i32(fid).ne().br_if(fallback);
+  }
+  adr(c, ent, k.tlsi); c.i32load(0).tee(t).i32(64).ge_u().br_if(fallback);
+  c.get(P.STATE).i32load(ST.FS_BASE).get(t).i32(2).shl().add().i32load(0xe10).set(ptd);
+  guardPtr(c, fallback, ptd);
+}
+/**
+ * The locale data the string functions read (ptd in `loc` on entry, the locale data after): ptd->ptlocinfo, the library's
+ * current one (__ptlocinfo; else __updatetlocinfo: the exact way), whose LC_CTYPE handle is 0 — the "C" locale (any other:
+ * its tables, the exact way).
+ */
+function emitLocaleC(c, fallback, k, ent, loc) {
+  c.get(loc).i32load(0x64).tee(loc); adr(c, ent, k.ploc); c.i32load(0).ne().br_if(fallback);
+  guardPtr(c, fallback, loc);
+  c.get(loc).i32load(0x14).br_if(fallback);
+}
+
+/**
+ * _stricmp(s1, s2) in the "C" locale: push ebp / ecx / ebx, _getptd (emitGetptd), ebx = its locale data (emitLocaleC),
+ * __ascii_stricmp(s1, s2) — push ebp / edi / esi / ebx, al = 0xff, then at each position s2's byte (al) against s1's
+ * (ah): equal, `or al, al` (0 ends it: equal); different, both folded to lower case ('A'..'Z' + 0x20 through cl) and
+ * compared — equal goes on, else sbb al, al ; sbb al, -1 (-1 or 1, the flags of that sbb) —; movsx eax, al, pops —,
+ * the two arguments popped into ecx (s2 left), pop ebx, leave, ret. 51 instructions, 8 per position equal, 23 per
+ * position different. The strings are read before the frame is written: one reaching the frame below S (or USER_END)
+ * takes the exact way. `L`, `ret`: see emitLibInline; `ent`: the entry (null: the kernel's parameter).
+ */
+function emitStricmp(c, fallback, L, ret, ent, k) {
+  const { S, N, LEN, B1, B2, I, U, J, Q } = L;
+  if (ret !== null) c.get(P.ESP).i32(4).sub().set(S);
+  guardStack(c, fallback, 40, 12, S, ret !== null);
+  if (ret !== null) c.get(S).i32(ret).i32store(0);
+  emitGetptd(c, fallback, k, ent, LEN, U);
+  emitLocaleC(c, fallback, k, ent, LEN);
+  c.get(LEN).extend_u().set(Q); // (the locale data, pushed last: kept in Q)
+  c.get(S).i32load(4).set(B1); c.get(S).i32load(8).set(B2);
+  // LEN = how far both strings may be read: up to the frame for a string below S, else to USER_END
+  for (const [p, first] of [[B1, true], [B2, false]]) {
+    c.get(p).i32(0x10000).sub().i32(USER_END - 0x10000).ge_u().br_if(fallback);
+    c.get(S).i32(40).sub().i32(USER_END).get(p).get(S).lt_u().select().get(p).sub().tee(U).i32(0).le_s().br_if(fallback);
+    if (first) c.get(U).set(LEN); else { c.get(U).get(LEN).get(U).get(LEN).lt_u().select().set(LEN); }
+  }
+  const lower = (x) => { c.get(x).get(x).i32(0x41).sub().i32(26).lt_u().i32(5).shl().add().set(x); };
+  c.i32(51).set(N); c.i32(0).set(I);
+  const done = c.block(), diff = c.block(), eq = c.block();
+  const lp = c.loop();
+  c.get(I).get(LEN).ge_u().br_if(fallback);
+  c.get(B2).get(I).add().i32load8u(0).tee(U).get(B1).get(I).add().i32load8u(0).tee(J).eq();
+  const same = c.if_();
+  c.get(N).i32(8).add().set(N); c.get(U).eqz().br_if(eq);
+  c.else_();
+  c.get(N).i32(23).add().set(N); lower(U); lower(J); c.get(U).get(J).ne().br_if(diff);
+  c.end(); void same;
+  c.get(I).i32(1).add().set(I); c.br(lp);
+  c.end(); void lp;
+  c.end(); // eq: eax 0, the flags of `or al, al` (al 0)
+  c.i32(0).set(P.EAX); c.i32(0).set(P.LZRES); c.i32(LZ.LOGIC << 2).set(P.LZOP); c.i32(0).set(P.LZA); c.i32(0).set(P.LZB);
+  c.br(done);
+  c.end(); // diff: J = s1's byte folded, U = s2's: CF = J < U; sbb al, al ; sbb al, -1
+  c.get(J).get(U).lt_u().set(J);
+  c.i32(-1).i32(1).get(J).select().set(P.EAX);
+  c.i32(0xff).i32(1).get(J).select().set(P.LZRES); c.i32(0).get(J).sub().i32(0xff).and().set(P.LZA); c.i32(0xff).set(P.LZB);
+  c.i32(LZ.SBB << 2).set(P.LZOP);
+  c.end(); void done;
+  // the frame, as the code leaves it
+  const st = (d, emit) => { c.get(S).i32(d).sub(); emit(); c.i32store(0); };
+  st(4, () => c.get(P.EBP)); st(8, () => c.get(P.ECX)); st(12, () => c.get(P.EBX));
+  st(16, () => c.get(B2)); st(20, () => c.get(B1)); st(24, () => adr(c, ent, k.ret)); st(28, () => c.get(S).i32(4).sub());
+  st(32, () => c.get(P.EDI)); st(36, () => c.get(P.ESI)); st(40, () => c.get(Q).wrap());
+  c.get(B2).set(P.ECX);
+}
+
+/**
+ * tolower(c) in the "C" locale: _getptd (emitGetptd), eax = its locale data (emitLocaleC), _tolower_lk(locale, c) —
+ * push ebp / ecx / ebx / esi / edi, its locale's LC_CTYPE handle 0: c - 0x20 for 'A'..'Z' (signed compares with 0x41 and
+ * 0x5a, the flags of the last), c otherwise —, the two arguments popped into ecx (c left), ret. 43 instructions below 'A',
+ * 45 for 'A'..'Z', 46 above.
+ */
+function emitTolower(c, fallback, L, ret, ent, k) {
+  const { S, N, LEN, B1, U } = L;
+  if (ret !== null) c.get(P.ESP).i32(4).sub().set(S);
+  guardStack(c, fallback, 32, 8, S, ret !== null);
+  if (ret !== null) c.get(S).i32(ret).i32store(0);
+  emitGetptd(c, fallback, k, ent, LEN, U);
+  emitLocaleC(c, fallback, k, ent, LEN);
+  c.get(S).i32load(4).set(B1);
+  const st = (d, emit) => { c.get(S).i32(d).sub(); emit(); c.i32store(0); };
+  st(4, () => c.get(B1)); st(8, () => c.get(LEN)); st(12, () => adr(c, ent, k.ret)); st(16, () => c.get(P.EBP));
+  st(20, () => c.get(P.ECX)); st(24, () => c.get(P.EBX)); st(28, () => c.get(P.ESI)); st(32, () => c.get(P.EDI));
+  c.get(B1).set(P.ECX);
+  c.i32((LZ.SUB << 2) | 2).set(P.LZOP); c.get(B1).set(P.LZA);
+  c.get(B1).i32(0x41).lt_s();
+  const below = c.if_();
+  c.i32(43).set(N); c.get(B1).set(P.EAX); c.i32(0x41).set(P.LZB);
+  c.else_();
+  c.i32(0x5a).set(P.LZB);
+  c.get(B1).i32(0x5a).le_s();
+  const upper = c.if_(); c.i32(45).set(N); c.get(B1).i32(0x20).add().set(P.EAX); c.else_(); c.i32(46).set(N); c.get(B1).set(P.EAX); c.end(); void upper;
+  c.end(); void below;
+  c.get(B1).get(P.LZB).sub().set(P.LZRES);
+}
+
+/**
+ * strtok(str, control): push ebp, sub esp, 0x28, the security cookie at [ebp-4], push ebx / esi / edi, _getptd (its data
+ * at [ebp-0x28]), a 32-byte bitmap at [ebp-0x24] zeroed (rep stosd) and a bit set for each byte of `control` and its
+ * terminator; then from `str` — or, null, the data's _token (+0x18) — the delimiters skipped, the token up to the next
+ * delimiter (a 0 written over it, the next search after it) or the terminator (the next search there); _token = the next
+ * search, eax = the token or 0 (none left), ecx = the cookie, pops, __security_check_cookie (cmp ecx, cookie: its flags),
+ * leave, ret. Instructions: 33; 12 per byte of `control` and its terminator; 3 (6 with str null); 14 per delimiter
+ * skipped; then 18 at the terminator (no token), or 15 and 13 per byte of the token, 1 at a terminator after it or 12 at
+ * a delimiter; 17 at the end.
+ * As the code, the frame (the pushes, the cookie, the data, the bitmap) is written before the strings are read; all that
+ * would take the exact way is checked before it but a string reaching the frame or USER_END before its terminator and
+ * translated code, a watch or a page never mapped under the 0 written — those leave the exact way after it, whose code
+ * writes the frame again with the same values before reading the strings. A string may not start in the frame.
+ */
+function emitStrtok(c, fallback, L, ret, ent, k) {
+  const { S, N, LEN, B1, B2, I, U, J, Q } = L;
+  if (ret !== null) c.get(P.ESP).i32(4).sub().set(S);
+  guardStack(c, fallback, 0x4c, 12, S, ret !== null);
+  if (ret !== null) c.get(S).i32(ret).i32store(0);
+  emitGetptd(c, fallback, k, ent, LEN, U);
+  // _token's store: no translated code, watch or page never mapped there, not across pages, not over the cookie
+  const plain = (a) => { // (a byte or dword stored at the address in local `a`)
+    c.get(a).i32(12).shr_u().i32load8u(SMC_MAP_BASE).i32(SMC_CODE | SMC_WATCH | SMC_NULL).and().br_if(fallback);
+    c.get(a); adr(c, ent, k.cookie); c.sub().i32(3).add().i32(7).lt_u().br_if(fallback);
+  };
+  c.get(LEN).i32(0x18).add().tee(U).i32(0xfff).and().i32(0xffc).gt_u().br_if(fallback);
+  plain(U);
+  // B2 = the string (N: 36, 39 from _token), B1 = the control; how far each may be read (as _stricmp's): J, Q
+  c.get(S).i32load(4).tee(B2);
+  const given = c.if_(); c.i32(36).set(N); c.else_(); c.get(LEN).i32load(0x18).set(B2); c.i32(39).set(N); c.end(); void given;
+  c.get(S).i32load(8).set(B1);
+  for (const p of [B2, B1]) {
+    c.get(p).i32(0x10000).sub().i32(USER_END - 0x10000).ge_u().br_if(fallback);
+    c.get(S).i32(0x4c).sub().i32(USER_END).get(p).get(S).lt_u().select().get(p).sub().tee(J).i32(0).le_s().br_if(fallback);
+    if (p === B2) c.get(J).extend_u().set(Q);
+  }
+  // the frame as the code has written it when it reads the strings (_getptd's pushes: ebx, esi = control, the last
+  // error, SetLastError's return address; push 7 over push 8 over its own return address)
+  const st = (d, emit) => { c.get(S).i32(d).sub(); emit(); c.i32store(0); };
+  st(4, () => c.get(P.EBP)); st(8, () => { adr(c, ent, k.cookie); c.i32load(0); }); st(0x2c, () => c.get(LEN));
+  st(0x30, () => c.get(P.EBX)); st(0x34, () => c.get(P.ESI)); st(0x38, () => c.get(P.EDI)); st(0x3c, () => c.i32(7));
+  st(0x40, () => c.get(P.EBX)); st(0x44, () => c.get(B1)); st(0x48, () => c.get(P.STATE).i32load(ST.FS_BASE).i32load(0x34));
+  st(0x4c, () => adr(c, ent, k.gret));
+  c.get(S).i32(0x28).sub().set(U);
+  for (const o of [0, 8, 16, 24]) c.get(U).i64(0n).i64store(o, 0);
+  // a bit for each byte of the control and its terminator
+  const cell = () => { c.get(S).i32(0x28).sub().get(U).i32(3).shr_u().add(); };
+  c.i32(0).set(I);
+  const bits = c.loop();
+  c.get(I).get(J).ge_u().br_if(fallback);
+  c.get(B1).get(I).add().i32load8u(0).set(U);
+  cell(); cell(); c.i32load8u(0).i32(1).get(U).i32(7).and().shl().or().i32store8(0);
+  c.get(N).i32(12).add().set(N); c.get(I).i32(1).add().set(I);
+  c.get(U).br_if(bits);
+  c.end(); void bits;
+  // the string: B1 = where the token starts, I = where the next search will (its index)
+  c.get(Q).wrap().set(J);
+  const at = () => { c.get(I).get(J).ge_u().br_if(fallback); c.get(B2).get(I).add().i32load8u(0).set(U); };
+  const bit = () => { cell(); c.i32load8u(0).get(U).i32(7).and().shr_u().i32(1).and(); };
+  c.i32(0).set(I);
+  const done = c.block(), tok = c.block();
+  const lead = c.loop();
+  at();
+  bit(); c.eqz(); const first = c.if_(); c.get(N).i32(15).add().set(N); c.br(tok); c.end(); void first;
+  c.get(U).eqz(); const none = c.if_(); c.get(I).set(B1); c.get(N).i32(18).add().set(N); c.br(done); c.end(); void none;
+  c.get(N).i32(14).add().set(N); c.get(I).i32(1).add().set(I); c.br(lead);
+  c.end(); void lead;
+  c.end(); // tok
+  c.get(I).set(B1);
+  const scan = c.loop();
+  c.get(N).i32(13).add().set(N); c.get(I).i32(1).add().set(I); at();
+  c.get(U).eqz(); const end = c.if_(); c.get(N).i32(1).add().set(N); c.br(done); c.end(); void end;
+  bit(); const delim = c.if_();
+  c.get(N).i32(12).add().set(N);
+  c.get(B2).get(I).add().set(U); plain(U); c.get(U).i32(0).i32store8(0);
+  c.get(I).i32(1).add().set(I); c.br(done);
+  c.end(); void delim;
+  c.br(scan);
+  c.end(); void scan;
+  c.end(); void done;
+  c.get(N).i32(17).add().set(N);
+  c.get(B2).get(I).add().set(P.EDX);
+  c.get(B2).get(B1).add().i32(0).get(B1).get(I).ne().select().set(P.EAX); // (and eax, ebx after neg / sbb: 0 for no token)
+  c.get(LEN).get(P.EDX).i32store(0x18, 0);
+  st(0x30, () => adr(c, ent, k.ret));
+  c.get(S).i32(8).sub().i32load(0).tee(P.ECX).set(P.LZA); c.get(P.ECX).set(P.LZB); c.i32(0).set(P.LZRES); c.i32((LZ.SUB << 2) | 2).set(P.LZOP);
 }
 /** equal: eax = 0, the flags of the last `kind` instruction (a, b: its operands, the result 0) */
 function eqFlags(c, kind, a, b) {
