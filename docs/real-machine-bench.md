@@ -330,6 +330,18 @@ n-th draw of every other frame — a flicker on purpose, to check the whole chai
 synthetic frames (a square drawn red and blue in turn by a uniform over still stripes: one record, three decodable
 pictures red / blue / red, 1-2 differing in the draw's uniforms and 1-3 not, 77 KB, WebGL's methods native again).
 
+**Uniform check** (`?dbg=ORTHROS_GL_UNIFORM_CHECK=1`, host-only, switchable at a present; since 2026-11-18): the
+backend uploads a program's uniforms only when their source changed since that program last received them (per-program
+caches, `d3d8-webgl.js` applyState). With the check, every draw reads back from GL the program in use and the values
+those caches skip while unchanged — texture factor, alpha reference, fog color, ambient color, viewport and depth range,
+the target's orientation (`getUniform`, a round trip each: slow, a diagnostic) — and compares them with the draw's own
+state; a stale one is logged with the draw and program (`d3d-webgl: uniform check: stale ...`), and every 150 frames a
+line says how many draws were checked. A picture that shows other values while this finds none stale points below
+WebGL (the browser's GL implementation or the driver). `?dbg=ORTHROS_GL_NOCACHE=1` (the A/B, host-only as well): the
+backend's per-draw caches off, every uniform of the draw's program sent again at every draw — a fault that goes away
+with it is one of values GL was believed to hold. Where the draw probe (docs/aotr-play.md "The draw probe") compares
+only TEXTUREFACTOR along the chain, the check reads GL's own copy of each of these values at every draw.
+
 **GL calls**: during a 30-frame window every 20 s the context's methods are wrapped by counting closures (calls made
 through the context object; the wrapping is removed after the window; it stays away while a frame capture, GL timing or
 the GL null mode wraps the methods themselves).

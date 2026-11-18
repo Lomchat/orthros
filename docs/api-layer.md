@@ -542,9 +542,17 @@ as a precomputed plan in one call. Measured here first — AotR skirmish (`fixes
   and draw.
 - Vertex and pixel constants are synced per stage only when that stage's constants changed; integer / boolean constant
   and bump-environment uniform locations are cached per program.
+- A program's uniforms are sent only when their source changed since that program last received them (`P.v`: per
+  group, by the device's versions). The viewport and depth range (`u_viewport`, `u_depthRange`) are keyed on
+  `viewportVersion` and on the viewport object: SetRenderTarget (Direct3D 8 and 9) replaces the viewport with the new
+  target's surface without moving the version, and every writer of `dev.viewport` replaces the object (the render
+  worker's mirror too). Before 2026-11-18 a program drawing into the new target kept the previous target's size (58 of
+  1 784 draws of 16 random Direct3D 8 / 9 sessions, uniform check on; none since).
 
 Test: `gl-state-cache.test.js` drives random Direct3D 8 / 9 sessions over a GL that tracks its effective state and checks
-that every draw sees the same GL state, and every upload the same data, with and without these caches.
+that every draw sees the same GL state — the programs' uniform values included —, and every upload the same data, with
+and without these caches (`dbg:ORTHROS_GL_NOCACHE=1`, the reference run, sends every uniform at every draw);
+`gl-uniforms.test.js`, the viewport after SetRenderTarget and two devices on one context, in both render paths.
 
 ## D3DX image work during map loads (src/win32/d3dx9-image.js, d3dx9-image-wasm.js)
 
@@ -752,8 +760,8 @@ Harness inputs (tools/headless.mjs): `dbg:ORTHROS_API_OPT_OFF=1` switches all of
 the D3DX image work: of that section, `ORTHROS_API_OPT_OFF` and `ORTHROS_D3DX_FAST_OFF` cover only the surface `GetDesc`
 fast path, `dbg:ORTHROS_DXT_WASM=0` puts the image kernels (and the helpers' encoder) back on JavaScript, and the GUID
 string cache, the header-only TGA / BMP information, DDS files read in place and the lighter `LockRect` have no switch;
-`dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches; `dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths;
-`dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods);
+`dbg:ORTHROS_GL_NOCACHE=1` only the backend's caches (its per-program uniform caches included);
+`dbg:ORTHROS_D3DX_FAST_OFF=1` only the JIT fast paths; `dbg:ORTHROS_FX_BIND_OFF=1` only the effect binding above (raw words, versions, sampler shortcut, resolved methods);
 `dbg:ORTHROS_FX_DEFER_OFF=1` only the queued `SetTechnique` / `Begin` / `End` (also off with the D3DX fast paths).
 Scenarios `tools/scenarios/{bfme2,rotwk}-apiopt-{ab,ba}.txt` alternate 20 s phases on / off in play (both orders),
 `{bfme2,rotwk}-fxbind-ab.txt` the same for the effect binding, `{bfme2,rotwk}-fxdefer-{ab,ba}.txt` for the queued

@@ -1,8 +1,10 @@
 // The WebGL backend's per-draw caches (d3d8-webgl.js applyState: a stage's sampler object kept while its sampler states
 // and texture did not change; the depth / stencil / blend / color mask / culling block skipped while the render states
-// did not change; glTexture: a texture whose levels are all uploaded and clean not scanned): random Direct3D 8 and 9 sessions (state changes, state blocks, resource work, clears, presents, draws)
-// over a GL that tracks its effective state give, at every draw, the same GL state with the caches as without them, and
-// the same uploads.
+// did not change; glTexture: a texture whose levels are all uploaded and clean not scanned; the programs' uniforms sent
+// only when their source changed — without the caches every uniform is sent at every draw): random Direct3D 8 and 9
+// sessions (state changes, state blocks, resource work, clears, presents, draws) over a GL that tracks its effective
+// state, each program's uniform values included, give at every draw the same GL state with the caches as without them,
+// and the same uploads. (The viewport after SetRenderTarget, which did not move the uniform cache's key, was found so.)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomSession } from './d3d-random.js';
@@ -73,7 +75,7 @@ function stateGl() {
 }
 
 for (const api9 of [true, false]) {
-  test(`GL state at every draw with the backend's sampler and raster caches as without them (Direct3D ${api9 ? 9 : 8})`, () => {
+  test(`GL state at every draw with the backend's caches as without them (Direct3D ${api9 ? 9 : 8})`, () => {
     let compared = 0;
     for (let seed = 1; seed <= depth(4, 3); seed++) { // (3 seeds: the 300 draws compared)
       const run = (noStateCache) => { const gl = stateGl(); randomSession({ createDevice: (dev) => new WebGLDevice(gl, dev, { noStateCache }) }, seed, api9, () => {}); return gl; };

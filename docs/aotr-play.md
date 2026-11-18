@@ -424,6 +424,48 @@ back (picture 22 at the 8th place twice, 20 at the 5th, 24 at the 11th); from on
 Dips that follow the animation's state rather than time point to a value derived from that state (the game's, or one
 Orthros keeps from an earlier draw) more than to a GPU race — which the draw probe below tells apart.
 
+**A stale uniform in Orthros' GL layer? Not found for the veil; two other faults fixed** (2026-11-18). His dip values are
+the fade-in's TEXTUREFACTORs, as if the veil's GL program kept an old `u_tfactor` while the backend's per-program cache
+(`P.v`: a uniform sent only when its source changed since that program last received it) believed it current. What
+differs from the Node runs above is his page's: the learned programs compiled ahead (`/api/programs`, resolved between
+slices or taken at a draw), parallel compilation, the render worker's mirror. Checked (on that day's build, 658ce14 and
+this work, before the context-wide GL state cache below was merged):
+- **Over a GL that keeps each program's uniform values** (exploration scripts, random Direct3D 8 / 9 sessions of
+  tests/d3d-random.js; at every draw the program GL has in use and its values against the draw's state): sessions given
+  the programs an earlier session learned — prewarmed, resolved at random fence and completion points, parallel or
+  not, taken resolved or not —, in-thread and through the recorder and mirror (`createInlineGfx`): 0 stale in ~5 000
+  draws once the viewport below was fixed (a corrupted `u_tfactor` is found: the check works).
+- **In the browser, as his page runs** (headless Chromium, SwiftShader; RotWK 2.02 from a fresh profile at 1024x768,
+  rotwk-skirmish.txt's start then Escape; the harness server given a copy of the live learned data: `programs: 115
+  learned from earlier sessions, compiled ahead` — without parallel compilation, which SwiftShader does not offer: that
+  path only in the scripts above —; `dbg:ORTHROS_GL_UNIFORM_CHECK=1`, docs/real-machine-bench.md "Uniform check", on
+  from the start): render worker (his path) 263 495 draws read back from the main menu to ~450 pause frames (the
+  fade-in included), 0 stale; in-thread backend (`--glworker 0`) 227 551 draws to ~420 pause frames, 0 stale (viewport
+  and depth range checked too, with the fix below); 140 consecutive pause frames grabbed in each path (and in a first
+  render-worker run): the scene around the menu identical to 0.01 of a luminance level in every frame — no dip.
+So the backend sends the veil its 0xcc000000 at every draw that needs it, in both paths, with his program cache. A dip
+that remains on his GPU is either the game's value (the display report's `tf`, the draw probe below) or what the GPU
+stack makes of a value WebGL holds: a session with `?dbg=ORTHROS_GL_UNIFORM_CHECK=1` says which side of WebGL (slow: a
+round trip per value per draw), and `?dbg=ORTHROS_GL_NOCACHE=1` (every uniform sent again at every draw since then)
+whether sending it again makes the dips go.
+
+**Fixed on the way** (generic; not his veil, whose draw is not pre-transformed and whose page has one device):
+- **The viewport after SetRenderTarget**: Direct3D 8 / 9 reset the viewport to the new target's surface (d3d8.js,
+  d3d9.js SetRenderTarget) without moving `viewportVersion`, the per-program cache's key for `u_viewport` and
+  `u_depthRange`: a program drawing into the new target before the next SetViewport kept the viewport it last received —
+  another target's size, which maps pre-transformed (RHW) vertices and the half-pixel offset. On main (wave 5 merged),
+  58 of 1 784 draws of 16 random sessions ran with a stale `u_viewport` (7 with a stale `u_depthRange` too); none since.
+  The cache now keys it on the viewport object as well (d3d8-webgl.js applyState; every writer of `dev.viewport`
+  replaces the object, the render worker's mirror too — the recorder already sends a new viewport by its object). Only
+  the WebGL backend changed, not d3d8.js / d3d9.js: the snapshot key's sources are the same (src/gfx is outside them).
+  tests/gl-state-cache.test.js found it once `ORTHROS_GL_NOCACHE` covered the uniforms (its run without caches is the
+  reference); tests/gl-uniforms.test.js shows it in both render paths.
+- **Two devices on one GL context** (a process with two devices; a launcher's and its game's share the page's or the
+  render worker's context), found by the same work: a device drawing after the other found its program "in use" and ran
+  with the other's program, uniforms and vertex array. Fixed on main by the context-wide GL state cache (docs/api-layer.md
+  "WebGL backend", `programCache.glCtx`); tests/gl-uniforms.test.js checks, in both render paths, that each device's
+  draws run with its own program, `u_tfactor` and vertex array, a device's vertex buffer destroyed after the other drew.
+
 ## The draw probe (2026-11-18): the decisive record, without the player
 
 `src/gfx/draw-probe.js` (the record and its analysis: `src/shared/draw-probe.js`; reader: `tools/dev/draw-probe.mjs`)

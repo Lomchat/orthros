@@ -236,11 +236,12 @@ export class WebGLDevice {
     this.drawProbe = null; this.dprobe = null; this.fakeHook = null;
     this.dumpShaders = !!opts.dumpShaders;
     this.noCull = !!opts.noCull;
-    // (measurement / tests: the draw's sampler and raster states derived again at every draw, as before their caches;
-    // dbg:ORTHROS_GL_NOCACHE=1 switches it within a session)
+    // (measurement / tests: the draw's sampler and raster states derived again at every draw, as before their caches, and
+    // its program's uniforms all sent again; dbg:ORTHROS_GL_NOCACHE=1 switches it within a session)
     this.noStateCacheOpt = !!opts.noStateCache;
     this.glValidate = !!globalThis.ORTHROS_GL_VALIDATE; // (debugging: cached GL state checked against GL, see validateGlState)
     if (this.glValidate) this.log('d3d-webgl: GL state cache validation on (first 3000 draws, then every 97th)');
+    this.uniformCheck = globalThis.ORTHROS_GL_UNIFORM_CHECK > 0; // (debugging: the draws' uniforms read back from GL, see checkUniforms)
     this.frameSig = 0; this.sigSeq = 0; this.sigOn = false; // (the frame's command signature, made while sigOn: sigMix)
     // (and its values record, made with it: valDraw — `valFrame` the last signed frame's, read at its present)
     this.valSig = 0; this.valN = 0; this.valTf = new Uint32Array(256); this.valPrev = new Uint32Array(256); this.valPrevN = -1; this.valFrame = null;
@@ -1014,6 +1015,8 @@ export class WebGLDevice {
     // (the GL call counter keeps away from the probes that wrap or replace GL methods themselves)
     if (this.probe) this.probe.busy = !!(globalThis.ORTHROS_GL_TIME || this.glTime || this.glNull || globalThis.ORTHROS_GL_NULL || this.capturing || this.countLeft || this.captureAt > this.frame || this.glCallCounts || this.probe.flicker?.recording);
     this.fakeFlicker = globalThis.ORTHROS_FAKE_FLICKER > 0 ? globalThis.ORTHROS_FAKE_FLICKER | 0 : 0; this.fakeN = 0;
+    this.uniformCheck = globalThis.ORTHROS_GL_UNIFORM_CHECK > 0;
+    if (this.uniformCheck && this.frame % 150 === 0) this.log(`d3d-webgl: uniform check: ${this.stats.uniformChecks ?? 0} draws checked, ${this.stats.uniformStale ?? 0} stale (frame ${this.frame})`);
     this.dprobe = this.drawHooks(); // (the next frame's draw hooks: draw probe, fakeTfDraw)
     if (globalThis.ORTHROS_GL_TIME || this.glTime || !!globalThis.ORTHROS_GL_NULL !== !!this.glNull) this.glProbeStep();
     if (this.pc?.queue.length) this.prewarmStep();
@@ -1640,6 +1643,9 @@ export class WebGLDevice {
       if (gs.scx !== sx || gs.scy !== sy || gs.scw !== sw || gs.sch !== sh) { gl.scissor(sx, sy, sw, sh); gs.scx = sx; gs.scy = sy; gs.scw = sw; gs.sch = sh; }
     } else this.glEnable(gl.SCISSOR_TEST, false);
     if (gs.prog !== P.prog) { gl.useProgram(P.prog); gs.prog = P.prog; }
+    // (dbg:ORTHROS_GL_NOCACHE=1, measurement and A/B: the program's uniform caches dropped — every uniform sent again at
+    // every draw, whatever GL is believed to hold)
+    if (this.noStateCache) { P.v = undefined; P.cs = null; P.ibU = undefined; }
     const U = P.u;
     const pv = P.v ?? (P.v = { flip: undefined, t: -1, vp: -1, l: -1, lt: -1, ls: -1, s: -1, c: -1, pk: 1 });
     if (pv.pk !== tgt.kx) { pv.pk = tgt.kx; pv.s = -1; } // (the point size follows the target's scale: render states compared again)
@@ -1656,8 +1662,12 @@ export class WebGLDevice {
       const xu = P.xfU ??= transformUniforms(U);
       for (let i = 0; i < xu.length; i += 2) this.uploadTransform(seen, xu[i], xu[i + 1], tsv, tall);
     }
-    if (pv.vp !== dev.viewportVersion) {
-      pv.vp = dev.viewportVersion;
+    // (the viewport by its object as well: SetRenderTarget replaces it with the target's whole surface without moving
+    // viewportVersion — a program drawing into the new target kept the previous viewport's size, which maps pre-
+    // transformed vertices and the half-pixel offset; every writer of dev.viewport replaces the object, the render
+    // worker's mirror too)
+    if (pv.vp !== dev.viewportVersion || pv.vpo !== v) {
+      pv.vp = dev.viewportVersion; pv.vpo = v;
       if (U('u_viewport')) gl.uniform4f(U('u_viewport'), v.x, v.y, v.w, v.h);
       if (U('u_depthRange')) gl.uniform2f(U('u_depthRange'), v.minZ, v.maxZ);
     }
@@ -1741,6 +1751,7 @@ export class WebGLDevice {
         if (psCh) { if (ib.pi) syncInts(gl, ib.p, ib.pi, dev.psConstI); if (ib.pb.length) syncBools(gl, ib.p, ib.pb, dev.psConstB); }
       }
     }
+    if (this.uniformCheck) this.checkUniforms(P, info, flip);
     // textures + samplers
     // (locations, per program; dbg:ORTHROS_GL_NOCACHE=1: looked up by name per draw, as before — measurement)
     const texU = this.noStateCache ? null : P.texU ??= { tex: TEX_U.tex.map((n) => U(n)), cube: TEX_U.cube.map((n) => U(n)), vol: TEX_U.vol.map((n) => U(n)) };
@@ -1813,6 +1824,36 @@ export class WebGLDevice {
     }
     this.applyRaster(dev, gs, flip, cm);
     rc.gs = gs; rc.seq = ++gs.rseq; rc.rs = rsT; rc.ver = wv; rc.flip = flip; rc.cm = cm; rc.dev = dev;
+  }
+  /**
+   * Debugging (dbg:ORTHROS_GL_UNIFORM_CHECK=1, switched at a present): at each draw, once its uniforms are sent, the
+   * program GL has in use and the values the per-program caches skip while unchanged (P.v: the texture factor, alpha
+   * reference, fog color, ambient color, viewport and depth range, the target's orientation) read back from GL
+   * (getUniform: a round trip each) and compared with the draw's own state — a value the program does not hold (a cache
+   * that believes it current while GL has another: a program re-linked or swapped, values sent while another program was
+   * in use) is counted (stats.uniformStale, of stats.uniformChecks) and the first ones logged with the draw. On a GPU
+   * whose pictures show other values while these agree, the difference is below WebGL (the browser's GL implementation
+   * or the driver).
+   */
+  checkUniforms(P, info, flip) {
+    const gl = this.gl, st = this.stats, U = P.u, bad = [];
+    st.uniformChecks = (st.uniformChecks ?? 0) + 1;
+    const cur = gl.getParameter(gl.CURRENT_PROGRAM);
+    if (cur !== P.prog) bad.push('another program in use than the draw\'s, which the GL state cache names');
+    else {
+      const want = new Float32Array(4), v = this.dev.viewport, show = (x) => (x && typeof x === 'object' ? Array.from(x).map((y) => +y.toFixed(4)).join(',') : x);
+      const vec = (name, w) => { const l = U(name); if (!l) return; const got = gl.getUniform(P.prog, l); if (!got || w.some((x, i) => got[i] !== Math.fround(x))) bad.push(`${name} ${show(got)} instead of ${show(w)}`); };
+      const one = (name, w) => { const l = U(name); if (!l) return; const got = gl.getUniform(P.prog, l); if (got !== Math.fround(w)) bad.push(`${name} ${got} instead of ${Math.fround(w)}`); };
+      vec('u_tfactor', colorToVec(this.rs(RS.TEXTUREFACTOR, 0xffffffff), want));
+      vec('u_fogColor', colorToVec(this.rs(RS.FOGCOLOR, 0), want));
+      vec('u_viewport', [v.x, v.y, v.w, v.h]); vec('u_depthRange', [v.minZ, v.maxZ]);
+      one('u_alphaRef', (this.rs(RS.ALPHAREF, 0) & 0xff) / 255);
+      one('u_flipY', flip ? -1 : 1);
+      if (info.lighting) vec('u_ambient', colorToVec(this.rs(RS.AMBIENT, 0), want));
+    }
+    if (!bad.length) return;
+    const n = st.uniformStale = (st.uniformStale ?? 0) + 1;
+    if (n <= 20 || (n & (n - 1)) === 0) this.log(`d3d-webgl: uniform check: stale at draw ${st.draws} (frame ${this.frame}, ${n} so far): ${bad.join('; ')} — program ${String(P.key).slice(0, 160)}`);
   }
   /**
    * (dbg:ORTHROS_GL_CACHE_CHECK=1: what a per-draw cache skipped is derived anyway and compared — a difference is a stale
