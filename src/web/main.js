@@ -26,6 +26,8 @@ import { pageStorage, withStorage } from './storage-persist.js';
 import { snapshotKey } from './snapshot-key.js';
 import { compatKey } from '../core/compat-stats.js';
 import { fetchSharedSnapshot, dropPieces } from './snapshot-fetch.js';
+import { ScreenRecorder } from './screen-report.js';
+import { DISPLAY_REPORT_VERSION } from '../shared/display-report.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -483,7 +485,7 @@ function onWorkerMessage(m) {
       if (state.snapshotFrom === 'shared') { try { sessionStorage.setItem(SHARED_FAILED + state.snapshotKey, '1'); } catch { /* storage off */ } dropPieces(() => snapshotDir(state.manifest)); } // (else the reload fetches it again: a loop)
       dropSnapshot(state.manifest).then(() => { if (!headless) location.reload(); });
       break;
-    case 'log': if (m.msg?.event === 'flicker-capture') sendFlickerCapture(m.msg); else log(m.kind, m.msg); break; // (the GL backend's flicker capture rides its log channel: gfx/flicker-capture.js)
+    case 'log': if (m.msg?.event === 'flicker-capture') sendFlickerCapture(m.msg); else if (m.msg?.event === 'display-report-bb') { if (state.reportWait?.id !== m.msg.id) break; if (m.msg.started) state.screenRec?.extendTo(m.msg.started); else state.reportWait.resolve(m.msg); } else log(m.kind, m.msg); break; // (the GL backend's flicker capture and its half of a display report ride its log channel: gfx/flicker-capture.js, gfx/frame-report.js)
     case 'stdout': log('stdout', m.text); break;
     case 'started': if (state.sharedSnapshotCopy) { storeSnapshot(state.manifest, state.snapshotKey, state.sharedSnapshotCopy).catch(() => {}).then(() => dropPieces(() => snapshotDir(state.manifest))); state.sharedSnapshotCopy = null; } state.status = 'running'; state.firstLaunch = !!m.firstLaunch; if (m.profile?.length) telemetryEvent({ event: 'profile', files: m.profile }); break;
     case 'dbg': if (/^ORTHROS_HOST_TIMER_HELPER_[A-Z]+$/.test(m.k)) { window[m.k] = m.v === undefined || m.v === '' ? undefined : m.v; state.timerHelper?.apply(); } break; // (harness dbg: steps for the page's own switches, forwarded by the worker)
@@ -498,9 +500,9 @@ function onWorkerMessage(m) {
       if (m.frames !== state.lastFrames || m.videoFrames !== state.lastVideoFrames) { state.lastFrames = m.frames; state.lastVideoFrames = m.videoFrames; state.lastNewFrameAt = Date.now(); } // (a movie playing: new pictures, not a loading wait)
       if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30 || m.videoFrames > 0) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, a few GDI frames, or a movie's first picture) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } noteAudio(m); recordSample(m); renderHud(); break;
     case 'gl-port': m.port.onmessage = (e) => onWorkerMessage(e.data); break; // (the render worker's frames, logs, captures)
-    case 'frame': { const c = $(m.layer === 'gl' ? 'gl' : m.layer === 'video' ? 'vid' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : m.layer === 'video' ? state.ctxVideo : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
-    case 'video': $('vid').style.visibility = m.visible ? 'visible' : 'hidden'; break; // (a movie's video window, above the game's layers: quartz.js)
-    case 'mode': resizeTo(m.width, m.height); break;
+    case 'frame': { state.screenRec?.arrived(m.layer, m.bitmap.width, m.bitmap.height, m.dframe); const c = $(m.layer === 'gl' ? 'gl' : m.layer === 'video' ? 'vid' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : m.layer === 'video' ? state.ctxVideo : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
+    case 'video': state.screenRec?.note('video', !!m.visible); $('vid').style.visibility = m.visible ? 'visible' : 'hidden'; break; // (a movie's video window, above the game's layers: quartz.js)
+    case 'mode': state.screenRec?.note('mode', `${m.width}x${m.height}`); resizeTo(m.width, m.height); break;
     case 'lan': { state.lan = { ip: m.ip, peers: m.peers, refused: !!m.refused }; const el = $('tbLan'); if (!el) break; el.classList.toggle('hidden', (!m.ip && !m.refused) || headless); el.classList.toggle('off', !!m.refused); el.querySelector('b').textContent = m.refused ? TEXT.lanOffShort : m.peers; el.title = m.refused ? TEXT.lanOff : TEXT.lan(m.ip, m.peers); break; }
     case 'profile-dates': noteProfileDates(state.profileKey, m.dates); break;
     case 'profile-changed': profileChanged(); break;
@@ -509,7 +511,7 @@ function onWorkerMessage(m) {
     case 'cursor-pos': pointer.cursorReport(m.x, m.y, m.seq); if (state.pointerLocked) drawSoftCursor(); break; // (the guest cursor: SetCursorPos warps, clipping, the moves taken)
     case 'cursor-def': { const frames = m.frames.map((f) => { const u8 = new Uint8Array(f.png); let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return `url(data:image/png;base64,${btoa(bin)}) ${f.hotX} ${f.hotY}, auto`; }); (state.cursors ??= new Map()).set(m.id, { frames, steps: m.steps }); break; }
     case 'cursor-set': state.cursor = m.id !== undefined ? { id: m.id } : { system: m.system }; applyCursor(); break;
-    case 'gl': $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
+    case 'gl': state.screenRec?.note('gl', !!m.active); $('gl').style.zIndex = m.active ? '2' : '0'; $('c2d').style.zIndex = m.active ? '1' : '2'; $('gl').style.visibility = m.active ? 'visible' : 'hidden'; break;
     case 'audio-voices': state.audioVoices = { type: 'voices', memory: m.memory, voices: m.voices }; state.audioNode?.port.postMessage(state.audioVoices); break; // (the AudioWorklet mixes the game's sound buffers itself)
     case 'exit': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); sendCompat(true); telemetryEvent({ event: 'exit', code: m.code, reason: m.reason ?? null, report: m.report ? String(m.report).slice(0, 30000) : null, log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); if (m.report) log('crash', m.report); state.status = 'exited'; state.exitCode = m.code; state.perf?.end(); log('crash', `process exited with code ${m.code}${m.reason ? ` (${m.reason})` : ''}`); if (!headless) showStatus(TEXT.exited(state.title), TEXT.exitCode(m.code, m.reason), null, m.code !== 0, true); cloud?.push(); break;
     case 'crash': $('busy').classList.add('hidden'); hideLoader(true); releaseGuestCursor(); sendCompat(true); telemetryEvent({ event: 'crash', report: String(m.report).slice(0, 30000), log: state.logs.slice(-80).map((l) => l.slice(0, 600)) }); state.status = 'crashed'; state.crash = m.report; state.perf?.end(); log('crash', m.report); if (!headless) showStatus(TEXT.crashed(state.title), TEXT.crashDetail, m.report, true, true); break;
@@ -597,6 +599,7 @@ function makeShell(name, manifest, language) {
     onPerf: () => $('perfPanel').classList.toggle('hidden'), onFullscreen: () => enterPlayMode(), onMouse: () => capturePointer(),
     onQuit: () => saveNow(), saves: () => cloud,
     onSignedIn: (user) => lateSignIn(name, user),
+    onReport: state.telemetry ? (o) => reportDisplay(o) : null, // (a display report: sent with the telemetry — none without it)
   });
   window.orthrosShell = shell;
 }
@@ -797,6 +800,41 @@ function sendFlickerCapture(rec) {
   if (!state.telemetry) { log('gfx', `${what}; not sent (no telemetry)`); return; }
   fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).then((r) => log(r.ok ? 'gfx' : 'warn', `${what}; sent, server ${r.status}`), (e) => log('warn', `${what}; not sent: ${e?.message ?? e}`));
 }
+/**
+ * A display report (the frame's "report a display problem", Ctrl+Shift+F — shell.js; src/shared/display-report.js):
+ * the renderer asked for its half through the worker debug global ORTHROS_FLICKER_REPORT=<id> (the worker's `dbg`
+ * message, which it forwards to the render worker: src/web/worker.js, a snapshot source, unchanged) while the page
+ * records what the screen shows (screen-report.js); the renderer's half comes back on its log channel (onWorkerMessage
+ * 'log'), at most REPORT_WAIT_MS after the page's. Sent alone, as the flicker capture, with what the page knows of the
+ * session: { ok } or { ok: false, why, again } for the shell. window.orthros.reportDisplay() does the same (a harness
+ * run reads the record at window.__orthrosDisplayReport).
+ */
+const REPORT_WAIT_MS = 10000;
+let reportSeq = 0;
+async function reportDisplay({ recorded } = {}) {
+  if (!state.worker || state.status !== 'running') return { ok: false, why: 'the game is not running', again: true };
+  const id = ++reportSeq, notes = [];
+  const bbPart = new Promise((resolve) => { state.reportWait = { id, resolve }; });
+  const rec = state.screenRec = new ScreenRecorder({ layers: ['c2d', 'gl', 'vid'].map($), names: ['2d', 'gl', 'video'], frame: $('frame'), overlays: ['loader', 'busy', 'toast', 'ask', 'perfPanel', 'status', 'soundHint', 'softcursor', 'log'].map((k) => document.getElementById(k)) });
+  state.worker.postMessage({ type: 'dbg', kv: `ORTHROS_FLICKER_REPORT=${id}` });
+  let screen = null;
+  try { screen = await rec.run(); } catch (e) { notes.push(`screen strip failed: ${e?.message ?? e}`); } finally { state.screenRec = null; }
+  recorded?.();
+  const bb = await Promise.race([bbPart, new Promise((r) => setTimeout(() => r(null), REPORT_WAIT_MS))]);
+  state.reportWait = null;
+  if (!bb) notes.push(`no back-buffer strip from the renderer within ${REPORT_WAIT_MS / 1000} s of the screen's`);
+  else if (bb.notes?.length && !bb.strip) notes.push(...bb.notes.map(String));
+  const report = { event: 'display-report', v: DISPLAY_REPORT_VERSION, id, session: state.session, game: state.manifest ?? null, build: state.version ?? null, version: state.gameManifest?.version ?? null, options: state.perfOptions ?? null,
+    page: { glworker: params.get('glworker'), dbg: params.get('dbg'), scale: state.scale ?? null, mode: state.mode, status: state.status }, bb: bb?.strip ?? null, screen, notes };
+  const body = JSON.stringify(report), an = (s) => s?.analysis?.summary;
+  const what = `display report ${id}: ${Math.round(body.length / 1024)} KB; back buffers ${report.bb ? `${report.bb.frames.length} frames, ${an(report.bb)?.pictures} pictures, ${an(report.bb)?.stillFrames} with still A-B-A over 0.1 %${report.bb.cut?.length ? ` (cut: ${report.bb.cut.join(', ')})` : ''}` : 'none'}; screen ${screen ? `${screen.frames.length} frames, ${an(screen)?.pictures} pictures, ${an(screen)?.stillFrames} with still A-B-A over 0.1 %${screen.cut?.length ? ` (cut: ${screen.cut.join(', ')})` : ''}` : 'none'}${notes.length ? `; ${notes.join('; ')}` : ''}`;
+  window.__orthrosDisplayReport = report;
+  if (!state.telemetry) { log('gfx', `${what}; not sent (no telemetry)`); return { ok: false, why: 'telemetry off', again: true }; }
+  const r = await fetch('/api/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch((e) => ({ ok: false, status: e?.message ?? 'network' }));
+  log(r.ok ? 'gfx' : 'warn', `${what}; sent, server ${r.status}`);
+  return r.ok ? { ok: true } : { ok: false, why: typeof r.status === 'number' ? `HTTP ${r.status}` : String(r.status) };
+}
+state.reportDisplay = (o) => reportDisplay(o);
 /** Send the queued records; resolves to whether the server took them. */
 function flushTelemetry() {
   state.flushTimer = null;

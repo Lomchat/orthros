@@ -42,7 +42,9 @@ function init(m) {
       let bitmap = null;
       try { bitmap = canvas.transferToImageBitmap(); } catch { /* context lost: no frame until restored */ }
       // (ORTHROS_RW_NO_PRESENT=1, a debug global: frames rendered but not handed to the page — what the page's hand-off costs it)
-      if (bitmap) { if (o.noPresent || globalThis.ORTHROS_RW_NO_PRESENT) bitmap.close(); else port.postMessage({ type: 'frame', layer: 'gl', bitmap }, [bitmap]); }
+      // (`dframe`: the device frame it shows — WebGLDevice.frame counts it at its present —, which a display report's
+      // screen strip names: src/web/screen-report.js, frame-report.js)
+      if (bitmap) { if (o.noPresent || globalThis.ORTHROS_RW_NO_PRESENT) bitmap.close(); else port.postMessage({ type: 'frame', layer: 'gl', bitmap, dframe: mirror.gfx ? mirror.gfx.frame - 1 : null }, [bitmap]); }
       replay.frames++;
       Atomics.store(ctl, CTL.SHOWN, frame); Atomics.notify(ctl, CTL.SHOWN);
     },

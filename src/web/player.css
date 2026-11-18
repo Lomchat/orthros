@@ -81,6 +81,9 @@ html:fullscreen #topbar { display: none; }
 #topbar button.icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 30px; padding: 0; background: transparent; border-color: rgba(255,255,255,.14); color: #b8bcc8; }
 #topbar button.icon .ic { width: 17px; height: 17px; }
 #topbar button.icon:hover { background: rgba(255,255,255,.08); }
+/* the display report recording (shell.js report): the button says it — nothing over the game meanwhile */
+#topbar button.icon.busy { color: var(--gold); border-color: rgba(201,165,90,.6); animation: reportPulse 1s ease-in-out infinite; }
+@keyframes reportPulse { 50% { background: rgba(201,165,90,.22); } }
 #topbar .perf.still { cursor: default; }
 #topbar .perf.still:hover { background: none; }
 /* narrow windows: the indicators keep their icon, their words go (their title still says it) */

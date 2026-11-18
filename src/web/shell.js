@@ -4,12 +4,14 @@
 //     full screen, back to the games;
 //   - the loading screen before the game shows: the game's cover blurred behind, who plays (the Orthros account, or a
 //     warning that nothing is saved on an account), the runtime's choices when it has some, the steps of the start;
-//   - passing messages, the questions asked to the player, the "sound is off" button.
+//   - passing messages, the questions asked to the player, the "sound is off" button;
+//   - "report a display problem" (a runtime that can record one: onReport), its button in the header and Ctrl+Shift+F.
 // The page drives it (createShell(...) and the methods it returns); it never names a game. Styles: player.css.
 import { pickLang } from './lang.js';
 import { h } from './dom.js';
 import { gpuInfo, gpuShortName } from './gpu-class.js';
 import { accountState, signIn, onAccountChange, googleSignIn, googleText, GOOGLE_G } from './account.js';
+import { REPORT_GAP_MS } from '../shared/display-report.js';
 
 const LOGO = '/src/web/orthros_logo.png';
 const STRINGS = {
@@ -44,6 +46,9 @@ const STRINGS = {
     whole: 'Game downloaded', wholeTitle: 'The whole game is being kept in this browser (settings: offline copy): once done it plays without waiting for the network.',
     launch: 'Ready to play', launchTitle: 'What the game still reads before it plays without freezing (a new game\'s first load too) is downloading now: waiting in the menu until then spares you the long freeze.',
     launchLeft: (s, wire) => (s === null || s === undefined ? `${Math.max(1, Math.ceil(wire / 1e6))} MB left` : s < 60 ? 'in < 1 min' : `in ~${Math.round(s / 60)} min`),
+    report: 'Report a display problem', reportTitle: 'Report a display problem (Ctrl+Shift+F): records 2 seconds of what the game draws and of what the screen shows, and sends them to Orthros — press it while the problem is visible',
+    reportRecording: 'Recording the display…', reportSending: 'Sending the display report…', reportSent: 'Thanks, sent', reportFailed: (m) => `Display report not sent (${m})`,
+    reportWait: (s) => `A display report was just sent: the next one in ${s} s`, reportBusy: 'A display report is being made',
   },
   fr: {
     games: '☰ Jeux', gamesTitle: 'quitter la partie et revenir à la liste des jeux', fullscreen: '⛶ Plein écran', fullscreenTitle: 'plein écran : le jeu seul, la souris capturée (maintiens Échap pour sortir)',
@@ -76,6 +81,9 @@ const STRINGS = {
     whole: 'Jeu téléchargé', wholeTitle: 'Le jeu entier est gardé dans ce navigateur (réglages : copie hors ligne) : une fois fini, il se joue sans attendre le réseau.',
     launch: 'Prêt à jouer', launchTitle: 'Ce que le jeu lit encore avant de tourner sans se figer (le premier chargement d’une nouvelle partie aussi) se télécharge maintenant : attendre dans le menu jusque-là t’évite le long gel.',
     launchLeft: (s, wire) => (s === null || s === undefined ? `encore ${Math.max(1, Math.ceil(wire / 1e6))} Mo` : s < 60 ? 'dans < 1 min' : `dans ~${Math.round(s / 60)} min`),
+    report: 'Signaler un problème d’affichage', reportTitle: 'Signaler un problème d’affichage (Ctrl+Maj+F) : enregistre 2 secondes de ce que le jeu dessine et de ce que l’écran montre, et les envoie à Orthros — à utiliser pendant que le problème se voit',
+    reportRecording: 'Enregistrement de l’affichage…', reportSending: 'Envoi du rapport d’affichage…', reportSent: 'Merci, envoyé', reportFailed: (m) => `Rapport d’affichage non envoyé (${m})`,
+    reportWait: (s) => `Un rapport d’affichage vient d’être envoyé : le prochain dans ${s} s`, reportBusy: 'Un rapport d’affichage est en cours',
   },
 };
 const ICON = {
@@ -87,6 +95,7 @@ const ICON = {
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
   sound: '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="m22 9-6 6M16 9l6 6"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',
+  report: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4M12 7v4M12 13.5v.5"/>',
 };
 /**
  * Full screen: the keyboard locked (Keyboard Lock) — Esc and the keys the browser's shortcuts are made of reach the game
@@ -106,7 +115,9 @@ const svg = (name) => { const s = h('span', { class: 'ic', 'aria-hidden': 'true'
  * @param {{ title: string, version?: string, gameLanguage?: string, cover?: string, subtitle?: string, steps: { k: string, label: string }[],
  *   tips?: string[], extras?: HTMLElement[], headless?: boolean,
  *   onQuit?: () => Promise<boolean|void>, onFullscreen?: () => void, onMouse?: () => void, onPerf?: () => void, onSignedIn?: (user) => void,
+ *   onReport?: (o: { recorded: () => void }) => Promise<{ ok: boolean, why?: string, again?: boolean }>,
  *   saves?: () => import('./cloud-sync.js').CloudSave|null }} o
+ * `onReport`: a display report made (recorded — `recorded()` once the recording is over —, then sent); none: no button
  */
 export function createShell(o) {
   const lang = pickLang(), S = STRINGS[lang] ?? STRINGS.en;
@@ -123,6 +134,7 @@ export function createShell(o) {
   const mouseText = h('span'), mouse = h('button', { type: 'button', class: 'pill mouse', id: 'tbMouse' }, svg('mouse'), mouseText);
   const saveText = h('span'), save = h('button', { type: 'button', class: 'pill save', id: 'tbSave' }, svg('cloud'), saveText);
   const settings = h('button', { type: 'button', class: 'icon', id: 'tbSettings', title: S.settings, 'aria-label': S.settings, onclick: () => window.orthrosData?.open?.('cloud') }, svg('gear'));
+  const reportBtn = o.onReport ? h('button', { type: 'button', class: 'icon', id: 'tbReport', title: S.reportTitle, 'aria-label': S.report, onclick: () => shell.report() }, svg('report')) : null;
   const full = h('button', { type: 'button', id: 'tbFull', title: S.fullscreenTitle }, S.fullscreen);
   const games = h('button', { type: 'button', id: 'tbGames', class: 'quiet', title: S.gamesTitle }, S.games);
   // (the logo and the name lead home too, as the games button: asked first while a game runs)
@@ -131,7 +143,7 @@ export function createShell(o) {
   const extras = h('div', { class: 'extras' }, ...(o.extras ?? []));
   const bar = h('div', { id: 'topbar' },
     h('div', { class: 'brand' }, home, h('span', { class: 'sep' }), gameEl, tagEl),
-    h('div', { class: 'spacer' }), extras, mouse, save, perf, settings, full, games);
+    h('div', { class: 'spacer' }), extras, mouse, save, perf, reportBtn, settings, full, games);
   shell.bar = bar; shell.extras = extras;
   // (readyMark: the game reached its first images while the tab was hidden — shell.hideLoader — until the tab is shown)
   let titleText = o.title, readyMark = false;
@@ -366,6 +378,39 @@ export function createShell(o) {
   });
   const soundEl = h('button', { id: 'soundHint', type: 'button', class: 'hidden' }, svg('sound'), h('span', {}, S.soundOff));
   shell.sound = soundEl;
+
+  // ---------------------------------------------------------------- a display problem reported
+  /**
+   * The player reports a display problem (the header's button, or Ctrl+Shift+F — the header is hidden in full screen;
+   * the keys never reach the game): the runtime records it (onReport: src/web/screen-report.js and the renderer's
+   * half, src/shared/display-report.js) and sends it. One at a time, one per REPORT_GAP_MS; nothing is shown over the
+   * game while it records (an overlay would change how the page is composited) — the button says it; then the sending
+   * and its outcome as passing messages ("Merci, envoyé").
+   */
+  let reporting = false, reportedAt = -Infinity;
+  shell.report = async () => {
+    if (!o.onReport) return;
+    if (reporting) { shell.toast(S.reportBusy, 3000); return; }
+    const wait = reportedAt + REPORT_GAP_MS - Date.now();
+    if (wait > 0) { shell.toast(S.reportWait(Math.ceil(wait / 1000)), 4000); return; }
+    reporting = true; reportedAt = Date.now();
+    reportBtn?.classList.add('busy'); if (reportBtn) reportBtn.title = S.reportRecording;
+    let r;
+    try { r = await o.onReport({ recorded: () => shell.toast(S.reportSending, 30000) }); } catch (e) { r = { ok: false, why: e?.message ?? String(e) }; }
+    reporting = false;
+    reportBtn?.classList.remove('busy'); if (reportBtn) reportBtn.title = S.reportTitle;
+    if (r?.again) reportedAt = -Infinity; // (nothing was sent: the player may try again at once)
+    shell.toast(r?.ok ? S.reportSent : S.reportFailed(r?.why ?? '?'), r?.ok ? 4000 : 8000);
+  };
+  if (o.onReport && !o.headless) {
+    let ours = false; // (the F of a shortcut kept from the game: its key up too)
+    addEventListener('keydown', (e) => {
+      if (e.code !== 'KeyF' || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
+      e.preventDefault(); e.stopImmediatePropagation(); ours = true;
+      if (!e.repeat) shell.report();
+    }, true);
+    addEventListener('keyup', (e) => { if (ours && e.code === 'KeyF') { ours = false; e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+  }
 
   // ---------------------------------------------------------------- full screen, back to the games
   full.onclick = async (e) => {

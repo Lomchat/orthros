@@ -272,6 +272,14 @@ targets, draws with their programs, textures, states, uniforms, GL errors — co
 context. `node tools/dev/flicker-capture.mjs /var/lib/orthros/telemetry/telemetry-<date>.jsonl --session <id> --out <dir>`
 reads it: the pass that differs in frames 1-2 and 2-3 but not in 1-3 is the one that alternates.
 
+**When the probe sees nothing** (2026-11-18: the owner's "tons of flicker" in play and in the pause menu while his
+samples found the back buffer still, ≤ 0.34 %): the frame's "Signaler un problème d'affichage" button / Ctrl+Shift+F
+(docs/game-frame.md "Report a display problem") records 2 s of every presented back buffer and of what the page's
+canvases held at every rAF, at the moment he sees it. `tools/dev/flicker-report.mjs` then says whether the back
+buffers alternate (an intermittent fault the 10 s samples missed, or another period than A-B-A: A-B-B-A), or the
+screen shows what no back buffer had or goes back to an older one (the presentation: the canvas hand-off, the page's
+layers, CSS) — or neither (past the page: the compositor or the display).
+
 ## Other GL implementations, the pause menu and the frame's work (2026-11-17 evening, still open)
 
 **The owner's evening samples** (build 5e73c77, RTX 4050, ANGLE D3D11, 2560x1440): the two large ones — 13.1 % still

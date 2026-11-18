@@ -39,6 +39,7 @@ import { createBrCache } from './br-cache.js';
 import { moduleGraph, withPreloads } from './module-graph.js';
 import { PERF_MAX_BYTES, sanitizePerfRecord } from '../shared/perf-record.js';
 import { CAPTURE_POST_MAX_BYTES, sanitizeFlickerRecord } from '../shared/flicker-record.js';
+import { REPORT_POST_MAX_BYTES, REPORT_GAP_MS, sanitizeDisplayReport } from '../shared/display-report.js';
 import { createAccountApi } from './accounts.js';
 import { accountBridge, playerScope } from '../ports/openmw/account-bridge.js';
 import { portProfileDb } from '../vfs/profile-share.js';
@@ -108,6 +109,12 @@ export function loadManifests(dir, extra = null) {
  */
 const FLICKER_CAPTURES_PER_DAY = 100, FLICKER_CAPTURES_PER_CLIENT = 2, FLICKER_CLIENT_WINDOW_MS = 15 * 60_000;
 /**
+ * Display reports the telemetry takes (a player's "report a display problem": src/shared/display-report.js, up to
+ * REPORT_POST_MAX_BYTES each): one per session in REPORT_GAP_MS, DISPLAY_REPORTS_PER_CLIENT per client network in
+ * FLICKER_CLIENT_WINDOW_MS (the address kept in memory for that long only), DISPLAY_REPORTS_PER_DAY in all (~60 MB).
+ */
+const DISPLAY_REPORTS_PER_DAY = 60, DISPLAY_REPORTS_PER_CLIENT = 4;
+/**
  * The build the server serves, for telemetry: the git commit of the tree, '+' when tracked files under src/ differ
  * from it, and the newest modification time of the runtime's files (the page loads src/ directly: an edited tree
  * serves new code without a new commit). Recomputed at most once a minute.
@@ -160,6 +167,9 @@ export function createServer(opts = {}) {
   /** flicker captures written today (/api/telemetry): their count and sessions; the client networks of the last minutes */
   let flickerCaptures = { day: null, n: 0, sessions: new Set() };
   const flickerClients = new Map(); // (client network -> { n, until })
+  /** display reports written today, the sessions' last report times, the client networks of the last minutes */
+  let displayReports = { day: null, n: 0 };
+  const reportSessions = new Map(), reportClients = new Map(); // (session -> time; client network -> { n, until })
   /** A version's manifest, or a shared base's (game-catalog.js baseManifests). */
   const anyManifest = (id) => manifests.get(id) ?? bases.get(id);
   const trees = new Map(), treeObjs = new Map();
@@ -1879,17 +1889,34 @@ export function createServer(opts = {}) {
       if (p === '/api/telemetry' && req.method === 'POST') {
         if (!opts.telemetryDir) return send(res, 404, 'telemetry off');
         // (256 KB per batch; a flicker capture — one per session, src/shared/flicker-record.js — up to CAPTURE_POST_MAX_BYTES,
-        // within the day's limits: FLICKER_CAPTURES_PER_DAY)
+        // within the day's limits: FLICKER_CAPTURES_PER_DAY; a display report — src/shared/display-report.js — up to
+        // REPORT_POST_MAX_BYTES, within its own: DISPLAY_REPORTS_PER_DAY)
+        const POST_MAX = Math.max(CAPTURE_POST_MAX_BYTES, REPORT_POST_MAX_BYTES);
         const chunks = []; let size = 0;
-        req.on('data', (d) => { size += d.length; if (size <= CAPTURE_POST_MAX_BYTES) chunks.push(d); });
+        req.on('data', (d) => { size += d.length; if (size <= POST_MAX) chunks.push(d); });
         req.on('end', () => {
           // (a body the record's handling cannot take — JSON nested deeper than JSON.stringify's stack, a sanitizer's
           // throw — is refused, never thrown out of this event handler: that would end the process)
           try {
-            if (size > CAPTURE_POST_MAX_BYTES) return send(res, 413, 'too large');
+            if (size > POST_MAX) return send(res, 413, 'too large');
             let rec; try { rec = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return send(res, 400, 'bad json'); }
             let line;
-            if (rec?.event === 'flicker-capture') {
+            if (rec?.event !== 'display-report' && size > CAPTURE_POST_MAX_BYTES) return send(res, 413, 'too large');
+            if (rec?.event === 'display-report') {
+              if (size > REPORT_POST_MAX_BYTES) return send(res, 413, 'too large');
+              const v = sanitizeDisplayReport(rec); if (!v.ok) return send(res, 400, v.error);
+              line = JSON.stringify({ at: new Date().toISOString(), ...v.rec }) + '\n'; // (before it is counted: one that cannot be written takes no place)
+              const now = Date.now(), day = new Date(now).toISOString().slice(0, 10), c = displayReports.day === day ? displayReports : (displayReports = { day, n: 0 });
+              for (const [k, x] of reportClients) if (x.until <= now) reportClients.delete(k);
+              for (const [k, at] of reportSessions) if (now - at >= REPORT_GAP_MS) reportSessions.delete(k);
+              const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim(), client = clientNet(fwd || String(req.socket.remoteAddress ?? ''));
+              const cl = reportClients.get(client);
+              if (reportSessions.has(v.rec.session)) return send(res, 429, 'one display report a minute');
+              if ((cl?.n ?? 0) >= DISPLAY_REPORTS_PER_CLIENT) return send(res, 429, 'too many display reports, try later');
+              if (c.n >= DISPLAY_REPORTS_PER_DAY) return send(res, 429, 'enough display reports today');
+              c.n++; reportSessions.set(v.rec.session, now);
+              if (cl) cl.n++; else reportClients.set(client, { n: 1, until: now + FLICKER_CLIENT_WINDOW_MS });
+            } else if (rec?.event === 'flicker-capture') {
               const v = sanitizeFlickerRecord(rec); if (!v.ok) return send(res, 400, v.error);
               line = JSON.stringify({ at: new Date().toISOString(), ...v.rec }) + '\n'; // (before it is counted: one that cannot be written takes no place)
               const now = Date.now(), day = new Date(now).toISOString().slice(0, 10), c = flickerCaptures.day === day ? flickerCaptures : (flickerCaptures = { day, n: 0, sessions: new Set() });

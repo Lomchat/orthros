@@ -35,8 +35,11 @@
 // The first sample of a session whose still share reaches CAPTURE_STILL (2 %) also starts a capture of the next frames
 // (flicker-capture.js: their pictures and the GL work of each, sent once with the telemetry through `send`); while it
 // runs no sample is taken.
+// A player's display report (frame-report.js: the page's "report a display problem", ORTHROS_FLICKER_REPORT=<id>) also
+// goes through here: it takes the presents while it records — no sample, no capture meanwhile.
 // ORTHROS_FLICKER (debug global): 0 off, 2 every sample logged.
 import { FlickerCapture, CAPTURE_STILL } from './flicker-capture.js';
+import { FrameReport } from './frame-report.js';
 
 export const W = 64, H = 48, PERIOD_MS = 10000, T = 24;
 /**
@@ -130,13 +133,13 @@ export class FlickerProbe {
    */
   constructor(gl, opts = {}) {
     this.gl = gl; this.now = opts.now ?? (() => performance.now()); this.log = opts.log ?? null; this.logged = 0; this.errors = opts.errors ?? true;
-    this.send = opts.send ?? null; this.encode = opts.encode; this.cap = null; this.captured = false; this.armed = null;
+    this.send = opts.send ?? null; this.encode = opts.encode; this.cap = null; this.captured = false; this.armed = null; this.report = null; this.reportAsked = null;
     this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, abaAlt: 0, altSame: 0, altCmdAba: 0, glErrors: 0, glError: 0 };
     this.next = this.now() + PERIOD_MS; this.left = 0; this.read = null; this.presents = 0; this.sigs = [0, 0, 0];
     this.reset();
   }
   /** The context was lost (and restored): its objects are gone, the sample in progress dropped. */
-  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; this.cap?.abort(); this.cap = null; this.unsign(); }
+  reset() { this.prog = null; this.fbo = null; this.rb = null; this.vao = null; this.copies = null; this.copyFbo = null; this.left = 0; this.read = null; this.cap?.abort(); this.cap = null; this.report?.abort('WebGL context lost'); this.report = null; this.unsign(); }
   /** the device that signs the sample's frames told to stop */
   unsign() { if (this.sigDev) { this.sigDev.sigOn = false; this.sigDev = null; } }
   /** a capture records GL calls now (the GL call counter keeps away) */
@@ -149,6 +152,11 @@ export class FlickerProbe {
    * textures, viewport, vertex array, capabilities) — the caller's cached GL state is then stale.
    */
   present(fbo, w, h, dev = null, sig = undefined) {
+    if (globalThis.ORTHROS_GL_DISCARD && this.report) { this.report.abort('nothing rasterized (GL discard)'); this.report = null; }
+    // (a player's display report — frame-report.js, asked by the page through ORTHROS_FLICKER_REPORT, the probe on or
+    // off —: it takes the presents while it records)
+    const rep = this.reportStep(fbo, w, h, dev, sig);
+    if (rep !== null) return rep;
     if (globalThis.ORTHROS_FLICKER === 0 || globalThis.ORTHROS_GL_DISCARD) { if (this.cap) { this.cap.abort(); this.cap = null; } this.unsign(); return false; } // (nothing rasterized: nothing to compare — and its draw must not lift RASTERIZER_DISCARD)
     const gl = this.gl, now = this.now();
     this.presents++;
@@ -191,6 +199,28 @@ export class FlickerProbe {
     this.reduce(w, h);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     return true;
+  }
+  /**
+   * The display report's share of a present: started when the page asked for one (ORTHROS_FLICKER_REPORT=<id>, a new
+   * id; not while a flicker capture wraps the GL methods — it waits for its end), then given the presents while it
+   * records (the sample in progress dropped, none started; a capture reading back still polled), and afterwards each
+   * present until it is read back (the probe goes on meanwhile). Returns what present returns while it records, else null.
+   */
+  reportStep(fbo, w, h, dev, sig) {
+    const ask = globalThis.ORTHROS_FLICKER_REPORT;
+    if (ask && ask !== this.reportAsked && !this.report && this.send && !globalThis.ORTHROS_GL_DISCARD && !(this.cap && (this.cap.recording || this.cap.phase === 'start'))) {
+      this.reportAsked = ask; globalThis.ORTHROS_FLICKER_REPORT = undefined;
+      if (this.left) { this.left = 0; this.dropCopies(); }
+      this.unsign();
+      this.report = new FrameReport(this.gl, { id: ask, send: this.send, encode: this.encode });
+    }
+    const r = this.report;
+    if (!r) return null;
+    if (!r.active) { r.present(fbo, w, h, dev, sig); if (r.phase === 'done') this.report = null; return null; } // (reading back, encoding)
+    const changed = r.present(fbo, w, h, dev, sig);
+    if (this.read) this.poll();
+    if (this.cap && !this.cap.recording && this.cap.phase !== 'start') { this.cap.present(fbo, w, h, dev); if (this.cap.phase === 'done') this.cap = null; }
+    return changed;
   }
   /** the third frame copied: the draw comparing the three into the small target, its readback started */
   reduce(w, h) {

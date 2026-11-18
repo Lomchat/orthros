@@ -448,7 +448,7 @@ export function smallShares(imgs, w, h) {
 /** RGBA pictures (top-down rows) as JPEG, base64 — OffscreenCanvas in the page's workers; none elsewhere */
 export async function encodeJpegs(imgs, w, h, q) {
   if (typeof OffscreenCanvas === 'undefined') return [];
-  const c = new OffscreenCanvas(w, h), g = c.getContext('2d'), out = [];
+  const c = new OffscreenCanvas(w, h), g = c.getContext('2d', { willReadFrequently: true }), out = []; // (a canvas of the CPU: no round trip to a busy GPU process per picture)
   for (const px of imgs) {
     if (!px) { out.push(''); continue; }
     g.putImageData(new ImageData(new Uint8ClampedArray(px.buffer, px.byteOffset, w * h * 4), w, h), 0, 0);
@@ -586,8 +586,8 @@ export class FlickerCapture {
     this.send(rec);
   }
 }
-/** GL rows (bottom-up) as picture rows, opaque */
-function upright(px, w, h) {
+/** GL rows (bottom-up) as picture rows, opaque (frame-report.js too) */
+export function upright(px, w, h) {
   const out = new Uint8Array(px.length), row = w * 4;
   for (let y = 0; y < h; y++) out.set(px.subarray((h - 1 - y) * row, (h - y) * row), y * row);
   for (let i = 3; i < out.length; i += 4) out[i] = 255;

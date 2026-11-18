@@ -18,6 +18,7 @@ From left to right:
 | mouse | **captured** by the game (pointer lock) or **free**; a click gives it to the game | ✓ | ✓ | ✓ | ✓ (told by `frame-meter.js` in the engine's page) |
 | saves | where the progress goes: not saved (no account: a warning), saving, saved at hh:mm, not sent, conflict, too large, saved by the world (OpenMW multiplayer) | ✓ | ✓ | ✓ | ✓ |
 | frame rate | fps, p99 and the slowest frame, the last minute's graph | ✓ (+ details panel) | ✓ | ✓ (`Module.orthrosFrame`) | ✓ (`frame-meter.js`) |
+| display problem | "Signaler un problème d'affichage": a 2-second recording of what the game draws and what the screen shows, sent once (below); Ctrl+Shift+F too | ✓ (with telemetry) | — | — | — |
 | settings | the data window (`data-manager.js`): online saves and account; launch options and this browser's storage — the Windows games' OPFS folders and the ports' IndexedDB databases, exported or cleaned — on the Windows games' page | ✓ | ✓ | ✓ | ✓ |
 | full screen, games | full screen (mouse captured, Esc held to leave); back to the list, asked first while a game runs, the progress saved first | ✓ | ✓ | ✓ | ✓ |
 
@@ -51,6 +52,36 @@ again, and a system notification says it when the player allowed notifications f
 only from the loading screen's link "Me prévenir quand le jeu est prêt" (shown while the browser has no answer for the
 site), never automatically. `shell.ready` = `{ hidden, notified }`; the Win32 page sends it as a `ready` telemetry event
 with the seconds from the loading screen to the first images.
+
+## Report a display problem (Windows games, 2026-11-18)
+
+The header's screen icon ("Signaler un problème d'affichage" / "Report a display problem") and **Ctrl+Shift+F** — the
+header is hidden in full screen; the keys are kept from the game, key up included — record 2 seconds of the display
+and send them once, as one telemetry record (shown only when the server keeps telemetry; one report per session a
+minute, on the page and on the server). Nothing is drawn over the game while it records (an overlay changes how the
+page is composited: the button pulses instead), then a passing message says it is sent: "Merci, envoyé".
+What it records (`src/shared/display-report.js`), at the same time:
+- **the back buffers** (`src/gfx/frame-report.js`, in the renderer — the render worker, or the emulator's worker with
+  `?glworker=0`): every presented back buffer downscaled on the GPU (halving blits, then ≤ 320x180, read back through
+  pixel buffers and fences: no stall), its device frame, present time, the framebuffer blitted to the canvas, the
+  back-buffer surface, the gamma pass and the frame's command signature. The page asks for it through the worker debug
+  global `ORTHROS_FLICKER_REPORT=<id>` (the worker's `dbg` message, forwarded to the render worker): `src/web/worker.js`,
+  a snapshot source, is unchanged;
+- **the screen** (`src/web/screen-report.js`, in the page): at every requestAnimationFrame, the visible game canvases
+  drawn bottom to top into a small atlas (no readback until the end), with each canvas's size, box, z-index,
+  visibility, display, opacity and the frame's transform (which canvas is visible, which is on top); the bitmaps the
+  page received (layer, size, device frame when the render worker names it) and its events (resize, visibility, focus,
+  full screen, pointer lock, overlays). What a canvas holds is what the page gives the compositor: a fault past that
+  (the compositor, the display) is not in the record.
+Each strip keeps each distinct picture once and is cut to 480 KB (JPEG quality, then half size, then its last
+pictures); both are analysed (change per frame, still A-B-A, A-B-B-A). `node tools/dev/flicker-report.mjs
+<telemetry .jsonl> [--session <id>] --out <dir>` writes the two filmstrips as contact sheets, aligns them (with the
+render worker by the device frame each bitmap carries, else by the pictures and their times: which back buffer each
+screen picture shows; a screen picture no back buffer had, or one closer to an older back buffer, is marked) and prints
+the figures. The renderer's window starts when the emulator's thread passes the request on (late when it is busy): the
+page records until that window's end too. `window.orthros.reportDisplay()` does the same from the console or a harness.
+`tools/with-browser-slot.sh node tools/check/display-report-check.mjs` checks both halves and the tool without a game
+(a square drawn every other frame, a red picture and a stale one shown on purpose: both must be found, and nothing else).
 
 ## Another window: the game keeps playing (Windows games, 2026-11-17)
 
