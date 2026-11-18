@@ -55,6 +55,8 @@ try {
           rep = new FrameReport(gl, { id: 1, send: (m) => { if (m.started) screen.extendTo(m.started); else bbDone(m); } });
           screen.run().then((s) => { faults.screen = s; });
         }
+        // (the frame's values record, as the backend's valPresent: the odd frames' draws read other shader constants)
+        dev.valFrame = dev.sigOn ? { vsig: 0x11, draws: 5, tf: [], csig: k % 2 ? 0xc1 : 0xc2, cn: k % 2 ? 3 : 0, cd: k % 2 ? [1, 2, 4] : [] } : null;
         rep?.present(fbo, W, H, dev, dev.sigOn ? (k % 2 ? 0xb0b0 : 0xa0a0) : undefined);
         gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null); gl.blitFramebuffer(0, 0, W, H, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.NEAREST);
         dev.frame++;
@@ -84,11 +86,13 @@ console.log(`record: ${Math.round(line.length / 1024)} KB, back buffers ${rec.bb
 check(rec.bb?.frames.length >= 30 && rec.screen?.frames.length >= 30, 'both strips recorded (30 frames or more each)');
 check((rec.bb?.analysis?.summary.stillFrames ?? 0) >= 10, `the back buffers' alternation found before the encode (${rec.bb?.analysis?.summary.stillFrames} frames with still A-B-A)`);
 check(new Set(rec.bb?.frames.map((f) => f.sig)).size === 2, 'each frame\'s command signature kept');
+check(new Set(rec.bb?.frames.map((f) => f.csig)).size === 2 && rec.bb?.frames.some((f) => f.cn === 3 && f.cd?.join() === '1,2,4'), 'and its shader constants record (csig, cn, cd)');
 const text = execFileSync('node', [path.join(root, 'tools/dev/flicker-report.mjs'), file, '--out', out], { encoding: 'utf8' });
 fs.writeFileSync(path.join(out, 'report.txt'), text);
 const num = (re) => Number(re.exec(text)?.[1] ?? NaN);
 check(num(/back buffers: \d+ frames, \d+ distinct pictures;[^\n]*?\((\d+) frames >= 0\.1 %; any/) >= 10, 'the tool finds the back buffers\' alternation on the decoded pictures');
 check(num(/  screen: \d+ frames, \d+ distinct pictures;[^\n]*?\((\d+) frames >= 0\.1 %; any/) >= 5, 'and the screen\'s');
+check(/shader constants signatures: 2 distinct .*draws reading other constants than the frame before: #\d+ 3 \(draws 1 2 4\)/.test(text), 'the tool names the frames whose draws read other shader constants');
 check(num(/; (\d+) match no back buffer/) === 1, 'the red picture, and it alone: no back buffer had it');
 check(num(/; (\d+) went BACK/) === 1 && num(/; (\d+) closer to another back buffer/) === 1, 'the picture three frames old, and it alone: the screen went back');
 check(fs.readdirSync(out).some((f) => /^bb-check0001-1-p1\.png$/.test(f)) && fs.readdirSync(out).some((f) => /^screen-check0001-1-p1\.png$/.test(f)) && fs.readdirSync(out).some((f) => /^align-/.test(f)), 'contact sheets written');

@@ -13,7 +13,9 @@
 //   with its device frame, its present time (performance.timeOrigin + now(): the page's clock), the framebuffer blitted
 //   to the canvas (an id per GL object: a flipping chain's rotation shows), the back-buffer surface, the gamma pass,
 //   the frame's command signature and its values record (vsig: a hash of the color values its draws read — TEXTUREFACTOR,
-//   material...; tf: the draws whose TEXTUREFACTOR changed since the previous frame, d3d8-webgl.js valDraw);
+//   material...; tf: the draws whose TEXTUREFACTOR changed since the previous frame; csig: a hash of the shader
+//   constants its draws' shaders read, cn: how many draws read other constants than the previous frame's draw of the
+//   same index, cd: the first of them — d3d8-webgl.js valDraw);
 // - the pictures read back are kept once each (equal pixels share one: a still scene costs one picture), and once all
 //   are read the strip is made after the presents, in slices of a few ms (stripSteps' analysis, the JPEG encodes
 //   asynchronous, cut to STRIP_MAX_BYTES: fitStrip) and sent on the backend's log channel as an object
@@ -129,7 +131,7 @@ export class FrameReport {
     // (the values its draws read beside the commands: their hash, and the draws whose TEXTUREFACTOR changed since the
     // previous frame — d3d8-webgl.js valDraw)
     const v = sig === undefined ? null : dev?.valFrame;
-    if (v) { f.vsig = (v.vsig >>> 0).toString(16); if (v.tf.length) f.tf = v.tf.map(([i, a, b]) => [i, (a >>> 0).toString(16), (b >>> 0).toString(16)]); }
+    if (v) { f.vsig = (v.vsig >>> 0).toString(16); if (v.tf.length) f.tf = v.tf.map(([i, a, b]) => [i, (a >>> 0).toString(16), (b >>> 0).toString(16)]); f.csig = (v.csig >>> 0).toString(16); if (v.cn) { f.cn = v.cn; f.cd = v.cd; } }
     const db = `${gl.drawingBufferWidth}x${gl.drawingBufferHeight}`; if (db !== this.lastDb) { f.db = db; this.lastDb = db; }
     this.frames.push(f);
     this.shots.push({ buf, sync, frame: f });

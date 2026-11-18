@@ -58,6 +58,12 @@ function report(rec) {
       const vs = [...new Set(B.frames.map((f) => f.vsig))], tfs = B.frames.map((f, k) => [f, k]).filter(([f]) => f.tf?.length);
       console.log(`  values signatures: ${vs.length} distinct (${seqOf(B.frames.map((f) => f.vsig)).slice(0, 400)}); frames whose draws' TEXTUREFACTOR changed: ${tfs.length ? tfs.map(([f, k]) => `#${k} f${f.f} [${f.tf.map(([i, a, b]) => `draw ${i} ${a}->${b}`).join(', ')}]`).join('; ').slice(0, 1200) : 'none'}`);
     }
+    // (the shader constants the draws' shaders read — a D3DX effect's values: a later build's reports; valDraw. On a
+    // still screen a few animated draws at most read other constants than in the frame before)
+    if (B.frames.some((f) => f.csig)) {
+      const cs = [...new Set(B.frames.map((f) => f.csig))], moved = B.frames.map((f, k) => [f, k]).filter(([f]) => f.cn);
+      console.log(`  shader constants signatures: ${cs.length} distinct (${seqOf(B.frames.map((f) => f.csig)).slice(0, 400)}); draws reading other constants than the frame before: ${moved.length ? moved.map(([f, k]) => `#${k} ${f.cn}${f.cd?.length ? ` (draws ${f.cd.join(' ')}${f.cn > f.cd.length ? '...' : ''})` : ''}`).join('; ').slice(0, 1600) : 'none'}`);
+    }
   } else console.log('--- no back-buffer strip');
   if (C) {
     const ls = rec.screen.layers ?? [];

@@ -14,6 +14,8 @@ const PASS_OPS = cacheKey('fx.passOps'), PASS_ALL = cacheKey('fx.passFns'), PASS
 const PRESHADER = cacheKey('fx.preshader'), EXPR_PROG = cacheKey('fx.expression');
 
 const D3D_OK = 0, S_FALSE = 1, D3DERR_INVALIDCALL = 0x8876086c, E_FAIL = 0x80004005, E_NOTIMPL = 0x80004001;
+/** the process-heap allocation behind a parameter block's handle (its address is the handle; nothing is kept in it) */
+const PARAM_BLOCK_BYTES = 16;
 // snapshot: scratch
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
 const fbits = (v) => { f32[0] = v; return u32[0]; };
@@ -108,7 +110,7 @@ export function defineEffects(X, vm, h) {
       ({ shaders: this.shaders, exprs: this.exprs, refs: this.refs } = effectResources(parsed));
       this.technique = this.techniques[0] ?? null;
       mem.write32(this.handleBlock + FX_SLOTS, this.technique?.passes.length ?? 0);
-      this.saved = null; this.pass = null; this.stateManager = 0; this.recording = null; this.blocks = new Map(); this.nextBlock = 1;
+      this.saved = null; this.pass = null; this.stateManager = 0; this.recording = null; this.blocks = new Map(); this.blockWarned = false; // (parameter blocks by handle; noBlock)
       // (filled at first use; declared here so that every effect object has one shape: the per-call methods read them)
       this.comObject = null; this.devImpl = null; this.devObj = null; this.fastCtx = null; this.devFns = null; this.vsRegsRaw = undefined; this.psRegsRaw = undefined;
       this.paramShaders = null; this.missing = null; this.unknownOps = null; this.commitBlock = 0; this.commitPublished = null; this.commitShadow = 0; this.noRestore = 0;
@@ -338,12 +340,18 @@ export function defineEffects(X, vm, h) {
      */
     EndParameterBlock() {
       if (!this.recording) return 0;
-      const id = this.handleBlock + 4 * (4000 + (this.nextBlock++ % 90));
+      // (the handle: the address of an allocation of the block's own, as D3DX's — no two live blocks share one, and
+      // DeleteParameterBlock gives it back. Handles drawn from a ring of 90 gave a long-lived block's handle to a
+      // later block: an application recording some blocks again every frame — BFME2 does for the materials whose
+      // constants move, a building under construction — then made every other material apply those blocks' values,
+      // or nothing once they were deleted, a few frames out of each turn of the ring)
+      const id = this.proc.processHeap.alloc(PARAM_BLOCK_BYTES, true);
+      if (!id) { this.recording = null; return 0; }
       this.blocks.set(id, [...this.recording].map((n) => { let top = n; while (top.parent !== null) top = top.parent; return { n, top, words: n.words ? n.words.slice() : null, ptr: n.obj?.ptr, ver: top.version }; }));
       this.recording = null; return id;
     }
     ApplyParameterBlock(c) {
-      const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return D3DERR_INVALIDCALL;
+      const b = this.blocks.get(c.arg(1) >>> 0); if (!b) return this.noBlock(c, 'ApplyParameterBlock');
       for (let k = 0; k < b.length; k++) {
         const e = b[k];
         if (e.words !== null && !apiOpt.fxRef) { // (a version move only for a real change, as the setters)
@@ -357,7 +365,17 @@ export function defineEffects(X, vm, h) {
         this.touched(e.n);
       }
     }
-    DeleteParameterBlock(c) { return this.blocks.delete(c.arg(1) >>> 0) ? D3D_OK : D3DERR_INVALIDCALL; }
+    DeleteParameterBlock(c) { const h = c.arg(1) >>> 0; if (!this.blocks.delete(h)) return this.noBlock(c, 'DeleteParameterBlock'); this.proc.processHeap.free_(h); return D3D_OK; }
+    /**
+     * A parameter block the application names that this effect does not hold (deleted, another effect's): the call
+     * fails as D3DX's, and the log says so once per effect — an application does not do that on Windows, so it is
+     * Orthros' doing (handles given twice made BFME2 apply such blocks every frame, unseen for weeks: see EndParameterBlock).
+     */
+    noBlock(c, what) {
+      const h = c.arg(1) >>> 0;
+      if (h !== 0 && !this.blockWarned) { this.blockWarned = true; vm.log('warn', `d3dx effect: ${what}(0x${h.toString(16)}): no such parameter block, from ${c.proc?.symbolize?.(c.retAddr) ?? '?'} (said once per effect)`); }
+      return D3DERR_INVALIDCALL;
+    }
     CloneEffect(c) { if (!c.arg(2)) return D3DERR_INVALIDCALL; const e = new Effect(c, c.arg(1) || this.dev, this.fx, this.flags); mem.write32(c.arg(2), createEffect(c, e)); com.addRef(com.objectAt(e.dev)); }
 
     Begin(c) {
@@ -384,6 +402,8 @@ export function defineEffects(X, vm, h) {
       for (const t of this.techniques) if (t.restoreList) { heap.free_(t.restoreList); t.restoreList = 0; t.restoreShadow = 0; }
       if (this.commitBlock) { heap.free_(this.commitBlock); this.commitBlock = 0; }
       if (this.noRestore) { heap.free_(this.noRestore); this.noRestore = 0; }
+      for (const h of this.blocks.keys()) heap.free_(h); // (the parameter blocks the application left)
+      this.blocks.clear();
       if (this.handleBlock) { heap.free_(this.handleBlock); this.handleBlock = 0; }
     }
     *allParams() { const walk = function* (n) { yield n; for (const e of n.elements) yield* walk(e); for (const m of n.members) yield* walk(m); }; for (const p of this.params) yield* walk(p); }

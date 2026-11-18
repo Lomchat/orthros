@@ -199,7 +199,7 @@ export class DrawProbe {
     this.snap(ps, { fbo, w, h }, dev.gs);
     const rows = Math.floor(ps / COLS) + 1, v = dev.valFrame;
     const fr = { f: dev.frame, t: Math.round((now - this.tFirst) * 10) / 10, n: this.phase === 'record' ? this.k : v?.draws ?? null, sig: sig === undefined ? null : (sig >>> 0).toString(16),
-      vsig: v ? (v.vsig >>> 0).toString(16) : null, tf: v?.tf?.length ? v.tf.map(([i, a, b]) => [i, (a >>> 0).toString(16), (b >>> 0).toString(16)]) : undefined, fb: this.id(fbo), ctl: this.phase === 'control' ? 1 : 0,
+      vsig: v ? (v.vsig >>> 0).toString(16) : null, tf: v?.tf?.length ? v.tf.map(([i, a, b]) => [i, (a >>> 0).toString(16), (b >>> 0).toString(16)]) : undefined, csig: v ? (v.csig >>> 0).toString(16) : null, cn: v?.cn || undefined, fb: this.id(fbo), ctl: this.phase === 'control' ? 1 : 0,
       d: this.phase === 'record' ? this.entries.map((e) => e.slice(0, 8)) : [], cells: this.phase === 'record' ? this.entries.map((e) => [e[8], e[9]]) : [], ps, grids: null };
     if (this.phase === 'record') { this.prevN = this.k; this.k = 0; this.slot = 0; this.entries = []; this.cur = null; }
     let buf = this.free.pop();
@@ -307,7 +307,7 @@ export class DrawProbe {
       event: 'draw-probe', v: DRAW_PROBE_VERSION, trigger: this.trigger, gl: { renderer: gpuInfo(gl).renderer, drawingBuffer: [gl.drawingBufferWidth, gl.drawingBufferHeight] },
       size: [this.w, this.h], mode: `${this.dev.dev.pp?.width}x${this.dev.dev.pp?.height}`, path: this.path, stamps: !!this.stamps, grid: [GW, GH], lastN: this.lastN,
       rects, rectKinds: kinds,
-      frames: this.frames.map((f) => ({ f: f.f, t: f.t, n: f.n, sig: f.sig, vsig: f.vsig, tf: f.tf, fb: f.fb, ctl: f.ctl, odd: f.odd ?? null, away: f.away ?? null, mad: f.mad ?? null, d: f.d, p: f.p ?? null })),
+      frames: this.frames.map((f) => ({ f: f.f, t: f.t, n: f.n, sig: f.sig, vsig: f.vsig, tf: f.tf, csig: f.csig, cn: f.cn, fb: f.fb, ctl: f.ctl, odd: f.odd ?? null, away: f.away ?? null, mad: f.mad ?? null, d: f.d, p: f.p ?? null })),
       metas: this.metas, vals: this.vals, tms: this.tms, xfs: this.xfs, pics, summary: null, cut: [], notes: this.notes.slice(), took: null,
     };
     if (this.lostFrames) rec.notes.push(`${this.lostFrames} frames' pictures given up (no free pixel buffer: the GPU behind)`);
