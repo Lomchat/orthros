@@ -455,7 +455,9 @@ presenting (released, its process ended) gives up ~10 s after its recording's le
   program had seen their version).
 - **Analysis** (in the page, then again by the reader): a frame is *odd* when ≥ 0.5 % of its presented grid went A-B-A
   between its neighbours (a scene that moves on is not; an animation that goes back and forth — the pause menu's swirl
-  — is: its turning frames count as odd, beside the dips); rectangles of 4 x 4 grid points where the odd
+  — is: its turning frames count as odd, beside the dips; a record whose culprit draw's texture matrices moved is such
+  an animation and is not sent: RotWK 2.02's main menu, left alone in SwiftShader, gave 42 odd frames from an additive
+  layer, which would have used the session's one record before any pause); rectangles of 4 x 4 grid points where the odd
   frames differed most (`var`) and 5 fixed ones; per draw position from the frame's end and rectangle, before → after
   in normal frames, after / before (~0.20 under a black layer of alpha 0.80), and how far the odd frames' after and
   before moved beyond the normal frames' own spread. The culprit is the first draw, in drawing order, whose result

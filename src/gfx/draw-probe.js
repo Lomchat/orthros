@@ -312,7 +312,11 @@ export class DrawProbe {
     rec.summary = { frames: sum.frames, probed: sum.probed, control: sum.control, odd: sum.odd, oddProbed: sum.oddProbed, oddControl: sum.oddControl, moved: sum.moved, verdict: sum.verdict };
     // (nothing varied — no frame came back A-B-A, no value moved —: not sent, the flicker probe tries at another screen)
     const valuesMoved = sum.draws.some((d) => d.tfP.length > 1 || d.tfM.length > 1);
-    const interesting = sum.odd >= 2 || valuesMoved;
+    // (odd frames whose culprit is a layer with moving texture matrices: an animation going back and forth — a menu's,
+    // the pause menu's swirl —, not the session's one record: tried again at another screen)
+    const culprit = sum.draws.find((d) => d.pos === sum.moved[0]), animated = !valuesMoved && (culprit?.tms ?? 0) > 1;
+    if (animated) this.notes.push(`odd frames from an animated layer (draw ${culprit.pos} from the end: its texture matrices moved)`);
+    const interesting = (sum.odd >= 2 && !animated) || valuesMoved;
     this.result = { frames: sum.frames, probed: sum.probed, odd: sum.odd, path: this.path, stamps: !!this.stamps };
     if (!this.force && !interesting) { this.notes.push('nothing varied'); return; }
     await step(() => fitDrawProbe(rec, DRAW_PROBE_MAX_BYTES - 200));
