@@ -13,7 +13,7 @@ import { PROGRAM_GLSL_VERSION, ffKeyRegenerable } from '../../src/gfx/program-id
  * backend, as a session does; `raw`: with their learned sources, keys dropped).
  * @param {any} host HeadlessHost
  * @param {'backend'|'recorder'|'none'} kind
- * @param {{ programs?: string|null, raw?: boolean, log?: (l: string) => void }} [o]
+ * @param {{ programs?: string|null, raw?: boolean, hash?: boolean, log?: (l: string) => void }} [o]
  * @returns {{ kind: string, link: any, pcache: any, device: () => any }}
  */
 export function installNodeGfx(host, kind, o = {}) {
@@ -28,7 +28,15 @@ export function installNodeGfx(host, kind, o = {}) {
   else if (kind === 'recorder') {
     const words = new Int32Array(new SharedArrayBuffer(16 << 20));
     link = new RenderLink({ words, replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
-    link.drain = function () { this.w.consumed = this.replayer.reader.consumed = this.w.produced; };
+    // (o.hash: every command word dropped is hashed first — FNV-1a over the words — for streamHash: two runs of the same
+    // guest work under the virtual clock compare their render commands, e.g. before / after an API-layer change)
+    const sh = o.hash ? { h: 0x811c9dc5, words: 0 } : null;
+    link.drain = function () {
+      const w = this.w;
+      if (sh !== null) { const I = w.I, m = w.mask; let h = sh.h; for (let p = this.replayer.reader.consumed; p < w.produced; p++) h = Math.imul(h ^ I[p & m], 16777619); sh.h = h; sh.words += w.produced - this.replayer.reader.consumed; }
+      w.consumed = this.replayer.reader.consumed = w.produced;
+    };
+    if (sh !== null) link.streamHash = () => { link.drain(); return `${(sh.h >>> 0).toString(16).padStart(8, '0')} (${sh.words} words)`; };
     host.gfx = { createDevice: (d) => (dev = new Recorder(link, d)) };
   } else if (kind !== 'none') throw new Error(`--gfx ${kind}: backend, recorder or none`);
   return { kind, link, pcache, device: () => dev };

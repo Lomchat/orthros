@@ -29,6 +29,7 @@ import { LearnedHeat, RangeHeat } from '../../src/cpu/jit/heat.js';
 import { acct, C as ACCT, catsObject } from '../../src/core/frame-acct.js';
 import { VMem } from '../../src/win32/vmem.js';
 import { resHeapStats } from '../../src/win32/res-mem.js';
+import { refreshApiOpt } from '../../src/core/api-opt.js';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -37,6 +38,7 @@ if (!target) { console.error('usage: node tools/bench/startbench.mjs <manifest.j
 const untilApi = opt('until-api', 'CreateProcessA'), limit = Number(opt('limit', 600));
 // --dbg NAME=value,...: debug globals set before the run (the page's ?dbg= switches, e.g. ORTHROS_HOST_TIMER_Q=15.625)
 for (const kv of (opt('dbg', '') || '').split(',').filter(Boolean)) { const [k, v] = kv.split('='); globalThis[k] = Number.isNaN(Number(v)) ? v : Number(v); }
+refreshApiOpt(); // (the API-layer switches among them: read from the debug globals once)
 // --until-insns <M>: stop after that many million guest instructions (a fixed amount of guest work: under
 // `perf stat -e instructions:u`, the host instructions per guest instruction of a JIT variant, insensitive to the load)
 const untilInsns = Number(opt('until-insns', 0)) * 1e6;
@@ -53,6 +55,9 @@ const vfs = makeVfs(manifest, dir, saveDir);
 // repeats itself exactly (thread interleavings included) as long as nothing else varies (no --bg / --cold)
 // --timescale <x>: guest milliseconds per real millisecond (as the page's ?timescale: above 1 the guest sees a slower machine)
 const clock = args.includes('--virtual') ? new VirtualClock() : new RealClock(Number(opt('timescale', 1)));
+// (--virtual: Math.random seeded as well — the guest's random bytes, CryptGenRandom / RtlGenRandom / CoCreateGuid, are
+// the same in every run, so that two runs' render commands compare: --gfx-hash)
+if (args.includes('--virtual')) { let x = 0x9e3779b9; Math.random = () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x / 4294967296; }; }
 // --jitter <seed>: with --virtual, the clock jumps now and then at the end of a slice (seeded xorshift: 1 slice in 64, 1 to
 // 40 ms) as when the host deschedules the emulator — other interleavings of the guest's timed threads, each seed exactly
 // repeatable
@@ -82,8 +87,10 @@ if (opt('mp3-capture')) {
 // --gfx recorder|backend: the Direct3D work goes to the render worker's recorder (commands dropped: the emulator thread's
 // share of the default browser path) or to the in-thread WebGL backend over a no-op context (tools/bench/node-gfx.mjs, as
 // framebench); --programs <programs2-<manifest>.json>: learned GL programs compiled ahead (backend). Default: neither
-// (the device's own bookkeeping only).
-const gfx = opt('gfx') ? installNodeGfx(host, opt('gfx'), { programs: opt('programs'), log: (l) => console.log(l) }) : null;
+// (the device's own bookkeeping only). --gfx-hash (recorder): a hash of the render commands recorded so far, at every
+// scenario mark ([gfxhash] lines) — with --virtual, the same guest work gives the same commands: an API-layer change that
+// must not change what reaches the GPU is checked by comparing two runs' lines
+const gfx = opt('gfx') ? installNodeGfx(host, opt('gfx'), { programs: opt('programs'), hash: args.includes('--gfx-hash'), log: (l) => console.log(l) }) : null;
 // --bg: the background translator in a worker thread (shared guest memory), its regions installed between slices;
 // --cold: with the JIT's cold tier (Jit.runCold) — what the browser worker does
 const bgWanted = args.includes('--bg') || args.includes('--cold');
@@ -324,6 +331,7 @@ const scenario = scenarioFile ? new NodeScenario(fs.readFileSync(scenarioFile, '
 if (stallRep) { const fh = vm.host.frameHook; vm.host.frameHook = () => { stallRep.frameAt = performance.now(); stallRep.hist.clear(); return fh?.(); }; }
 if (scenario && opt('slow-apis')) scenario.enableSlowApis(Number(opt('slow-apis')));
 if (scenario && apiHist) (scenario.phaseReports ??= []).push(apiPhase);
+if (scenario && gfx?.link?.streamHash) (scenario.phaseReports ??= []).push((label) => console.log(`[gfxhash] ${label}: ${gfx.link.streamHash()}`));
 // --gc <ms>: with a scenario, this thread's garbage collections per phase and in the frames longer than that ([gc] lines)
 if (scenario && opt('gc')) scenario.enableGc(Number(opt('gc')), await import('node:v8'));
 // --jit-profile with a scenario: each phase's profile counters (the difference since the previous mark)
