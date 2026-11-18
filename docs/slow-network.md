@@ -713,6 +713,77 @@ the same folder. Now a game's base is an owner too, with the same mechanism:
   FR 273 MB `morrowind@base` + 805 `morrowind-goty-fr`. Single-version folders (Age of the Ring, Vice City,
   Half-Life, Counter-Strike) are unchanged. Listing cost unchanged (one prefix test a file).
 
+## Files identical by content (2026-11-18)
+
+The owners above share a file when it is the very file (same device and inode). Many games ship the same bytes as
+another file, though: Age of the Ring carries its own copies of RotWK's and BFME II's files (other inodes, other dates,
+`rotwk/…` and `bfme2/…` in its tree), Half-Life's and Counter-Strike's `valve/` files are copies, the two Vanilla+
+editions copy each other's mods. Each version keeps them under its own keys (`path#size#mtime#block`): a player of both
+fetched and stored them twice. Now they are found by content, for every game:
+
+- **The server hashes** (`src/server/content-twins.js`, `ContentTwins`): a pass over every version's tree lists each
+  file's place — the store a browser keeps it in (its `owner`, else the version) and its path there (`op`, else the
+  tree's) — with its file (`resolveGameFile`) and stat (a file changed since its tree was listed waits for the next
+  pass). Only files of 64 KiB or more whose size another file of the catalog has are hashed: first the SHA-256 of the
+  size, the first and the last 64 KiB (a file of 128 KiB or less: whole), then, for those sharing that first hash, the
+  SHA-256 of the whole file — the identity; two DDS of one size and header are not twins (the test's case: one byte in
+  the middle). One file at a time, `TWIN_RATE` (64 MiB/s) at most, paused while the 1-minute load average is at half
+  the cores or more; kept by file version (`dev:ino:size:mtime`) in `<learn>/content-hashes.json` (written every 30 s
+  while a pass hashes; a file version no place has any longer forgotten). The first pass 20 s after the start, then
+  every 30 minutes — skipped when every tree is the same object as at the last pass (none listed again: no folder
+  changed). `--no-content-twins` turns it off.
+- **`/api/twins/<version>`**: the groups of identical files the version reads, `{ v: 1, groups: [[size, [[store, path,
+  mtime, light], ...]], ...], passes }` (brotli/gzip like the tree: Age of the Ring's 174 KB, 15.7 KB brotli). Each
+  place of a group is the same bytes; a group lists 16 places at most (the version's own first). Empty before the
+  first pass.
+- **The client reads them where they are** (`withTwins`, `TwinStore` in `src/vfs/game-data.js`): `openVersion` asks
+  each opened version's `/api/twins` beside its tree when it may read other versions' stores (`o.twin`, by default its
+  `o.legacy` opener — the pages', the data worker's and the download worker's `openLegacyStore`: a store that exists and
+  no other context holds; the probe and the tools ask nothing). A part whose tree has a place of a group at that exact
+  path, size and date reads through a `TwinStore` (`part.files.store`; `part.store` stays its own: what it writes,
+  closes and counts): a block or 64 KiB piece its store lacks is "here" when a twin's store holds it under the twin's
+  key, read there — its length checked against the file's size, the store's own checksum checked as it reads —, never
+  copied (one copy in the browser), never written nor dropped there. A light copy too, when both places serve one of
+  the same size and extension (`light-copies.js` makes it from the file's bytes, by format). Every reader goes through
+  it: the game's reads, the learned order, the archive fill, Prepare's launch set, the whole download (the offline copy
+  counts a twin's blocks as here), the data worker's.
+- **Stores opened for it**: a store already open (a part's, a legacy one) is read as it is; another one is opened only
+  when it holds a block of a twin its part lacks — closed at once otherwise — and kept for the session
+  (`version.twinStores`, closed with the parts'). OPFS opens a store in one context at a time: while a game holds
+  another game's store for its twins, that game opened in another tab meanwhile runs without its store (as with a
+  shared owner's store another tab's game holds, "Files of a required version"; two games played at once). The other
+  way round costs nothing: a store another tab holds is not opened, its twins fetched.
+- **Clearing a game's cache** ("My data") clears its own store: a game that read twins there fetches them again when
+  it needs them (never wrong bytes: a missing block is fetched).
+- **No layout change, no quota cost**: the stores are the same; a twin read in place costs no byte of storage.
+- Measured on the live catalog (2026-11-18, read only): a first pass hashed 1,565 files (13.8 GB read, 103 s at most
+  200 MiB/s for the measure; 64 MiB/s on the server) of 60,469 places; 2,921 groups of identical files read by 16
+  versions; a pass with every hash cached 3.8 s (with a fresh listing of every tree: the server's trees are cached).
+  Age of the Ring: 372 of its own files (9.1 GB) have a twin in another store (`bfme2@base` W3D.big 1,001 MB,
+  `lang/*Audio.big`, Textures2.big…; `rotwk@base` `lang/*Audio.big`…; 90 MB in `bfme1@base`) and 651 groups of files it
+  holds twice itself (`rotwk/` and `bfme2/`); `rotwk@base` and `bfme2@base` share 86 files (1,026 MB); Half-Life and
+  Counter-Strike 309 MB; the Vanilla+ editions 459 MB of each other's files, GOTY EN/FR one 114 MB file.
+- Measured (2026-11-18, `/tmp` bench in Node: the game data's own code — `openVersion`, `learnedOrders`, `launchSet`,
+  `HttpBackend.prefetch` — on a scratch server of each tree with copies of the live learned orders, one in-memory
+  "browser" per variant: `rotwk-202` then `aotr-10`, fast link). Age of the Ring after RotWK 2.02:
+
+  | `aotr-10` after `rotwk-202` | main (`cf698a2`) | twins |
+  |---|---|---|
+  | launch sets (to the menu): raw / wire | 288.2 / 148.1 MB, 5,637 requests | 259.5 / 138.3 MB, 5,500 |
+  | whole learned orders: raw / wire | 995.1 / 578.2 MB, 8,298 requests | 827.5 / 481.3 MB, 7,775 |
+
+  The launch set: 28.7 MB fewer raw bytes, 9.8 MB of wire (~2 min at 85 KB/s); the learned orders 167.6 MB raw,
+  96.9 MB of wire (~19 min at 85 KB/s) — what a player of RotWK no longer fetches for Age of the Ring (bfme2/W3D.big
+  97.9 → 63.1 MB, Terrain.big 68.9 → 44.9, Textures3.big 53.4 → 23.1…). The open costs one request more per version
+  (+27 ms here, with its tree's).
+  In Chrome (`tools/headless.mjs --opfs`, one persistent profile: `rotwk-202` for 240 s on this change's server — its
+  whole learned order stored, 1,066 MB —, the profile copied, then `aotr-10` for 120 s on each tree's scratch server,
+  fast localhost link; Age of the Ring's learned order, 7,823 entries, done in both): main 7,958 requests, **817.6 MB**
+  of wire (its prefetch 3,628 blocks, 1,402 MB, 118 s); twins 7,280 requests, **529.8 MB** (2,285 blocks, 918 MB,
+  103 s) — 288 MB fewer, ~56 min at 85 KB/s. Not measured: a thin link in the browser (the bytes above are the link's
+  whole work), the home's probe (it opens no twins: a version never played says "missing" though another game's store
+  holds some of its files).
+
 ## Precompressed units (2026-10-21)
 
 Every request of `/gamez` used to be compressed on the fly (zstd-3, else gzip-4; 256 MB of encoded ranges kept in

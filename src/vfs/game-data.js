@@ -8,11 +8,13 @@
 // that version's: read through a part of its own (`shared`), its store orthros-files-<owner> and /gamez/<owner>/ —
 // one copy in the browser for every version that reads them (docs/slow-network.md "Files of a required version"). The
 // same for the files of a game's base/ its versions share (owner `<game>@base`): one copy whatever version is played.
-import { HttpBackend } from './http-backend.js';
+// Files identical by content under other names, dates or games (the server's /api/twins: content-twins.js) are read
+// from any store of this browser that keeps them (TwinStore): one copy too, whatever game brought it.
+import { HttpBackend, BLOCK, CHUNK } from './http-backend.js';
 import { NetLink } from './net-link.js';
 import { OpfsBlockStore } from './opfs-store.js';
 import { OpenPredictor } from './open-predict.js';
-import { treeBytes, treeOwner, splitOwners, treeLookup, treeStat, treeReaddir } from './game-tree.js';
+import { LIGHT_DIR, treeBytes, treeOwner, splitOwners, treeLookup, treeStat, treeReaddir, treeFile } from './game-tree.js';
 
 const enc = encodeURIComponent;
 async function json(url) {
@@ -155,18 +157,26 @@ export async function openData(name, o = {}) {
  * store are had at once, then every required version's tree and store at once: one wait each instead of one after
  * another (a page that opens its data while its engine downloads — docs/slow-network.md "Opened early"). A failure
  * closes the stores that opened.
+ * Files identical by content (withTwins): each opened version's /api/twins asked with its tree, the stores of other
+ * versions that keep them opened with `o.twin(name)` — by default `o.legacy`'s: a page that reads other versions' stores
+ * for what they kept reads them there too (openLegacyStore: only one that exists and no other context holds) —, those
+ * that hold none of their blocks closed at once; the others are `twinStores`, the caller's to close with the parts'
+ * stores. Neither (a probe, a tool) or `twin: null`: none, nothing asked.
  */
 export async function openVersion(name, o = {}) {
   const net = o.net ?? new NetLink({ bw: o.bw }), link = new Set();
   const storeOf = (n, primary, sh = false) => (typeof o.store === 'function' ? o.store(n, primary, sh) : o.store);
   const kept = (n, st) => !!st && typeof st === 'object' && (o.kept ? !!o.kept(n) : true);
+  const twinOpen = o.local ? null : o.twin !== undefined ? o.twin : o.legacy ?? null;
   // (a version's tree and store, together; its store closed when its tree cannot be had. Each promise observed as it
   // is made — awaited later: a store that fails while the tree is in flight, or a tree while the manifest is, is not an
   // unhandled rejection — Node's process killed, the worker's "Uncaught (in promise)" before its clean failure)
   const both = async (n, primary, tree) => {
     const store = Promise.resolve(storeOf(n, primary));
     store.catch(() => {});
-    try { return { n, tree: await (tree ?? json(`/api/tree/${enc(n)}`)), store: await store }; }
+    // (its files kept by content elsewhere: asked beside its tree — none when that fails, an older server)
+    const twins = twinOpen ? contentTwins(n) : null;
+    try { return { n, tree: await (tree ?? json(`/api/tree/${enc(n)}`)), store: await store, twins: await twins }; }
     catch (e) { store.then((st) => st?.close?.(), () => {}); throw e; }
   };
   const first = both(name, true, o.tree);
@@ -216,7 +226,143 @@ export async function openVersion(name, o = {}) {
     parts.push(Object.assign(part, { shared: true, owned: new Set() }));
   }
   budget.units = parts.filter((p) => !isBaseOwner(p.name)).length;
-  return { net, manifest, parts };
+  // (a store another part reads already, or a legacy one opened for it: read there, never opened twice — OPFS)
+  const twinStores = [];
+  const lists = got.map((g) => g.value.twins).filter(Boolean);
+  if (lists.length) {
+    const open = async (n) => {
+      const p = parts.find((q) => q.name === n); if (p) return { st: p.store, own: false };
+      if (legacy.has(n)) return { st: await legacy.get(n), own: false };
+      return { st: await Promise.resolve().then(() => twinOpen(n)).catch(() => null), own: true };
+    };
+    twinStores.push(...await withTwins(parts, lists, open));
+  }
+  return { net, manifest, parts, twinStores };
+}
+
+/**
+ * The groups of files identical by content that version `name` reads (the server's /api/twins, content-twins.js):
+ * { v, groups: [[size, [[store, path, mtime, light], ...]], ...] }, or null (none: an error, an older server).
+ */
+export const contentTwins = (name) => fetch(`/api/twins/${enc(name)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+
+/**
+ * The twins of the parts' files (openVersion): `lists`, /api/twins answers; `open(name)` -> { st, own } — the store of
+ * that name, a part's (or one opened already: `own` false) or opened for this (null: none here, held elsewhere). Each
+ * part with a store whose files have a twin kept elsewhere — a block of it there its own lacks — reads through a
+ * TwinStore (`files.store`; `part.store` stays its own: what it writes, closes and counts). A twin in this browser's
+ * stores at the same size: the same bytes (the server hashed both), the keys at their own paths and dates; a light
+ * copy's too when both have one of the same size and format (light-copies.js: made from the file's bytes, by its
+ * extension). Returns the stores opened here and kept (the caller's to close); the others closed.
+ */
+export async function withTwins(parts, lists, open) {
+  const byName = new Map(parts.map((p) => [p.name, p]));
+  /** part -> prefix (path#size#mtime) -> { size, to: Map(store name\nits prefix -> [store name, its prefix]) } */
+  const want = new Map();
+  const add = (p, prefix, size, store, tp) => {
+    let m = want.get(p); if (!m) want.set(p, m = new Map());
+    let t = m.get(prefix); if (!t) m.set(prefix, t = { size, to: new Map() });
+    t.to.set(store + '\n' + tp, [store, tp]);
+  };
+  const ext = (s) => /\.[^./]*$/.exec(s)?.[0].toLowerCase() ?? '';
+  for (const l of lists) for (const g of Array.isArray(l?.groups) ? l.groups : []) {
+    const size = g?.[0], places = Array.isArray(g?.[1]) ? g[1].filter((x) => Array.isArray(x) && typeof x[0] === 'string' && typeof x[1] === 'string' && Number.isFinite(x[2])) : [];
+    if (!Number.isSafeInteger(size) || size <= 0 || places.length < 2) continue;
+    for (const a of places) {
+      const p = byName.get(a[0]); if (!p?.store) continue;
+      // (the part's tree says that file, that size, that date: the keys it reads it under)
+      const f = treeFile(p.files.tree, a[1]); if (!f || f.path !== a[1] || f.size !== size || f.mtime !== a[2]) continue;
+      for (const b of places) {
+        if (b === a || (b[0] === a[0] && b[1] === a[1])) continue;
+        add(p, `${a[1]}#${size}#${a[2]}`, size, b[0], `${b[1]}#${size}#${b[2]}`);
+        const light = f.light ?? 0;
+        if (light > 0 && light === a[3] && light === b[3] && ext(a[1]) === ext(b[1])) add(p, `${LIGHT_DIR}/${a[1]}#${light}#${a[2]}`, light, b[0], `${LIGHT_DIR}/${b[1]}#${light}#${b[2]}`);
+      }
+    }
+  }
+  if (!want.size) return [];
+  // (each store named once: its prefixes wanted, those of a part's prefix its own store lacks a block of)
+  const names = new Set();
+  for (const m of want.values()) for (const t of m.values()) for (const [n] of t.to.values()) names.add(n);
+  const stores = new Map(), opened = [], useful = new Set();
+  for (const n of [...names].sort()) {
+    const r = await open(n); if (!r?.st || r.st.failed) continue;
+    stores.set(n, r.st);
+    if (r.own) opened.push([n, r.st]); else useful.add(n); // (open already: read there, whatever it holds)
+  }
+  // (a store opened for a twin kept only while it holds a block of one its part lacks: a part's whole copy reads nothing
+  // there — nor holds another version's store from its own game in another tab)
+  for (const [n, st] of opened) {
+    const back = new Map(); // its prefix -> [[part, the part's prefix]]
+    for (const [p, m] of want) for (const [prefix, t] of m) for (const [sn, tp] of t.to.values()) if (sn === n) { let l = back.get(tp); if (!l) back.set(tp, l = []); l.push([p, prefix]); }
+    for (const k of st.map.keys?.() ?? []) {
+      const i = k.lastIndexOf('#'), l = i > 0 ? back.get(k.slice(0, i)) : null; if (!l) continue;
+      if (l.some(([p, prefix]) => !p.store.map.has(prefix + k.slice(i)))) { useful.add(n); break; }
+    }
+  }
+  for (const [p, m] of want) {
+    const twins = new Map();
+    for (const [prefix, t] of m) {
+      const at = [...t.to.values()].filter(([n]) => useful.has(n)).map(([n, tp]) => [stores.get(n), tp, n]);
+      if (at.length) twins.set(prefix, { size: t.size, at });
+    }
+    if (twins.size) p.files.store = new TwinStore(p.store, twins);
+  }
+  const kept = [];
+  for (const [n, st] of opened) { if (useful.has(n)) kept.push(st); else try { st.close(); } catch { /* closed */ } }
+  return kept;
+}
+
+/**
+ * A part's store as its reader sees it (withTwins): its own store `inner`, over the stores of this browser that keep
+ * files identical to some of its own under their own keys (`twins`: the part's key prefix path#size#mtime -> { size, at:
+ * [[store, its prefix there, its name], ...] }). A block or piece its own store lacks is here when one of them has it: read
+ * there — its length checked, the store's own checksum checked as it reads —, never copied (one copy in the browser),
+ * never written nor dropped there (another version's store: its own game's). What it writes goes to its own store.
+ * `hits`, `bytes`: the blocks and bytes read from twins.
+ */
+export class TwinStore {
+  /** @param {object} inner @param {Map<string, { size: number, at: Array<[object, string, string]> }>} twins */
+  constructor(inner, twins) {
+    this.inner = inner; this.twins = twins; this.hits = 0; this.bytes = 0;
+    this.map = { has: (k) => inner.map.has(k) || this.find(k) !== null, get size() { return inner.map.size; }, keys: () => inner.map.keys() };
+  }
+  /** [store, its key] of a twin that has `key`, the length its bytes must have; null when none */
+  find(key) {
+    const i = key.lastIndexOf('#'), t = i > 0 ? this.twins.get(key.slice(0, i)) : undefined; if (!t) return null;
+    const rest = key.slice(i);
+    for (const [st, tp] of t.at) { const k = tp + rest; if (!st.failed && st.map.has(k)) return [st, k, t.size, rest]; }
+    return null;
+  }
+  get(key) {
+    const own = this.inner.get(key); if (own) return own;
+    const i = key.lastIndexOf('#'), t = i > 0 ? this.twins.get(key.slice(0, i)) : undefined; if (!t) return null;
+    // (a block `#<index>` or a 64 KiB piece `#c<index>`: its length in a file of that size)
+    const rest = key.slice(i), piece = rest[1] === 'c', at = Number(rest.slice(piece ? 2 : 1)), n = piece ? CHUNK : BLOCK;
+    const len = Math.min(n, t.size - at * n);
+    if (!Number.isSafeInteger(at) || !(len > 0)) return null;
+    for (const [st, tp] of t.at) {
+      const k = tp + rest; if (st.failed || !st.map.has(k)) continue;
+      const b = st.get(k);
+      if (b && b.length === len) { this.hits++; this.bytes += len; const s = this.inner.stats; if (s) { s.twinHits = (s.twinHits ?? 0) + 1; s.twinBytes = (s.twinBytes ?? 0) + len; } return b; }
+    }
+    return null;
+  }
+  put(key, bytes) { this.inner.put(key, bytes); }
+  drop(key) { this.inner.drop?.(key); }
+  flush(force = false) { this.inner.flush?.(force); }
+  close() { this.inner.close?.(); }
+  noteChanged() { this.inner.noteChanged?.(); }
+  get notes() { return this.inner.notes; }
+  get failed() { return this.inner.failed; }
+  get stats() { return this.inner.stats; }
+  get pending() { return this.inner.pending; }
+  /** the twins' files and the stores read: { files, bytes, stores } */
+  describe() {
+    const stores = new Set(); let bytes = 0;
+    for (const t of this.twins.values()) { bytes += t.size; for (const [, , n] of t.at) stores.add(n); }
+    return { files: this.twins.size, bytes, stores: [...stores] };
+  }
 }
 
 /** A game folder's shared base (game-catalog.js baseOwnerOf: `<game>@base` — '@' is in no version id), not a version. */

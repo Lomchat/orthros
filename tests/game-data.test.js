@@ -376,6 +376,35 @@ test('a game\'s base shared by its versions: marked `<game>@base` (at its own pa
   assert.deepEqual(e.read(0, exe.length), exe, '/gamez/g@base/ serves the base');
 });
 
+test('files identical by content in two games: hashed by the server (by their bytes: the same size, head and tail is not enough), read from the other game\'s store, nothing fetched', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orthros-twins-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const games = path.join(root, 'games'), same = bytes((2 << 20) + 5000, 3), near = bytes(same.length, 3);
+  near[1 << 20] ^= 1; // (its head and tail the twin's: only its SHA-256 tells them apart)
+  const put = (rel, b, mtime) => { const f = path.join(games, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, b); fs.utimesSync(f, mtime, mtime); };
+  put('a/base/x.big', same, 1000); put('b/base/Sub/y.big', same, 2000); put('b/base/near.big', near, 3000);
+  for (const g of ['a', 'b']) fs.mkdirSync(path.join(games, g, 'versions/1'), { recursive: true });
+  for (const g of ['a', 'b']) fs.writeFileSync(path.join(games, g, 'manifest.json'), JSON.stringify({ schemaVersion: 1, id: g, name: g, defaultVersion: `${g}-1`, versions: [{ id: `${g}-1`, dir: '1', version: '1', exe: g === 'a' ? 'x.big' : 'near.big' }] }));
+  const server = createServer({ gamesDir: games, enginesDir: path.join(root, 'engines'), lanLog: () => {}, contentTwins: { rate: Infinity, delayMs: 1e9, busy: () => false, log: () => {} } });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r)); t.after(() => new Promise((r) => { server.closeAllConnections(); server.close(r); }));
+  await server.twinPass();
+  const origin = `http://127.0.0.1:${server.address().port}`, realFetch = globalThis.fetch, asked = [];
+  globalThis.fetch = (url, init) => { const u = new URL(url, origin); if (u.pathname.startsWith('/gamez')) asked.push(u.pathname); return realFetch(u, init); };
+  t.after(() => { globalThis.fetch = realFetch; });
+  assert.deepEqual((await (await fetch('/api/twins/b-1')).json()).groups, [[same.length, [['a-1', 'x.big', 1000000, 0], ['b-1', 'Sub/y.big', 2000000, 0]]]]);
+  // (game a's store, filled by its own play; b's empty)
+  const sa = new MemBlockStore(), sb = new MemBlockStore();
+  for (let i = 0; i * BLOCK < same.length; i++) sa.put(`x.big#${same.length}#1000000#${i}`, same.subarray(i * BLOCK, (i + 1) * BLOCK));
+  const opened = [], version = await openVersion('b-1', { store: () => sb, twin: (n) => { opened.push(n); return n === 'a-1' ? sa : null; } });
+  assert.deepEqual([opened, version.twinStores], [['a-1'], [sa]]);
+  const files = new PartsBackend(version, 'b-1'), y = files.open('sub/Y.BIG');
+  await y.prepare(0, same.length);
+  assert.deepEqual(y.read(0, same.length), same);
+  assert.deepEqual([asked.filter((p) => /y\.big/i.test(p)), sb.map.size], [[], 0], 'read in a\'s store: nothing fetched, nothing copied');
+  const n = files.open('near.big'); await n.prepare(0, near.length);
+  assert.deepEqual(n.read(0, near.length), near);
+  assert.ok(asked.some((p) => p.endsWith('/near.big')), 'a file of the same size, head and tail: fetched');
+});
+
 test('a game\'s base read by a port through its required version: that version\'s store, opened once as its own part, is where the base\'s old blocks are found', async (t) => {
   // (Morrowind Vanilla+ FR: its tree marks files of morrowind-goty-fr and of morrowind@base, whose blocks goty-fr's store
   // kept before the base was shared — the base listed first: its store must not take goty-fr's)
@@ -385,7 +414,7 @@ test('a game\'s base read by a port through its required version: that version\'
   stores.u.put(`base.dat#${size}#5#0`, block);
   const realFetch = globalThis.fetch; globalThis.fetch = async (url) => { asked.push(String(url)); return new Response(null, { status: 404 }); };
   t.after(() => { globalThis.fetch = realFetch; });
-  const legacy = [], version = await openVersion('p', { tree, manifest: { ownerLegacy: { 'g@base': ['u', 'x'] } }, store: (n) => stores[n], legacy: (n) => { legacy.push(n); return null; } });
+  const legacy = [], version = await openVersion('p', { tree, manifest: { ownerLegacy: { 'g@base': ['u', 'x'] } }, store: (n) => stores[n], legacy: (n) => { legacy.push(n); return null; }, twin: null });
   assert.deepEqual(version.parts.map((p) => p.name), ['p', 'g@base', 'u']);
   assert.deepEqual(legacy, ['x'], 'the required version\'s store not opened a second time');
   const base = partOf(version, 'p', 'base.dat');

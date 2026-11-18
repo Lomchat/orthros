@@ -17,6 +17,7 @@ test('prepare: the engine files side by side (at most 4), each once, the bytes c
     if (url.startsWith('/api/manifest/')) return json({});
     if (url.startsWith('/api/tree/')) return json({ dirs: {}, files: {} });
     if (url.startsWith('/api/prefetch/')) return json([]);
+    if (url.startsWith('/api/twins/')) return json({ v: 1, groups: [] });
     asked.push(url); now++; most = Math.max(most, now);
     await new Promise((r) => setTimeout(r, 10));
     now--;
