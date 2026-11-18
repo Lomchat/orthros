@@ -809,7 +809,7 @@ function sendFlickerCapture(rec) {
  * session: { ok } or { ok: false, why, again } for the shell. window.orthros.reportDisplay() does the same (a harness
  * run reads the record at window.__orthrosDisplayReport).
  */
-const REPORT_WAIT_MS = 10000;
+const REPORT_WAIT_MS = 40000; // (the renderer may re-encode many distinct frames to fit: 26 ms each on a software GPU; a hardware one is faster)
 let reportSeq = 0;
 async function reportDisplay({ recorded } = {}) {
   if (!state.worker || state.status !== 'running') return { ok: false, why: 'the game is not running', again: true };
