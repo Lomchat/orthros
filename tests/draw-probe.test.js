@@ -77,3 +77,16 @@ for (const recorded of [false, true]) {
     assert.ok(!fp.dp && fp.dpSent, 'once per session');
   });
 }
+
+test('a probe whose device stops presenting gives up (it would hold every present of the session)', async () => {
+  const { DrawProbe } = await import('../src/gfx/draw-probe.js');
+  const { gl } = fakeGl(64, 64);
+  let t = 0;
+  const p = new DrawProbe(gl, { send: () => {}, now: () => t, ms: 2000, controlMs: 1000 });
+  const a = { dev: {}, sigOn: false }, b = { dev: {}, sigOn: false };
+  p.present(null, 64, 64, a, 0);
+  assert.equal(p.phase, 'wait');
+  for (; t < 60000 && p.active; t += 100) p.present(null, 64, 64, b, 0); // (device a released: another one presents)
+  assert.ok(!p.active && p.done, 'given up');
+  assert.ok(t < 20000, `within its recording's length and a margin (${t} ms)`);
+});

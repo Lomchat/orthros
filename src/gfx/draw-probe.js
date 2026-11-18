@@ -39,6 +39,11 @@ const PBOS = 32;
 const STALE = 240;
 /** distinct draw descriptions / texture matrix sets kept at most */
 const TABLE_MAX = 400;
+/**
+ * ms past its recording's own length after which a probe whose device no longer presents gives up (another device
+ * presents meanwhile: its own released, a child process ended) — else it would hold the presents for the session
+ */
+const GONE_MS = 10000;
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
 
@@ -70,6 +75,7 @@ export class DrawProbe {
    */
   present(fbo, w, h, dev, sig) {
     const now = this.now();
+    if (this.phase !== 'start' && this.active && dev !== this.dev && now - this.t0 > this.ms + this.controlMs + GONE_MS) { this.abort('its device stopped presenting'); return false; }
     if (this.phase === 'start') {
       if (!dev?.dev) { this.notes.push('no device'); this.phase = 'done'; return false; }
       this.dev = dev; this.w = w; this.h = h; this.t0 = now; this.path = dev.dev.mirror ? 'worker' : 'thread';
@@ -311,6 +317,7 @@ export class DrawProbe {
     if (!this.force && !interesting) { this.notes.push('nothing varied'); return; }
     await step(() => fitDrawProbe(rec, DRAW_PROBE_MAX_BYTES - 200));
     rec.took = { ms: Math.round(performance.now() - t0), slices: work.slices, busy: Math.round(work.busy), longest: Math.round(work.longest * 10) / 10, over8: work.over8 };
+    if (this.phase === 'done') return; // (aborted while it was made: context lost, probe switched off — not sent)
     this.sent = true;
     this.send(rec);
   }

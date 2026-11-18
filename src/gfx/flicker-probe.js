@@ -42,7 +42,8 @@
 // same commands and flickered where nothing moved (alt, or still >= DP_STILL), or by a still screen that stays — two
 // samples in a row with the same commands each (a pause, a menu, a loading screen: the second one taken CONFIRM_MS after
 // the first) —; when it finds nothing it sends nothing, and tries again at the next such screen at least DP_RETRY_MS
-// later, DP_TRIES times at most (menus and loading screens before the game must leave tries for its pause). It runs
+// later, DP_TRIES times at most, each screen (its command signature) once per kind of start (a menu that stays must not
+// use the tries its pause needs; nor its second look, CONFIRM_MS, sampled again). It runs
 // before the session's flicker capture, whose warm-up sends every uniform again (a stale one would be hidden).
 // ORTHROS_FLICKER (debug global): 0 off, 2 every sample logged. ORTHROS_DRAW_PROBE: 0 never, 1 a draw probe now (sent
 // whatever it finds).
@@ -145,7 +146,7 @@ export class FlickerProbe {
   constructor(gl, opts = {}) {
     this.gl = gl; this.now = opts.now ?? (() => performance.now()); this.log = opts.log ?? null; this.logged = 0; this.errors = opts.errors ?? true;
     this.send = opts.send ?? null; this.encode = opts.encode; this.cap = null; this.captured = false; this.armed = null; this.report = null; this.reportAsked = null;
-    this.dp = null; this.dpArmed = null; this.dpSent = false; this.dpTries = 0; this.dpNext = 0; this.sameRun = 0; // (the draw probe: draw-probe.js)
+    this.dp = null; this.dpArmed = null; this.dpSent = false; this.dpTries = 0; this.dpNext = 0; this.sameRun = 0; this.dpSeen = new Set(); // (the draw probe: draw-probe.js; dpSeen: the screens tried, `${why}:${signature}`)
     this.stats = { n: 0, aba: 0, still: 0, chg: 0, max: 0, recent: [], over1: 0, alt: 0, abaAlt: 0, altSame: 0, altCmdAba: 0, glErrors: 0, glError: 0 };
     this.next = this.now() + PERIOD_MS; this.left = 0; this.read = null; this.presents = 0; this.sigs = [0, 0, 0];
     this.reset();
@@ -324,9 +325,11 @@ export class FlickerProbe {
     if (cmd === 'same') this.sameRun++; else this.sameRun = 0;
     if (!this.dpSent && !this.dp && !this.dpArmed && this.send && globalThis.ORTHROS_DRAW_PROBE !== 0 && this.dpTries < DP_TRIES) {
       const t = { still: still / 1e4, aba: aba / 1e4, chg: chg / 1e4, w, h, sample: st.n, cmd };
-      if (cmd === 'same' && (alt || still >= DP_STILL) && this.now() >= this.dpNext) this.dpArmed = { why: 'flicker', ...t };
-      else if (this.sameRun >= 2 && this.now() >= this.dpNext) this.dpArmed = { why: 'still', ...t };
-      else if (this.sameRun === 1) this.next = Math.min(this.next, this.now() + CONFIRM_MS); // (a second look soon)
+      const screen = cmd === 'same' ? (sigs[2] >>> 0).toString(16) : null, fresh = (why) => screen !== null && !this.dpSeen.has(`${why}:${screen}`);
+      const arm = (why) => { this.dpArmed = { why, ...t }; if (this.dpSeen.size < 4096) this.dpSeen.add(`${why}:${screen}`); };
+      if (cmd === 'same' && (alt || still >= DP_STILL) && this.now() >= this.dpNext && fresh('flicker')) arm('flicker');
+      else if (this.sameRun >= 2 && this.now() >= this.dpNext && fresh('still')) arm('still');
+      else if (this.sameRun === 1 && fresh('still')) this.next = Math.min(this.next, this.now() + CONFIRM_MS); // (a second look soon)
     }
     if (alt) st.alt++;
     if (abaAlt) st.abaAlt++;
