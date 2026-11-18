@@ -1355,6 +1355,117 @@ scratch patch, not kept).
   translation of the GL calls in the GPU process, the GPU waiting for them), 20 ms for 537 draws (with the shadow pass)
   at 2560×1440. Fewer GL calls per draw (12.3: 5.96 → 5.80, −2.7 %) help there a little; the rest of the per-draw cost is the next track.
 
+## 13. GL programs built at a draw (2026-11-18)
+
+Question (audit of 2026-11-18): the owner's sessions build GL programs at draws, 100-270 ms each on ANGLE over Direct3D
+11, the frame waiting for each (`compile()` waits for the link; in the render worker the replay stops, then the
+emulator waits for its frames). Can they be built before their first draw, can fewer of them exist, can a draw stop
+waiting for one?
+
+### 13.1 What the telemetry shows
+
+The owner's sessions of 2026-11-08 to 11-18 (`/var/lib/orthros/telemetry`, the samples' `prog` / `progMs`): 12 sessions
+built 399 programs at draws, 20.9 s of waits, over 72 min of visible play — BFME 1.08 67 (27.7 min), AotR 149 on 11-10
+(14.8 min), 29 / 49 / 28 / 5 / 1 on 11-17, 5 / 4 on 11-18, RotWK 2.02 1 / 55 / 6 on 11-18. The logged builds over 100 ms
+(10 per session at most: 43 lines) took 101-266 ms, median 129. They come in bursts (AotR 11-17: 34 builds and 4.0 s
+in its 4th minute; 11-10: 68 builds and 3.4 s at 25-26 min), and the heaviest sessions follow changes of the translated
+GLSL: 11-10's 149 the day after `PROGRAM_GLSL_VERSION` 2 (11-09: every learned shader program of version 1 no longer
+listed), 11-17/18's after d186607 (1- and 2-channel float textures — the shadow map — read through a swizzle: the FS of
+every program sampling the shadow map changed, the learned ones not matching any more until relearned). The rest is the
+long tail: new combinations of a pass's vertex shader (a skinning case) and pixel shader (a lighting case) as a game
+brings new units and effects.
+
+### 13.2 Measuring without a browser
+
+`tools/bench/noop-gl.mjs` simulates build time: `ORTHROS_NOOP_COMPILE_MS=150` (a build ready 150 ms after its link on
+one of `ORTHROS_NOOP_COMPILE_THREADS`, default 4, compile threads; COMPLETION_STATUS_KHR answers without waiting; a link
+status query before then blocks and is counted), `ORTHROS_NOOP_DRAW_HASH=1` hashes every draw with its program's
+sources. `startbench --gfx backend --programs <learned list> --virtual` then prints the builds at draws, the waits for
+learned ones, the predictions and the hash (`programs:` line). Learned lists: copies of the live server's.
+
+### 13.3 Programs predicted from D3DX effects (on by default; `dbg ORTHROS_GL_PREDICT=0`)
+
+A pass of a D3DX effect names every shader it may set — an array selector, every element it may pick — so at its
+first application (its first BeginPass: `d3dx9-effect.js predictPass`) the effect hands the backend the codes of its
+vertex and pixel shaders — read from the effect, no shader object created ahead — and the alpha test and fog states its
+draws will have (those it sets, from a parameter as it is then, else the device's). In the
+render worker they travel as one `PREDICT` command. The backend (`predictPrograms`) queues pairs: all of a pass of at
+most 16 pairs; in a larger one (AotR / RotWK objects: 18 skinning vertex shaders x 288 lighting pixel shaders) each
+shader drawn adds its pairs with the other side's drawn ones, or with all of them when that side has at most 4 (a new
+pixel shader soon drawn with each skinning variant). A pair's sources are guessed as the draw will build them: the
+layout's D3DCOLOR semantics and each stage's texture channels as this session's draws had them, not flat. Builds start
+at presents, at most 3 unfinished at once (a build a draw needs must not wait behind many), only with
+KHR_parallel_shader_compile; a predicted program taken at a draw is learned for the next sessions (it was built at no
+draw). The draw still finds its program by its exact sources: a wrong guess is a build for nothing in the GPU process's
+threads, never another frame. `stats.predictMiss` / the `programs predicted` log line (telemetry) say why each build
+that stayed at a draw was not predicted: `none` (shaders of no pass), `pair` (a pair no rule predicted), `first` (a
+pass's first draw: nothing to predict it from), `late` (predicted, not started yet), `guess` (other sources).
+
+Node, 150 ms builds, the live learned lists, same guest work (virtual clock):
+
+| run | built at draws (wait) | learned taken (wait) | predicted pairs / built / taken | misses | draws, hash |
+|---|---|---|---|---|---|
+| RotWK `rotwk-short`, main | 13 (1 956 ms) | 32 (1 743 ms) | — | — | — |
+| RotWK, predictions | 12 (1 806 ms) | 32 (1 669 ms) | 21 / 10 / 1 | pair 5, first 3 | — |
+| AotR `fixes-aotr-play` (50 s of play), main | 7 (1 055 ms) | 43 (2 ms) | — | — | 1 362 145, 140a63e |
+| AotR, predictions | 7 (1 055 ms) | 43 (3 ms) | 20 / 6 / 0 | pair 1, first 1 | 1 362 145, 140a63e |
+
+The same draws with the same programs (hash). Few passes are effect passes in these scenes (5-6, for 96-103 shaders);
+the learned lists already hold most of their programs, and what stays at draws is a pass's first draw or a pair of a
+large pass whose shaders were not drawn before — AotR's two play builds are one pixel shader with its two skinning
+vertex shaders, the second from an 18-entry array. The gain is small (RotWK one build of 13, AotR none in 50 s of play)
+and costs builds for nothing (9 and 6) in the GPU process's background threads: kept on for its telemetry over long
+sessions, where the bursts are. Headless Chromium on SwiftShader offers no KHR_parallel_shader_compile (its report:
+0 completion checks), so predictions stay off there; the owner's Chrome on ANGLE / Direct3D 11 offers it (his in-thread
+session of 11-17 reported `parallelCompile: true`; the render worker sessions' `false` is read before the render
+worker's first statistics arrive).
+
+### 13.4 Fewer variants: alpha test and fog as uniforms (not done)
+
+A program's pixel shader carries the alpha test's comparison (`fragmentTail`: ALPHAFUNC in the code, ALPHAREF already a
+uniform) and the fog mode. Counted over the learned lists by their sources (the tail's code made uniform-driven),
+programs left of each list:
+
+| learned list | programs | fog mode uniform | + alpha function uniform | + alpha test on / off uniform (a `discard` in every program) |
+|---|---|---|---|---|
+| aotr-10 | 287 | 281 | 281 | 235 |
+| rotwk-202 | 115 | 115 | 115 | 100 |
+| bfme1-108 | 146 | 146 | 146 | 122 |
+| bfme2 | 102 | 102 | 102 | 90 |
+| vice-city-1.1 | 46 | 43 | 43 | 42 |
+
+Each game uses one alpha function (GREATEREQUAL, Vice City GREATER), and a pass's draws rarely differ by fog alone: the
+exact moves save 0-6 programs of 287. Only merging alpha test on and off saves 13-18 %, and it puts a `discard` in
+every program, which turns early depth writes off for opaque draws on a GPU and makes a software rasterizer shade every
+fragment before its depth test — a cost on every frame for fewer builds once. Any of these changes the GLSL, so
+`PROGRAM_GLSL_VERSION` would move: until the learned lists carry recipes (13.5) every learned shader program would be
+built at draws again until relearned (what 11-10's session met). Not done: too few programs saved for either cost.
+
+### 13.5 Learned shader programs rebuilt from their recipe
+
+The heaviest sessions of 13.1 followed GLSL changes: a learned shader program is only its GLSL, which a changed
+translator no longer produces, so every one is built at draws again until sessions relearn it (fixed-function ones
+are not: their key is their recipe, `ffProgramFromKey`). A Direct3D 9 shader program is now learned with its recipe
+(`r`, `program-id.js programRecipe`: both shader codes in base64, the layout's D3DCOLOR semantics, each stage's texture
+kind and channels, fog, alpha test, flat shading), sent by the session that builds it at a draw or takes it predicted
+(and once by a session that takes a learned one listed without it: the lists of before recipes fill themselves).
+The server keeps it beside the sources and lists the entry to every translator version, as its recipe without the
+sources (about the same bytes); the session rebuilds the sources with its own translator (`recipeSources`, the same
+`vertexShader9` / `sources9` as `programUncached`), compiles them ahead, and reports the entry used. A
+`PROGRAM_GLSL_VERSION` bump, or a change the version's corpus misses (d3d8-webgl's float channels of 11-17), then costs
+no session its learned shader programs. `tests/program-predict.test.js` checks that a recipe learned with stale sources
+and another version is rebuilt into the program a draw takes (alpha test, vertex fog, flat shading); the server's side
+is in `tests/program-version.test.js`.
+
+### 13.6 Draws skipped while their program builds (`dbg ORTHROS_GL_ASYNC_PROGRAMS=<ms>`, off by default)
+
+With the switch, a draw whose program the GPU process is still building (built at a draw, or a learned / predicted one
+not finished) is not issued, for at most <ms> ms from its first draw (polled once per frame with
+COMPLETION_STATUS_KHR); past that the draw waits as without the switch. Frames lack those draws meanwhile — a fidelity
+loss, hence off. RotWK as above, `ORTHROS_GL_ASYNC_PROGRAMS=300`: 13 builds without a wait at their draws (2 ms), 121 of
+381 919 draws skipped; one learned program still unfinished after 300 ms (behind the learned list's 111 builds on 4
+simulated threads) waited 891 ms: link waits 3 467 → 893 ms.
+
 ## Appendix: how the numbers were taken
 
 Each run: `tools/with-browser-slot.sh node tools/headless.mjs <manifest> --gl-discard --timescale 1.5 --learn <copy of

@@ -144,6 +144,11 @@ test('learned programs: listed by translator version', async () => {
     const two = await list(2);
     assert.equal(two.length, 2, `version 2: its entry and the fixed-function one (${two})`);
     assert.ok(two.includes('ff1:null'));
+    // a shader program learned with its recipe (program-id.js programRecipe): listed to every version, as its recipe
+    const r = { vs: 'AAD+/w==', ps: 'AAH//w==', c: 's10_0', e: '0414', fog: 0, at: 7, f: 0 };
+    assert.equal((await post(1, [{ key: 'vs9:9|ps9:10', vs: 'vs-r', fs: 'fs-r', attrs: [], t: 4, r }])).status, 204);
+    const three = (await (await fetch(`${base}?v=3`)).json()).filter((e) => e.r);
+    assert.deepEqual(three.map((e) => [e.key, e.r, e.vs]), [['vs9:9|ps9:10', r, undefined]], 'the recipe, not the sources');
   } finally { server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

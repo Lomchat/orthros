@@ -61,7 +61,7 @@ import { leanPackages, withLeanPackage } from './ports/openmw-lean.js';
 import { re3EngineFiles, re3Installed, re3Modes, re3Module } from './ports/re3.js';
 import { mmoApi } from './mmo.js';
 import { SimLink } from './sim-link.js';
-import { programSourceId, ffKeyRegenerable } from '../gfx/program-id.js';
+import { programSourceId, ffKeyRegenerable, programRecipe } from '../gfx/program-id.js';
 import { SEED_LIMITS, seedPathOk, seedSelect, seedKey, toBase64, fromBase64, seedCanonFile, canonSets } from '../shared/profile-seed.js';
 import { RangeHeat } from '../cpu/jit/heat.js';
 import { CodeShare, servedHeat, servedRegions } from './code-share.js';
@@ -1308,9 +1308,11 @@ export function createServer(opts = {}) {
    * used it: a session asking with ?v=<its version> gets the entries of that version only, plus the fixed-function
    * ones it regenerates from their key (ffKeyRegenerable) and, for PROGRAMS_UNSTAMPED_SESSIONS sessions after their
    * last use, entries learned before versions existed — the sources an older translator made are not compiled ahead
-   * for nothing (a session that builds the same sources again at a draw stamps them with its version).
+   * for nothing (a session that builds the same sources again at a draw stamps them with its version). A Direct3D 9
+   * shader program learned with its recipe (`r`: its shader codes and states, program-id.js programRecipe) is listed to
+   * every version, as a fixed-function one: the session rebuilds its sources from the recipe.
    */
-  const programsLearned = new Map(); // manifest -> { sessions, m: Map(id -> { key, vs, fs, attrs, t, n, s }) }
+  const programsLearned = new Map(); // manifest -> { sessions, m: Map(id -> { key, vs, fs, attrs, t, n, s, v, r }) }
   const learnName = (name) => name.replace(/[^A-Za-z0-9._-]/g, '_');
   const programsFile = (name) => opts.learnDir && path.join(opts.learnDir, `programs2-${learnName(name)}.json`);
   const programsFileV1 = (name) => opts.learnDir && path.join(opts.learnDir, `programs-${learnName(name)}.json`);
@@ -1321,12 +1323,12 @@ export function createServer(opts = {}) {
     if (!L) {
       L = { sessions: 0, m: new Map() }; programsLearned.set(name, L);
       const read = (f) => { try { return f ? JSON.parse(fs.readFileSync(f, 'utf8')) : null; } catch { return null; } };
-      const add = (id0, key, vs, fs2, attrs, t, n, s, v = null) => {
+      const add = (id0, key, vs, fs2, attrs, t, n, s, v = null, r = null) => {
         if (typeof vs !== 'string' || typeof fs2 !== 'string' || !Array.isArray(attrs) || !attrs.every((a) => typeof a === 'string')) return;
         const id = typeof id0 === 'string' ? id0 : programSourceId(vs, fs2, attrs), old = L.m.get(id);
         t = Number.isFinite(t) ? t : 1e9; n = Number.isFinite(n) ? n : 1; s = Number.isFinite(s) ? s : L.sessions;
-        if (old) { old.t = Math.min(old.t, t); old.n = Math.max(old.n, n); old.s = Math.max(old.s, s); old.v ??= versionOf(v); }
-        else if (L.m.size < PROGRAMS_MAX) L.m.set(id, { key: typeof key === 'string' ? key : '', vs, fs: fs2, attrs, t, n, s, v: versionOf(v) });
+        if (old) { old.t = Math.min(old.t, t); old.n = Math.max(old.n, n); old.s = Math.max(old.s, s); old.v ??= versionOf(v); old.r ??= programRecipe(r) ? r : null; }
+        else if (L.m.size < PROGRAMS_MAX) L.m.set(id, { key: typeof key === 'string' ? key : '', vs, fs: fs2, attrs, t, n, s, v: versionOf(v), r: programRecipe(r) ? r : null });
       };
       const j = read(programsFile(name));
       if (j && Array.isArray(j.programs)) {
@@ -1354,7 +1356,7 @@ export function createServer(opts = {}) {
       programsTimer = null;
       for (const n of programsDirty) {
         const f = programsFile(n), L = programsOf(n);
-        try { fs.writeFileSync(f + '.tmp', JSON.stringify({ sessions: L.sessions, v1: L.v1 ?? null, programs: [...L.m].map(([id, v]) => [id, v.key, v.vs, v.fs, v.attrs, v.t, v.n, v.s, v.v]) })); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
+        try { fs.writeFileSync(f + '.tmp', JSON.stringify({ sessions: L.sessions, v1: L.v1 ?? null, programs: [...L.m].map(([id, v]) => (v.r ? [id, v.key, v.vs, v.fs, v.attrs, v.t, v.n, v.s, v.v, v.r] : [id, v.key, v.vs, v.fs, v.attrs, v.t, v.n, v.s, v.v])) })); fs.renameSync(f + '.tmp', f); } catch { /* next time */ }
       }
       programsDirty = new Set();
     }, opts.learnWriteMs ?? 20000); // (tests: sooner)
@@ -1365,15 +1367,15 @@ export function createServer(opts = {}) {
     for (const e of Array.isArray(list) ? list : []) {
       if (!e || typeof e.key !== 'string' || typeof e.vs !== 'string' || typeof e.fs !== 'string' || !Array.isArray(e.attrs) || !e.attrs.every((a) => typeof a === 'string')) continue;
       if (e.key.length > 4096 || e.vs.length > PROGRAM_SRC_MAX || e.fs.length > PROGRAM_SRC_MAX || e.attrs.length > 32) continue;
-      const t = Number.isFinite(e.t) ? Math.max(0, e.t) : 1e9, id = programSourceId(e.vs, e.fs, e.attrs), old = m.get(id);
-      if (old) { old.t = Math.min(old.t, t); old.n++; old.s = L.sessions; if (ver) old.v = ver; continue; }
+      const t = Number.isFinite(e.t) ? Math.max(0, e.t) : 1e9, id = programSourceId(e.vs, e.fs, e.attrs), old = m.get(id), r = programRecipe(e.r) ? e.r : null;
+      if (old) { old.t = Math.min(old.t, t); old.n++; old.s = L.sessions; if (ver) old.v = ver; old.r ??= r; continue; }
       if (m.size >= PROGRAMS_MAX) { // (full: the least recently used one leaves, unless all were used this session)
         let lru = null;
         for (const [k, v] of m) if (!lru || v.s < lru[1].s) lru = [k, v];
         if (lru[1].s >= L.sessions) continue;
         m.delete(lru[0]);
       }
-      m.set(id, { key: e.key, vs: e.vs, fs: e.fs, attrs: e.attrs, t, n: 1, s: L.sessions, v: ver });
+      m.set(id, { key: e.key, vs: e.vs, fs: e.fs, attrs: e.attrs, t, n: 1, s: L.sessions, v: ver, r });
     }
     // (a learned program a session took was found by its exact sources: they are those of its version — except a
     // fixed-function one, regenerated from its key whatever sources it carries)
@@ -1389,8 +1391,9 @@ export function createServer(opts = {}) {
     L.sessions++;
     for (const [id, v] of L.m) if (v.s < L.sessions - PROGRAMS_KEEP_SESSIONS) L.m.delete(id);
     programsChanged(name);
-    const keep = (v) => !ver || v.v === ver || ffKeyRegenerable(v.key) || (v.v === null && v.s >= L.sessions - PROGRAMS_UNSTAMPED_SESSIONS);
-    return [...L.m].filter(([, v]) => keep(v)).sort((a, b) => a[1].t - b[1].t).map(([id, v]) => ({ id, key: v.key, vs: v.vs, fs: v.fs, attrs: v.attrs, v: v.v }));
+    const keep = (v) => !ver || v.v === ver || ffKeyRegenerable(v.key) || v.r || (v.v === null && v.s >= L.sessions - PROGRAMS_UNSTAMPED_SESSIONS);
+    // (a recipe's entry without its sources: the session rebuilds them — about as many bytes as the sources)
+    return [...L.m].filter(([, v]) => keep(v)).sort((a, b) => a[1].t - b[1].t).map(([id, v]) => (v.r ? { id, key: v.key, v: v.v, r: v.r } : { id, key: v.key, vs: v.vs, fs: v.fs, attrs: v.attrs, v: v.v }));
   };
 
   /**

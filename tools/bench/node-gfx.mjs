@@ -20,11 +20,18 @@ export function installNodeGfx(host, kind, o = {}) {
   let pcache = null, dev = null, link = null;
   if (o.programs) {
     const j = JSON.parse(fs.readFileSync(o.programs, 'utf8')), sessions = Number(j.sessions) || 0;
-    const list = j.programs.filter((r) => r[8] === PROGRAM_GLSL_VERSION || ffKeyRegenerable(r[1]) || ((r[8] ?? null) === null && r[7] >= sessions + 1 - 4)).sort((a, b) => a[5] - b[5]);
-    pcache = { queue: list.map(([id, key, vs, fs2, attrs, , , , v]) => ({ id, key: o.raw ? '' : key, vs, fs: fs2, attrs, v })), ready: new Map(), learned: [], used: [], t0: performance.now(), parallel: true, started: 0, pending: 0, hits: 0, devices: new Set() };
+    const list = j.programs.filter((r) => r[8] === PROGRAM_GLSL_VERSION || ffKeyRegenerable(r[1]) || r[9] || ((r[8] ?? null) === null && r[7] >= sessions + 1 - 4)).sort((a, b) => a[5] - b[5]);
+    pcache = { queue: list.map(([id, key, vs, fs2, attrs, , , , v, r]) => ({ id, key: o.raw ? '' : key, vs, fs: fs2, attrs, v, r })), ready: new Map(), learned: [], used: [], t0: performance.now(), parallel: true, started: 0, pending: 0, hits: 0, devices: new Set() };
     o.log?.(`programs: ${list.length} of ${j.programs.length} learned listed${o.raw ? ' (keys dropped: their sources as learned)' : ''}`);
   }
-  if (kind === 'backend') { const gl = noopGl(); host.gfx = { createDevice: (d) => (dev = new WebGLDevice(gl, d, { programCache: pcache })) }; }
+  // (o.compileMs, or ORTHROS_NOOP_COMPILE_MS: program builds that take that long, as ANGLE over Direct3D 11 — the waits
+  // they cause at draws are counted, noop-gl.mjs; ORTHROS_NOOP_COMPILE_THREADS: the GPU process's compile threads)
+  const compileMs = Number(o.compileMs ?? process.env.ORTHROS_NOOP_COMPILE_MS ?? 0), compileThreads = Number(process.env.ORTHROS_NOOP_COMPILE_THREADS ?? 4);
+  if (kind === 'backend') {
+    const gl = noopGl(1024, 768, { compileMs, compileThreads, drawHash: process.env.ORTHROS_NOOP_DRAW_HASH === '1' });
+    if (pcache) pcache.parallel = !!gl.getExtension('KHR_parallel_shader_compile') || !compileMs; // (as before without a delay)
+    host.gfx = { gl, programCache: pcache, createDevice: (d) => (dev = new WebGLDevice(gl, d, { programCache: pcache, log: o.log ? (m) => { if (typeof m === 'string' && /program built in|programs predicted|link error/.test(m)) o.log(m); } : undefined })) };
+  }
   else if (kind === 'recorder') {
     const words = new Int32Array(new SharedArrayBuffer(16 << 20));
     link = new RenderLink({ words, replayer: { reader: { consumed: 0 }, run() { this.reader.consumed = link.w.produced; } } });
@@ -39,13 +46,13 @@ export function installNodeGfx(host, kind, o = {}) {
     if (sh !== null) link.streamHash = () => { link.drain(); return `${(sh.h >>> 0).toString(16).padStart(8, '0')} (${sh.words} words)`; };
     host.gfx = { createDevice: (d) => (dev = new Recorder(link, d)) };
   } else if (kind !== 'none') throw new Error(`--gfx ${kind}: backend, recorder or none`);
-  return { kind, link, pcache, device: () => dev };
+  return { kind, link, pcache, gl: host.gfx?.gl ?? null, device: () => dev };
 }
 
-/** The programs line of a run with learned programs (backend): built at a draw, compiled ahead, taken. */
+/** The programs line of a run (backend): built at a draw, compiled ahead (learned, predicted), taken, waits at draws. */
 export function programsLine(g) {
   const d = g.device();
-  if (!g.pcache || !d?.stats) return null;
-  const p = g.pcache;
-  return `programs: built at a draw ${d.stats.programs} (${(d.stats.programMs ?? 0).toFixed(0)} ms), learned compiled ahead ${p.started}, taken ${p.hits}, regenerated from their key ${p.regenerated ?? 0}, other versions skipped ${p.stale ?? 0}`;
+  if (!d?.stats) return null;
+  const p = g.pcache ?? d.pc, sim = g.gl?.sim;
+  return `programs: built at a draw ${d.stats.programs} (${(d.stats.programMs ?? 0).toFixed(0)} ms)${p ? `, learned compiled ahead ${p.started}, taken ${p.hits} (waits at their draws ${(d.stats.prewarmTakeMs ?? 0).toFixed(0)} ms), regenerated from their key or recipe ${p.regenerated ?? 0}, other versions skipped ${p.stale ?? 0}, to learn ${p.learned.length} (${p.learned.filter((e) => e.r).length} with a recipe)` : ''}${p?.fx ? `, predicted ${p.predicted ?? 0} pairs (${p.fx.passes} passes, ${p.fx.codes.size} shaders) started ${p.predictStarted ?? 0} already built ${p.predictKnown ?? 0} taken ${p.predictHits ?? 0}, misses at draws ${JSON.stringify(d.stats.predictMiss ?? {})}` : ''}${d.stats.programsAsync ? `, async builds ${d.stats.programsAsync} (draws skipped ${d.stats.buildingDraws ?? 0})` : ''}${sim ? `; simulated builds ${sim.builds}, link waits ${sim.waits} (${sim.waitMs.toFixed(0)} ms, longest ${sim.maxWaitMs.toFixed(0)})` : ''}${g.gl?.drawHash ? `; draws ${g.gl.drawHash.draws} hash ${(g.gl.drawHash.h >>> 0).toString(16)}` : ''}`;
 }

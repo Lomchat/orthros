@@ -34,6 +34,20 @@ export const PROGRAM_GLSL_VERSION = 2;
  */
 export function ffKeyRegenerable(key) { return typeof key === 'string' && /^ff:f[^:|]*:[^|]*\|ff:[^|]*(\|flat)?$/.test(key); }
 
+/**
+ * A Direct3D 9 shader program's inputs (`r` of a learned program: d3d8-webgl.js programRecipe), from which any later
+ * translator rebuilds its sources (recipeSources) — as a fixed-function program's key: a learned shader program then
+ * survives a change of the GLSL the translators generate (a PROGRAM_GLSL_VERSION bump, or a change its corpus misses)
+ * instead of being built at draws again until relearned. Is `r` such a record (as the server keeps it)?
+ */
+export function programRecipe(r) {
+  return !!r && typeof r === 'object' && typeof r.vs === 'string' && typeof r.ps === 'string' && r.vs.length <= 131072 && r.ps.length <= 131072 && /^[A-Za-z0-9+/=]*$/.test(r.vs + r.ps)
+    && typeof r.c === 'string' && r.c.length <= 512 && typeof r.e === 'string' && /^(?:[0-7][124]){0,16}$/.test(r.e) && Number.isInteger(r.fog) && Number.isInteger(r.at) && (r.f === 0 || r.f === 1);
+}
+/** shader code (32-bit tokens) as base64, and back */
+export function codeToText(code) { const b = new Uint8Array(code.buffer, code.byteOffset, code.length * 4); let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192)); return btoa(s); }
+export function codeFromText(text) { const s = atob(text), b = new Uint8Array(s.length & ~3); for (let i = 0; i < b.length; i++) b[i] = s.charCodeAt(i); return new Uint32Array(b.buffer); }
+
 /** The learned-programs route of a manifest, for this translator version (render worker and in-thread backend). */
 export function programsUrl(manifestName) { return `/api/programs/${encodeURIComponent(manifestName)}?v=${PROGRAM_GLSL_VERSION}`; }
 /** What a session posts there: the programs it built at a draw, the ids of the learned ones it used, its version. */
