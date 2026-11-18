@@ -13,6 +13,7 @@ import { scanCodeOfVk } from '../src/win32/vk-scan.js';
 import { inRanges } from '../src/web/scenario.js';
 import { profileGone } from '../src/vfs/profile-opfs.js';
 import { v8LogArgs } from './dev/v8-logs.mjs';
+import { paceWindow, paceText } from '../src/shared/display-pacing.js';
 
 const args = process.argv.slice(2);
 let name = args.find((a) => !a.startsWith('--'));
@@ -166,6 +167,7 @@ if (opt('timescale')) q.set('timescale', opt('timescale')); // (guest ms per rea
 if (args.includes('--lan')) q.set('lan', '1'); // (the virtual LAN link, as players have it; headless runs are off it by default)
 if (opt('glworker')) q.set('glworker', opt('glworker')); // render worker (docs/render-worker.md): 1 a render worker (the default), inline / check recorded and replayed in the emulator's worker, 0 in-thread backend
 if (args.includes('--gl-discard')) q.set('gldiscard', '1'); // benchmark: GL calls issued, nothing rasterized (CPU-bound measurement)
+if (opt('pace') === '0') q.set('pace', '0'); // (the page shows every frame as it comes: no alignment on the display's refreshes — shared/display-pacing.js; the [pace] line at the end counts either way)
 if (args.includes('--jit-profile')) q.set('jitprof', '1'); // transitions per second by kind, logged as [jitprof]
 // --block-counts: translations count each block's executions (shown by --profile-list / --profile-wasm and jitlist; the
 // first ~80 000 blocks translated only: with --regions 0 the regions translated ahead from the learned list do not use them up)
@@ -255,6 +257,11 @@ if (glImpl !== 'swiftshader') console.log(`[gl] ${await page.evaluate(() => { co
 if (bench && args.includes('--ui')) { await page.locator('#benchStart').click({ timeout: 30000 }).then(() => console.log('[bench] started'), (e) => console.log(`[bench] no start button: ${e.message.split('\n')[0]}`)); }
 const t0 = Date.now();
 /** The server's transport totals: compressed ranges, the game's own reads (demand) and the background downloads apart. */
+/** The refreshes each frame stayed on the page's screen, the judder, the frames aligned (shared/display-pacing.js). */
+async function printPace() {
+  const pace = await page.evaluate(() => window.orthros.pacer?.counters() ?? null).catch(() => null);
+  if (pace) console.log(`[pace] ${paceText(paceWindow(null, pace)) ?? 'no frame counted'} (h ${JSON.stringify(pace.h)})`);
+}
 async function printNetStats() {
   try {
     const ns = await (await fetch(`http://127.0.0.1:${port}/api/netstats`)).json();
@@ -754,7 +761,7 @@ for (;;) {
       if (inputs.every((e) => e.done)) break;
     }
   }
-  if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); break; }
+  if (s.status === 'exited' || s.status === 'crashed') { console.log(`[end] ${s.status} code=${s.exitCode}`); if (s.crash) console.log(s.crash); await printPace(); break; }
   // (--end-after-input <s>: the run ends that long after the scenario's last step — a learn session, warm-jobs.js)
   if (endAfterInput !== null && inputs.length && inputsDoneAt === null && inputs.every((e) => e.done)) inputsDoneAt = t;
   if (t >= seconds || (stopSeen !== null && Date.now() - stopSeen > 1000) || (inputsDoneAt !== null && t - inputsDoneAt >= endAfterInput)) {
@@ -762,6 +769,7 @@ for (;;) {
     if (stopSeen !== null) console.log(`[end] stop text seen at ${((stopSeen - t0) / 1000).toFixed(1)} s${stopCpu !== null ? `, worker thread ${stopCpu.toFixed(1)} s CPU` : ''}`);
     if (inputsDoneAt === null || t >= seconds) console.log(`[end] time limit ${seconds}s`);
     await printNetStats();
+    await printPace();
     // --frames-from <s>: whole-run frame-time percentiles over the frames presented after that time (page time base)
     if (opt('frames-from')) { await page.evaluate((fromMs) => { window.orthros.frames = null; window.orthros.worker?.postMessage({ type: 'frames', fromMs }); }, Number(opt('frames-from')) * 1000); for (let i = 0; i < 30; i++) { const f = await page.evaluate(() => window.orthros.frames); if (f) { console.log('[frames] ' + f); break; } await page.waitForTimeout(100); } }
     // --corpus <file>: distinct instruction forms of the translated code (input of the `corpus` conformance suite)

@@ -405,7 +405,7 @@ histogram then the oldest entries; the server refuses larger ones with 413). Eac
 | `seq`, `final`, `len`, `vis`, `hid`, `dropped` | record number, the end's record, session seconds so far, of them visible / hidden, entries dropped over the cap |
 | `env` | `gpu` / `gpuVendor` (WebGL unmasked renderer), `gpuClass` (gpu-class.js: integrated, discrete, software), `cores`, `memGB`, `ua`, `screen` |
 | `probe` | the host timing probe (timing-probe.js), once after a minute of visible play: `atomicsWait1`, `atomicsWait1Timer`, `setTimeout0`, `setTimeout1`, `messageHop` as `[p50, p90, max]` ms late, `battery`; in the first record after it and in the end's |
-| `mins[]` | entries: `t` (start, s from the session's start), `ph` (phase: Win32 the page's status, the ports' session state, OpenMW `loading` / `menu` / `world`), `s` / `hid` (visible / hidden seconds), `n` frames, `fps` (over the visible time), `p50` `p90` `p99` `max` (frame ms, frame-acct.js histogram: 1 ms buckets below 100 ms), `f40` `f100` (frames over 40 / 100 ms), `work` / `wait` (ms per frame), `cats` (Win32: mean ms per frame by frame-accounting category), `slow` (the slow frames' time by cause, ms summed), `gpu` (`{ n, mean, p50, p90, p99 }` timed frames — `lost`: queries whose result never came —, or `{ state }`), `data` (`{ n, ms }` game data waits) |
+| `mins[]` | entries: `t` (start, s from the session's start), `ph` (phase: Win32 the page's status, the ports' session state, OpenMW `loading` / `menu` / `world`), `s` / `hid` (visible / hidden seconds), `n` frames, `fps` (over the visible time), `p50` `p90` `p99` `max` (frame ms, frame-acct.js histogram: 1 ms buckets below 100 ms), `f40` `f100` (frames over 40 / 100 ms), `work` / `wait` (ms per frame), `cats` (Win32: mean ms per frame by frame-accounting category), `slow` (the slow frames' time by cause, ms summed), `gpu` (`{ n, mean, p50, p90, p99 }` timed frames — `lost`: queries whose result never came —, or `{ state }`), `data` (`{ n, ms }` game data waits), `pace` (the display pacing, below) |
 | `tot` | the same over the whole session so far (visible play only), with its frame-time histogram `h` (sparse: sessions merge); the ports' `tot.data` also says what the session's data waits were for (below) |
 
 **What the data waits were for** (the ports, 2026-10-27): a minute's `data` tells how long the game waited, not for
@@ -420,6 +420,18 @@ relative); `want` — its waits for its announced reads (`{ n, ms, to }`: wantWa
 the background's bytes by producer (the link's `bgBy`: `{ reason: [requests, wire KiB, KiB begun during a load] }`, the
 12 largest). Game file paths only (cut to their last 160 characters); the server rebuilds the part from these fields
 and drops the rest. Not on the Win32 page (its reads are the worker's: `netMs` / `netReq` only).
+
+**Display pacing** (2026-11-18, `src/shared/display-pacing.js`): how the frames met the display's refreshes, from the
+page's requestAnimationFrame timestamps — the Windows games' page as it puts the emulator's frames on their canvas, a
+port's from the animation frames that showed its engine's frames. `pace: { hz, n, h, jud, jn, al, ex }`: the display's
+rate measured, the frames counted, `h` the frames by the refreshes they stayed on the screen `[dropped, 1, 2, 3, 4,
+5+]` (dropped: replaced before their refresh; 5+: a still picture, a load), `jud` the judder — the mean change of that
+count between consecutive frames shown (0 for a steady 2-2-2, ~0.04 for a 30 fps limiter with one 3 per drift cycle,
+2 for 1-3-1-3) over `jn` pairs —, and on the Windows page `al` / `ex`: the frames aligned on the refreshes (a Direct3D
+device whose presentation interval waits for the retrace: `docs/render-worker.md` 5.8), of them shown a refresh later
+than as they came. In every entry and the totals, and in the ~20 s `summary` telemetry records of the Windows page;
+`tools/dev/telemetry-report.mjs` prints it per summary stretch and per game × GPU (`--perf`), and
+`tools/dev/flicker-report.mjs` per display report (as the screen showed it, and the alignment replayed on its arrivals).
 
 **Hidden tabs**: the time is counted (`hid`), the frames are not (a hidden tab's frames and the first gap after it).
 

@@ -181,6 +181,8 @@ function sample() {
   const r = new PerfRecorder({ header: { ...header, runtime: 'win32' } });
   r.counters({ gpu: { state: 'on', frames: 0, ms: 0, hist: new Array(HIST_N).fill(0) }, data: { waits: 0, ms: 0 } });
   r.clock(0, true, 'running'); play(r, 0, 30, { slowEvery: 25 });
+  // (the display pacing's counters, display-pacing.js: in the entry and the totals, through the server's check)
+  r.counters({ pace: { n: 900, h: [0, 3, 880, 17, 0, 0], jud: 40, jn: 899, hz: 59.94, al: 900, ex: 20 } });
   r.setProbe({ atomicsWait1: { p50: 1, p90: 2, max: 3 }, battery: { charging: true, level: 1 } });
   const rec = r.take(30000, true);
   rec.env = { gpu: IRIS, gpuVendor: 'Google Inc. (Intel)', gpuClass: 'integrated', cores: 8, memGB: 8, ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/154.0.0.0', screen: '1920x1080@1.25' };
@@ -190,6 +192,7 @@ function sample() {
 test('the server-side check: known fields kept, the rest dropped, bad records refused', () => {
   const rec = sample(), v = sanitizePerfRecord(rec);
   assert.ok(v.ok, v.error);
+  assert.deepEqual(rec.mins[0].pace, { hz: 59.9, n: 900, h: [0, 3, 880, 17, 0, 0], jud: 0.04, jn: 899, al: 900, ex: 20 });
   assert.deepEqual(v.rec, rec, 'a page\'s record passes unchanged');
   const extra = { ...sample(), secret: 'x', env: { ...sample().env, email: 'a@b.c' }, mins: [{ ...sample().mins[0], name: 'me', cats: { ok: 1, 'bad key': 2, n: NaN } }] };
   const w = sanitizePerfRecord(extra);

@@ -9,8 +9,9 @@
 //   frames). What a canvas holds is what the page hands the compositor: a fault of the compositor or of the display
 //   itself after that is not seen here (no screen capture: it would ask the player for a permission);
 // - the frames the page received meanwhile (`arrivals`: time, layer, bitmap size, the device frame when the render
-//   worker names it — main.js calls arrived()) and the page's events (`events`: resize, visibility, focus, full screen,
-//   pointer lock, the overlays' changes, the runtime's own — note()).
+//   worker names it — main.js calls arrived(), then shown() when it puts the bitmap on its canvas: at once, or at the
+//   refresh it is aligned on) and the page's events (`events`: resize, visibility, focus, full screen, pointer lock, the
+//   overlays' changes, the runtime's own — note()).
 // Then the strip: the tiles read back, each distinct picture kept once, analysed (stripSteps) and encoded (fitStrip),
 // in slices of a few ms.
 import { REPORT_MS, REPORT_IMG_W, REPORT_IMG_H, SCREEN_MAX_FRAMES, STRIP_MAX_BYTES, pictureSet, lumOf, stripSteps, fitStrip } from '../shared/display-report.js';
@@ -55,9 +56,11 @@ export class ScreenRecorder {
   /** A frame's bitmap reached the page (before it is shown): its layer, size, the device frame it shows (or null). */
   arrived(layer, w, h, dframe = null) {
     if (!this.on) return;
-    this.since++; this.df[layer] = dframe ?? null;
+    this.since++;
     if (this.arrivals.length < MAX_ARRIVALS) this.arrivals.push([r1(epochNow() - this.t0), layer, w, h, dframe ?? null]);
   }
+  /** That bitmap put on its canvas — at once, or held for its refresh (shared/display-pacing.js): the device frame it holds. */
+  shown(layer, dframe = null) { if (this.on) this.df[layer] = dframe ?? null; }
   /** Something the runtime saw happen (its layers switched, a mode change...). */
   note(type, detail = null) {
     if (this.on && this.events.length < MAX_EVENTS) this.events.push([r1(epochNow() - this.t0), type, detail]);

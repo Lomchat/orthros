@@ -28,6 +28,7 @@ import { compatKey } from '../core/compat-stats.js';
 import { fetchSharedSnapshot, dropPieces } from './snapshot-fetch.js';
 import { ScreenRecorder } from './screen-report.js';
 import { DISPLAY_REPORT_VERSION } from '../shared/display-report.js';
+import { FramePacer, paceWindow } from '../shared/display-pacing.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -276,7 +277,8 @@ async function start(name, language = null) {
   const tree = await treeReq;
   state.status = 'starting'; state.manifest = name;
   // (the passive session record, perf-page.js: every 2 min of play and at the end — docs/real-machine-bench.md)
-  if (state.telemetry) state.perf = new PerfSession({ runtime: 'win32', game: name, session: state.session, version: manifest.version ?? null, build: state.version, bench: BENCH_MARK, env: () => state.env ?? environment(), storage: state.storage ?? undefined, phase: () => state.status, helper: () => state.timerHelper?.report() ?? null });
+  if (state.telemetry) state.perf = new PerfSession({ runtime: 'win32', game: name, session: state.session, version: manifest.version ?? null, build: state.version, bench: BENCH_MARK, env: () => state.env ?? environment(), storage: state.storage ?? undefined, phase: () => state.status, helper: () => state.timerHelper?.report() ?? null, pace: () => state.pacer?.counters() ?? null });
+  startPacing();
   startTimerHelper(params);
   // the worker renders into its own OffscreenCanvases and posts complete frames as ImageBitmaps
   state.ctx2d = $('c2d').getContext('bitmaprenderer'); state.ctxGl = $('gl').getContext('bitmaprenderer'); state.ctxVideo = $('vid').getContext('bitmaprenderer'); $('vid').style.visibility = 'hidden'; // (no movie from a previous run)
@@ -327,6 +329,30 @@ async function start(name, language = null) {
   if (performance.measureUserAgentSpecificMemory) { const tick = async () => { try { const m = await performance.measureUserAgentSpecificMemory(); state.memoryMB = Math.round(m.bytes / 1048576); } catch { /* not available */ } setTimeout(tick, 5000); }; tick(); }
 }
 
+/** A frame's bitmap put on its layer's canvas. */
+function showFrame(m) {
+  const c = $(m.layer === 'gl' ? 'gl' : m.layer === 'video' ? 'vid' : 'c2d');
+  if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; }
+  (m.layer === 'gl' ? state.ctxGl : m.layer === 'video' ? state.ctxVideo : state.ctx2d).transferFromImageBitmap(m.bitmap);
+  state.screenRec?.shown(m.layer, m.dframe);
+}
+/**
+ * The frames against the display's refreshes (shared/display-pacing.js): counted for the telemetry, and a Direct3D game's
+ * frames held for their refresh when its presentation interval waits for the retrace (?pace=0: every frame shown as it
+ * comes). One animation frame callback per refresh while frames come — none 2 s after the last one (a still screen
+ * does not wake the page at every refresh): the first frame after that is shown at once, the next ones aligned.
+ */
+function startPacing() {
+  if (state.pacer) return;
+  const p = state.pacer = new FramePacer({ show: showFrame, discard: (m) => m.bitmap.close?.(), on: params.get('pace') !== '0' });
+  p.setHidden(document.visibilityState === 'hidden');
+  document.addEventListener('visibilitychange', () => p.setHidden(document.visibilityState === 'hidden'));
+  let running = false, lastAt = 0;
+  const tick = (t) => { p.tick(t); running = state.status !== 'exited' && state.status !== 'crashed' && (p.queue.length > 0 || performance.now() - lastAt < 2000); if (running) requestAnimationFrame(tick); };
+  state.paceWake = () => { lastAt = performance.now(); if (!running) { running = true; requestAnimationFrame(tick); } };
+}
+/** The frames' pacing since the last summary (refreshes per frame, judder: paceWindow), or null. */
+function paceSince() { const c = state.pacer?.counters() ?? null, w = paceWindow(state.paceAt, c); state.paceAt = c; return w; }
 function resizeTo(w, h) {
   state.mode = { width: w, height: h };
   const frame = $('frame');
@@ -510,7 +536,8 @@ function onWorkerMessage(m) {
       if (m.frames !== state.lastFrames || m.videoFrames !== state.lastVideoFrames) { state.lastFrames = m.frames; state.lastVideoFrames = m.videoFrames; state.lastNewFrameAt = Date.now(); } // (a movie playing: new pictures, not a loading wait)
       if (!headless && state.status !== 'crashed' && state.status !== 'exited') { if ((m.d3d?.frames ?? 0) > 0 || m.frames >= 30 || m.videoFrames > 0) hideLoader(); else updateLoader(m); } /* (a window's first paint is not the game's first image: Direct3D's first frame, a few GDI frames, or a movie's first picture) */ if (state.audio) { m.audioState = state.audio.state; m.audioUnderruns = Atomics.load(state.ctl, CTL.AUDIO_UNDERRUNS); } noteAudio(m); recordSample(m); renderHud(); break;
     case 'gl-port': m.port.onmessage = (e) => onWorkerMessage(e.data); break; // (the render worker's frames, logs, captures)
-    case 'frame': { state.screenRec?.arrived(m.layer, m.bitmap.width, m.bitmap.height, m.dframe); const c = $(m.layer === 'gl' ? 'gl' : m.layer === 'video' ? 'vid' : 'c2d'); if (c.width !== m.bitmap.width || c.height !== m.bitmap.height) { c.width = m.bitmap.width; c.height = m.bitmap.height; } (m.layer === 'gl' ? state.ctxGl : m.layer === 'video' ? state.ctxVideo : state.ctx2d).transferFromImageBitmap(m.bitmap); break; }
+    case 'frame': state.screenRec?.arrived(m.layer, m.bitmap.width, m.bitmap.height, m.dframe); if (state.pacer) { state.paceWake(); state.pacer.arrive(m, m.layer, m.layer === 'gl' && state.vsync > 0); } else showFrame(m); break;
+    case 'pacing': state.vsync = m.vs; break; // (the refreshes the Direct3D device's presentation interval waits for: its frames are aligned on the display's)
     case 'video': state.screenRec?.note('video', !!m.visible); $('vid').style.visibility = m.visible ? 'visible' : 'hidden'; break; // (a movie's video window, above the game's layers: quartz.js)
     case 'mode': state.screenRec?.note('mode', `${m.width}x${m.height}`); resizeTo(m.width, m.height); break;
     case 'lan': { state.lan = { ip: m.ip, peers: m.peers, refused: !!m.refused }; const el = $('tbLan'); if (!el) break; el.classList.toggle('hidden', (!m.ip && !m.refused) || headless); el.classList.toggle('off', !!m.refused); el.querySelector('b').textContent = m.refused ? TEXT.lanOffShort : m.peers; el.title = m.refused ? TEXT.lanOff : TEXT.lan(m.ip, m.peers); break; }
@@ -782,7 +809,7 @@ function recordSample(m) {
   // every ~20 s a summary of the frames (perf-summary.js: percentiles, slow frames, time by category, draws, GPU time,
   // GL calls, render worker waits), at most 720 per session
   const sum = (state.summaries ??= new SummaryClock()).add(m, { t: smp.t, visible: smp.vis, fullscreen: smp.fs, status: state.status });
-  if (sum) state.queue.push({ t: smp.t, event: 'summary', ...sum, audio: state.audioStats.take() }); // (audio: sound.js AudioStats — context, worklet, mix level, buffers)
+  if (sum) state.queue.push({ t: smp.t, event: 'summary', ...sum, audio: state.audioStats.take(), pace: paceSince() }); // (audio: sound.js AudioStats — context, worklet, mix level, buffers; pace: refreshes per frame shown)
   if (!state.flushTimer) state.flushTimer = setTimeout(flushTelemetry, 10000);
 }
 /**
@@ -837,7 +864,7 @@ async function reportDisplay({ recorded } = {}) {
   if (!bb) notes.push(`no back-buffer strip from the renderer within ${REPORT_WAIT_MS / 1000} s of the screen's`);
   else if (bb.notes?.length && !bb.strip) notes.push(...bb.notes.map(String));
   const report = { event: 'display-report', v: DISPLAY_REPORT_VERSION, id, session: state.session, game: state.manifest ?? null, build: state.version ?? null, version: state.gameManifest?.version ?? null, options: state.perfOptions ?? null,
-    page: { glworker: params.get('glworker'), dbg: params.get('dbg'), scale: state.scale ?? null, mode: state.mode, status: state.status }, bb: bb?.strip ?? null, screen, notes };
+    page: { glworker: params.get('glworker'), dbg: params.get('dbg'), scale: state.scale ?? null, mode: state.mode, status: state.status, vsync: state.vsync ?? null, pace: state.pacer ? state.pacer.on : null }, bb: bb?.strip ?? null, screen, notes };
   const body = JSON.stringify(report), an = (s) => s?.analysis?.summary;
   const what = `display report ${id}: ${Math.round(body.length / 1024)} KB; back buffers ${report.bb ? `${report.bb.frames.length} frames, ${an(report.bb)?.pictures} pictures, ${an(report.bb)?.stillFrames} with still A-B-A over 0.1 %${report.bb.cut?.length ? ` (cut: ${report.bb.cut.join(', ')})` : ''}` : 'none'}; screen ${screen ? `${screen.frames.length} frames, ${an(screen)?.pictures} pictures, ${an(screen)?.stillFrames} with still A-B-A over 0.1 %${screen.cut?.length ? ` (cut: ${screen.cut.join(', ')})` : ''}` : 'none'}${notes.length ? `; ${notes.join('; ')}` : ''}`;
   window.__orthrosDisplayReport = report;

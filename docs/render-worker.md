@@ -175,7 +175,7 @@ From the backend and the Direct3D layer (every GL call whose result is used, eve
 | 6 | Caps: `getParameter` (renderer, max texture size, texture units), `getExtension` (s3tc, anisotropy, provoking vertex, parallel compile, lose_context) | device creation, context restore | once per device |
 | 7 | Canvas size, `drawingBufferWidth/Height` | `reset` (resize), `present`, gamma pass | every present (local values, no round trip) |
 | 8 | Present hand-off | `present` (`blitFramebuffer`, `flush`), host `transferToImageBitmap` + `postMessage` | every frame: `transferToImageBitmap` 20-33 µs, `flush` 8-10 µs |
-| 9 | Present pacing / vsync | `Present` (d3d8.js) parks the game's thread on the guest clock when its presentation interval waits for the retrace (no GL, no host call): at most one frame per refresh (60 Hz, a fullscreen mode's rate), a floor since the previous slot — a slower frame is not held | none |
+| 9 | Present pacing / vsync | `Present` (d3d8.js) parks the game's thread on the guest clock when its presentation interval waits for the retrace (no GL, no host call): at most one frame per refresh (60 Hz, a fullscreen mode's rate), a floor since the previous slot — a slower frame is not held; the page aligns the frames on the display's refreshes (5.8) | none |
 | 10 | Frame statistics | host `framePresented` (clock), `GetRasterStatus` (clock) | no GL |
 | 11 | D3D9 queries | `CreateQuery` EVENT / OCCLUSION answered at once (event done; occlusion = draws since `Issue`), no GL query objects | no GL |
 | 12 | Context loss / restore | `webglcontextlost` / `restored` events on the worker's event loop (between slices) → `contextRestored()` | none in these runs (`--lose-context-at` tests it) |
@@ -318,10 +318,28 @@ as a risk.
 - At most 2 frames in flight: after `PRESENT(n)` the emulator waits while `framesShown < n − 2`. That is the driver's
   frame queue (Direct3D's default maximum latency is 3): a slower GPU slows the game instead of piling up old
   frames; input-to-display latency is bounded by 2 frames (67 ms at 30 fps; ~1 frame today).
-- No browser vsync is waited for (the browser composites the bitmaps). The guest's own presentation interval is honoured
-  on the guest clock: a Present whose interval waits for the retrace (D3D8 fullscreen DEFAULT/ONE..FOUR or windowed
-  COPY_VSYNC, D3D9 DEFAULT/ONE..FOUR) shows at most one frame per refresh, as on Windows (Vice City's menu: 250-360
-  frames/s before, 60 after; `?dbg=ORTHROS_VSYNC=0` switches it off).
+- No browser vsync is waited for by the emulator (the browser composites the bitmaps). The guest's own presentation
+  interval is honoured on the guest clock: a Present whose interval waits for the retrace (D3D8 fullscreen
+  DEFAULT/ONE..FOUR or windowed COPY_VSYNC, D3D9 DEFAULT/ONE..FOUR) shows at most one frame per refresh, as on Windows
+  (Vice City's menu: 250-360 frames/s before, 60 after; `?dbg=ORTHROS_VSYNC=0` switches it off).
+- The page aligns such a device's frames on the display's refreshes (2026-11-18, `src/shared/display-pacing.js`
+  FramePacer; both render paths, the frames come to the page alike): Windows flips at the retrace, while the page shows
+  a bitmap from the first refresh after it arrives — a 30 fps limiter (33.7 ms) whose frames arrive within their jitter
+  (±1.5 ms) of a refresh had them held 1 and 3 refreshes in turn (the owner's AotR display report: 57 frames held 2,
+  2 held 1, 4 held 3). Each frame is due on the previous one's refresh plus the game's cadence (refreshes per frame,
+  from its arrivals); one arriving before is held until then, one after is shown at the next refresh, one that would
+  wait more than a refresh and a margin (three times the arrivals' jitter, ≤ a quarter refresh) a refresh sooner. Only
+  the game's drift against the display then changes a frame's hold (2-2-…-3-2), at most a refresh later than as it
+  came. The host tells the page the refreshes the device waits for (`BrowserHost.notePacing`, d3d8.js
+  `presentRefreshes`, message `pacing`); IMMEDIATE frames, the 2D and movie layers and a hidden page are shown at once;
+  `?pace=0` (`tools/headless.mjs --pace 0`) shows every frame as it comes. Nothing changes on the guest side: the
+  wait above, and the machine a snapshot keeps, are the same. The page counts the refreshes each frame stayed (the
+  `pace` telemetry, docs/real-machine-bench.md). Measured: the owner's AotR report's arrivals replayed through it
+  (`tools/dev/flicker-report.mjs`), refreshes per frame 1/2/3 = 2/57/4 → 0/61/2, judder 0.19 → 0.06, arrival to
+  screen +0.6 ms on average; headless Chromium on this loaded server, `tools/pe/framepace.c` (900 frames, a BFME-like
+  33 ms limiter, `--pace 0` against the default): ~33.1 ms frames 26/856/18 (+1 held 4) → 19/878/4, judder 0.10 →
+  0.05; `p34` (~34 ms) 14/834/52 → 3/856/41, judder 0.15 → 0.10 (a 3 per drift cycle stays: the game is slower than
+  two refreshes).
 - Stats: `gpuWaitMs` on the emulator (ring full, frames in flight, readbacks, fences), `replayMs` per frame in the
   render worker; both in the HUD, the slow-frame lines and the telemetry, so a slow frame says which side was late.
 

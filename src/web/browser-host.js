@@ -173,7 +173,8 @@ export class BrowserHost {
     this.frameTimes = []; this.frameTimesAt = []; // rolling window for the live stats (durations, presentation times)
     this.frameLog = []; // every frame since start as (presented at ms, frame time ms) pairs — whole-run percentiles
     this.gfx = null; // Direct3D backend factory, installed by the worker when WebGL2 is available
-    this.frameHook = () => { const t0 = performance.now(); this.display.presentGl(); this.presentMs += performance.now() - t0; this.framePresented(); };
+    this.frameHook = (dev) => { this.notePacing(dev); const t0 = performance.now(); this.display.presentGl(); this.presentMs += performance.now() - t0; this.framePresented(); };
+    this.vsync = null; // (the refreshes the presenting device waits for, as last told to the page: notePacing)
     this.presentMs = 0;
     // slow-frame diagnostics: the worker installs `frameProbe()` (counters snapshot) and `onSlowFrame(dt, deltas)`
     this.frameProbe = null; this.onSlowFrame = null; this.lastProbe = null; this.slowFrameLogs = 0; this.slowFrameFrom = 0;
@@ -285,6 +286,15 @@ export class BrowserHost {
     }
     else this.probeFrame(0);
     this.lastFrameAt = now;
+  }
+  /**
+   * The refreshes the presenting Direct3D device waits for (its presentation interval, d3d8.js presentRefreshes), told to
+   * the page when they change: it aligns that device's frames on the display's refreshes (shared/display-pacing.js), or
+   * shows them as they come (0: IMMEDIATE, a Direct3D 8 windowed device without COPY_VSYNC).
+   */
+  notePacing(dev) {
+    const vs = dev?.presentRefreshes?.() ?? 0;
+    if (vs !== this.vsync) { this.vsync = vs; this.post({ type: 'pacing', vs }); }
   }
   /** Snapshot the probe counters every frame; report the deltas of a frame longer than 33 ms (at most 300 reports). */
   probeFrame(dt) {
