@@ -433,8 +433,9 @@ once per session (telemetry `event: 'draw-probe'`, ≤ 230 KB). **The player doe
 or at a still screen that stays (two samples in a row, the second 2 s after the first, each with three equal command
 signatures: the pause menu, ~2-12 s after Escape). When nothing varied (no frame came back A-B-A, no value moved) it
 sends nothing — a gfx log line, sent with the telemetry, says it ran: `draw probe (still, try k of 10): N frames …
-not sent` — and tries again at the next such screen, 30 s later at least, 10 times at most (menus and loading screens
-before the game leave tries for its pause). `?dbg=ORTHROS_DRAW_PROBE=1` starts one now and sends it whatever it finds;
+not sent` — and tries again at the next such screen, 30 s later at least, 10 times at most, each screen (its command
+signature) once per kind of start (a menu that stays does not use the tries its pause needs). A probe whose device stops
+presenting (released, its process ended) gives up ~10 s after its recording's length (it holds the presents meanwhile). `?dbg=ORTHROS_DRAW_PROBE=1` starts one now and sends it whatever it finds;
 `ORTHROS_DRAW_PROBE=0` never.
 - **Phases**: the device signs its frames (command signature and values record); with the render worker, the emulator
   stamps each draw with the game's own TEXTUREFACTOR and state version (ring command `PROBE`, `d3d-recorder.js stamp`,
@@ -453,15 +454,18 @@ before the game leave tries for its pause). `?dbg=ORTHROS_DRAW_PROBE=1` starts o
   mask, depth, stencil, cull, scissor, viewport) and the texture matrices of the stages that use one (with whether the
   program had seen their version).
 - **Analysis** (in the page, then again by the reader): a frame is *odd* when ≥ 0.5 % of its presented grid went A-B-A
-  between its neighbours (an animation or a scene that moves is not); rectangles of 4 x 4 grid points where the odd
+  between its neighbours (a scene that moves on is not; an animation that goes back and forth — the pause menu's swirl
+  — is: its turning frames count as odd, beside the dips); rectangles of 4 x 4 grid points where the odd
   frames differed most (`var`) and 5 fixed ones; per draw position from the frame's end and rectangle, before → after
   in normal frames, after / before (~0.20 under a black layer of alpha 0.80), and how far the odd frames' after and
   before moved beyond the normal frames' own spread. The culprit is the first draw, in drawing order, whose result
   moved in the odd frames over the same picture. The verdict then reads what moved with it: **the game's own
   TEXTUREFACTOR** (the producer's value differs in the odd frames: follow the animation frame in the game), **the render
   worker's replay** (the producer's stayed, the backend's moved), **Orthros' uniform cache** (cached / sent value
-  differs), or **the same commands and values: GL's work** (then a GPU / ANGLE issue: try `?glworker=0`, a smaller
-  canvas, another ANGLE backend); or the picture under the probed draws already differed (an earlier draw), or odd
+  differs), or **the same commands and values: GL's work** — read it as "everything the record does not compare": only
+  TEXTUREFACTOR is compared there, so bound textures, texture matrices (`tm`, recorded), vertex contents and a uniform
+  sent while another program was current land in it too; compare those with `draw-probe.mjs` before suspecting the GPU /
+  ANGLE (then try `?glworker=0`, a smaller canvas, another ANGLE backend); or the picture under the probed draws already differed (an earlier draw), or odd
   frames only in the control phase (the copies hide it: GPU timing).
 - **Reading his**: `node tools/dev/telemetry-report.mjs /var/lib/orthros/telemetry --session <id>` names the verdict;
   `node tools/dev/draw-probe.mjs /var/lib/orthros/telemetry/telemetry-<day>.jsonl --session <id> --out <dir>` prints
