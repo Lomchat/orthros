@@ -1168,7 +1168,8 @@ their content (DECISIONS.md D122): a library is recognised, never a game.
   and changed code is not recognised again. No state of its own: everything is derived from memory at the next miss
   (a snapshot restores nothing for it).
 - Switches: `ORTHROS_LIBKERNELS=0` (debug global or environment), the JIT option `libKernels` (`dbg:ORTHROS_JIT_AB=
-  {"libKernels":false}` in a session, `ORTHROS_JIT_DEFAULTS='{"libKernels":false}'` for ab-virtual).
+  {"libKernels":false}` in a session, `ORTHROS_JIT_DEFAULTS='{"libKernels":false}'` for ab-virtual): true every kernel,
+  false none, or a list of names — `["memcmp"]`, `"memcmp,floor"`, `msvcr71!memcmp` — those only (2026-11-18).
 
 **Kernels** (msvcr71 7.10.3052.4):
 - `floor` / `ceil`: the SSE2 path (msvcr71 sets `__sse2_available` under Orthros: IsProcessorFeaturePresent reports
@@ -1224,6 +1225,33 @@ through two chained transitions. Sized 2026-11-12 (docs/frame-accounting.md "CPU
 code at a skirmish's peak, `ceil` / `fabs` nothing measurable — an inline `floor` at 15 ns would save at most ~1 %:
 no-go, not built. The x87 compare idiom (FCOM / FNSTSW / TEST AH / Jcc) is 1.2 % of the hottest functions'
 instructions: no fusion either.
+
+### memcmp at a SAGE game's start, run inline in the caller's region (2026-11-18)
+
+An audit of main (2026-11-18) found Age of the Ring calling `msvcr71!memcmp` ~296 million times before its first frame.
+Checked: 295 840 415 calls in Node (`startbench aotr-10 --child`, a fresh profile, 249 G guest instructions to the
+first Direct3D frame), none off the kernel's path. All four SAGE executables (BFME1 `lotrbfme.exe`, BFME2 / RotWK / AotR
+`game.dat`) call it the same way: one import stub `jmp dword ptr [__imp__memcmp]`, reached by `call stub` from each call
+site — no `call [slot]` at all. Kernel or translation, every call then costs two transitions (the stub's jump leaves
+the caller's region for the function, its `ret` chains back to the return site), more than the comparison itself.
+
+- **Per-kernel switch**: `libKernels` takes a list of names (above); `["memcmp"]` turns on that kernel alone.
+- **Inline form** (`libInline`, translate.js `libInlineOf`): when a region is translated, a `call dword ptr [slot]` or an
+  import stub's `jmp dword ptr [slot]` whose slot holds the entry of a function a kernel on recognises (fingerprint, as
+  for the kernel) runs that kernel's code on the region's own locals (libkernels.js `emitLibInline`; memcmp only,
+  `LIB_INLINE_KINDS`): no exit, no chain; a call goes on at its return site, a stub returns as RET does (to a return
+  site of the region by a local jump, else out). At run time it first checks that the slot still holds that entry and
+  that the Jit's kernel is live there (`LIB_LIVE`, a word per definition the Jit sets when it installs the kernel —
+  its library recognised there, `libScope` — and clears when it drops it: a write to its pages, too many calls off its
+  path); otherwise, as for an input off the kernel's path (DF set, a pointer in the first 64 KiB...), the ordinary call
+  or jump runs, which writes nothing different (the call's push of the return address is the same store). Until the
+  kernel is installed — the first call anywhere, through the hash table — calls take the ordinary way; the return site
+  of a `call [slot]` run inline is kept a block of its own so that such a call comes back into the region instead of
+  starting another one in the middle of a block. The code-cache dependencies (`inlineDeps`) record [slot, entry,
+  0x100 + definition]. `jit.stats.libInline` counts the sites translated, the profile counter `libInline` the calls run
+  inline. tests/jit-lib-kernels.test.js runs both forms against the interpreter and the JIT without kernels (registers,
+  flags read after the call, stack, instructions), checks that every call after the first ran inline and that a drop
+  clears `LIB_LIVE`.
 
 ## The four 2026-11-12 branches combined, measured against main
 

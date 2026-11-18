@@ -10,7 +10,7 @@ import { OP_NAMES, OP, OT, decode } from '../decoder.js';
 import { RangeHeat, VISITED } from './heat.js';
 import { HotWindow } from './hotcode.js';
 import { Tier2 } from './tier2.js';
-import { LIB_KERNELS, LIB_CALLS, matchLibKernel, buildLibKernelModule } from './libkernels.js';
+import { LIB_KERNELS, LIB_CALLS, LIB_LIVE, matchLibKernel, libKernelDefs, buildLibKernelModule } from './libkernels.js';
 import { acct, C as ACCT } from '../../core/frame-acct.js';
 import './translate-x87.js';
 import './translate-sse-float.js';
@@ -123,7 +123,7 @@ export class Jit {
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, libKernels: 0, libFallbacks: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, smcKept: 0, smcChecks: 0, smcGroups: 0, smcGrouped: 0, nestSites: 0, linkedSites: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, libKernels: 0, libFallbacks: 0, libInline: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, smcKept: 0, smcChecks: 0, smcGroups: 0, smcGrouped: 0, nestSites: 0, linkedSites: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -136,8 +136,9 @@ export class Jit {
     /** hot-code experiment (hotcode.js, off by default): its profile window, the window's counts shaping the regions (hotOnly), its last stats */
     this.hot = null; this.hotHeat = null; this.hotStats = null;
     // library kernels (libkernels.js): the live ones by entry, the table index of each definition's function (-1: not
-    // yet; the module made at the first), the entries dropped for leaving the exact way too often
-    this.libLive = null; this.libFns = null; this.libExports = null; this.libOff = null;
+    // yet; the module made at the first), the entries dropped for leaving the exact way too often; the definitions on
+    // (libKernelSet) and the option value they were derived from
+    this.libLive = null; this.libFns = null; this.libExports = null; this.libOff = null; this.libSet = null; this.libSetOf = undefined;
     this.clearTables();
   }
 
@@ -244,6 +245,7 @@ export class Jit {
     this.genericTop?.clear();
     if (this.t2) { this.t2.discard(); this.t2 = null; }
     this.libLive?.clear();
+    this.mem.fill(LIB_LIVE, 4 * LIB_KERNELS.length, 0);
   }
 
   /** Drop every translation (e.g. between conformance cases). */
@@ -313,6 +315,7 @@ export class Jit {
     const { code, blocks, stats, fpcAssume: fpc } = translateRegion(this.mem, eip, o);
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
+    if (stats.libInline) this.stats.libInline += stats.libInline; // (library kernels run inline, see translate.js libInlineOf)
     // (stores' SMC checks emitted, groups and the stores they cover: translate.js planSmcGroups)
     if (stats.smcChecks) { this.stats.smcChecks += stats.smcChecks; this.stats.smcGroups += stats.smcGroups ?? 0; this.stats.smcGrouped += stats.smcGrouped ?? 0; }
     if (stats.dispatchBlock) this.stats.dispatchBlocks++; // (regions whose dispatcher is no loop)
@@ -537,8 +540,18 @@ export class Jit {
   }
 
   // ------------------------------------------------------------------ library kernels
-  /** are library kernels on (opts.libKernels, the in-session options, JIT_DEFAULTS; ORTHROS_LIBKERNELS=0: off)? */
-  libKernelsOn() { return (this.abOpts?.libKernels ?? this.opts.libKernels ?? JIT_DEFAULTS.libKernels) !== false && !libKernelsOff(); }
+  /** is any library kernel on (libKernelSet)? */
+  libKernelsOn() { return this.libKernelSet() !== null; }
+  /**
+   * The kernel definitions on, or null: opts.libKernels (the in-session options, the Jit's, JIT_DEFAULTS) — true every
+   * one, false none, a list of names (an array or a comma-separated string; 'memcmp' or 'msvcr71!memcmp') those named;
+   * ORTHROS_LIBKERNELS=0: none.
+   */
+  libKernelSet() {
+    const v = this.abOpts?.libKernels ?? this.opts.libKernels ?? JIT_DEFAULTS.libKernels;
+    if (v !== this.libSetOf) { this.libSetOf = v; this.libSet = libKernelDefs(v); }
+    return this.libSet === null || libKernelsOff() ? null : this.libSet;
+  }
   /**
    * The kernel at `eip` (libkernels.js), hash entry (re)inserted, or null: one live already, else the code there
    * recognised (its fingerprint, in a library: opts.libScope) and the kernel installed — its function in the table, a
@@ -548,8 +561,9 @@ export class Jit {
   libKernel(eip) {
     let rec = this.libLive?.get(eip);
     if (!rec) {
-      if (!this.libKernelsOn() || this.libOff?.has(eip)) return null;
-      const d = matchLibKernel(this.mem.u8, eip);
+      const on = this.libKernelSet();
+      if (on === null || this.libOff?.has(eip)) return null;
+      const d = matchLibKernel(this.mem.u8, eip, on);
       if (!d || (this.opts.libScope && !this.opts.libScope(eip))) return null;
       const i = LIB_KERNELS.indexOf(d);
       if (!this.libExports) {
@@ -567,6 +581,7 @@ export class Jit {
         let s = this.pageRegions.get(p); if (!s) { s = new Set(); this.pageRegions.set(p, s); } s.add(rec);
       }
       (this.libLive ??= new Map()).set(eip, rec);
+      this.mem.write32(LIB_LIVE + 4 * i, eip); // (regions run it inline from now on: translate.js libInlineOf)
       this.stats.libKernels++;
       if (this.opts.log) this.opts.log(`jit: library kernel ${d.name} at ${eip.toString(16)}`);
     }
@@ -832,6 +847,7 @@ export class Jit {
   dropOne(r) {
     if (r.kernel) { // (a library kernel: its hash entry and SMC pages; its function stays in the table for the next one)
       if (this.libLive?.get(r.entry) === r) { this.libLive.delete(r.entry); this.hashRemove(r.entry); }
+      const live = LIB_LIVE + 4 * r.index; if ((this.mem.read32(live) >>> 0) === r.entry) this.mem.write32(live, 0); // (the regions running it inline: the ordinary call)
       this.dropPages(r);
       return;
     }

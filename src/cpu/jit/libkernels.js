@@ -27,6 +27,11 @@ import { REGION_PARAMS, REGION_RESULTS, REGION_ARG_OFFSETS, EXIT_STEP, LZ, FAST_
 
 /** the calls of each kernel (u32 per definition, counted by the kernel: the share of calls off its path, see Jit.libFallback) */
 export const LIB_CALLS = FAST_STATS + 0x100;
+/**
+ * the entry of each definition's live kernel (u32 per definition, 0: none; Jit.libKernel / dropOne): what a region running
+ * a kernel inline checks at run time (translate.js libInlineOf) — the code at that entry still the bytes recognised
+ */
+export const LIB_LIVE = FAST_STATS + 0x180;
 
 // x87 status word condition codes (interp-x87.js)
 const C0 = 0x100, C1 = 0x200, C3 = 0x4000, SW_CC = 0x4700;
@@ -78,6 +83,18 @@ export const LIB_KERNELS = Object.freeze([
   },
 ]);
 
+/**
+ * The definitions a value of the JIT option `libKernels` turns on, or null for none: true every one, false none, a list
+ * of names (an array or a comma-separated string; 'memcmp' or 'msvcr71!memcmp') those named.
+ */
+export function libKernelDefs(v) {
+  if (!v) return null;
+  if (v === true) return new Set(LIB_KERNELS);
+  const names = new Set((Array.isArray(v) ? v : String(v).split(',')).map((s) => String(s).trim()).filter(Boolean));
+  const on = new Set(LIB_KERNELS.filter((d) => names.has(d.name) || names.has(d.name.slice(d.name.indexOf('!') + 1))));
+  return on.size ? on : null;
+}
+
 /** the definitions by the first byte of their code (`first`: a probe before hashing) */
 const BY_FIRST = new Map();
 
@@ -113,13 +130,13 @@ export function libQuick(u8, entry, def) {
   return h >>> 0;
 }
 const QUICK = 12;
-/** The kernel definition whose fingerprint the code at `eip` has, or null. */
-export function matchLibKernel(u8, eip) {
+/** The kernel definition whose fingerprint the code at `eip` has, or null; `on`: the definitions looked for (null: all). */
+export function matchLibKernel(u8, eip, on = null) {
   if (!BY_FIRST.size) for (const d of LIB_KERNELS) { let l = BY_FIRST.get(d.first); if (!l) BY_FIRST.set(d.first, (l = [])); l.push(d); }
   const l = BY_FIRST.get(u8[eip]);
   if (!l || eip > 0x7fffff00) return null;
   for (const d of l) {
-    if (libQuick(u8, eip, d) !== d.quick) continue;
+    if ((on && !on.has(d)) || libQuick(u8, eip, d) !== d.quick) continue;
     const h = libFingerprint(u8, eip, d);
     if (h && h[0] === d.hash[0] && h[1] === d.hash[1]) return d;
   }
@@ -183,10 +200,13 @@ function emitReturn(c, chainIdx, chain) {
   c.get(L_G).return_();
 }
 
-/** guards common to every kernel: ESP with room for the frame below it and the arguments above (else the exact way) */
-function guardStack(c, fallback, below, above) {
-  c.get(P.ESP).set(L_S);
-  c.get(L_S).i32(0x10000 + below).sub().i32(0x7f000000 - above - (0x10000 + below)).gt_u().br_if(fallback);
+/**
+ * guards common to every kernel: S = ESP (in local `s`; `preset`: S already there) with room for the frame below it and
+ * the arguments above (else the exact way)
+ */
+function guardStack(c, fallback, below, above, s = L_S, preset = false) {
+  if (!preset) c.get(P.ESP).set(s);
+  c.get(s).i32(0x10000 + below).sub().i32(0x7f000000 - above - (0x10000 + below)).gt_u().br_if(fallback);
 }
 /** L_T = TOP, L_TW = the tag word, L_CW = the control word; fallback unless the physical registers TOP-1..TOP-n are empty */
 function guardPushes(c, fallback, n) {
@@ -293,10 +313,16 @@ function emitFabs(c, k, fallback) {
  * under the mask 0xff0000). A difference: sbb eax, eax ; pop edi ; sbb eax, -1 (1 or -1, the flags of that sbb); equal:
  * eax 0, the flags of the last test / sub. The bytes are compared 8 at a time; the registers and the instruction count
  * follow from where the first difference is.
+ * `L`: the scratch locals (MEMCMP_LOCALS in the kernel, a translated region's own run inline: emitLibInline); `ret`: run
+ * inline at a `call [slot]` — S = ESP - 4, the call's return address `ret` written there —, else S = ESP.
  */
-function emitMemcmp(c, fallback) {
-  guardStack(c, fallback, 8, 16);
+function emitMemcmp(c, fallback, L = MEMCMP_LOCALS, ret = null) {
+  const { S: L_S, N: L_N, LEN: L_LEN, B1: L_B1, B2: L_B2, I: L_I, U: L_U, J: L_J, Q: L_Q } = L;
+  if (ret !== null) c.get(P.ESP).i32(4).sub().set(L_S);
+  guardStack(c, fallback, 8, 16, L_S, ret !== null);
   c.get(P.EFL).i32(0x400).and().br_if(fallback); // (DF set: repz cmpsd backwards)
+  // (the call's push — should a guard below fail, the ordinary call writes the same value at the same place)
+  if (ret !== null) c.get(L_S).i32(ret).i32store(0);
   const done = c.block();
   c.get(L_S).i32load(12).tee(L_LEN).eqz();
   const zero = c.if_(); // mov eax, [esp+12] ; test eax, eax ; je ; ret
@@ -309,7 +335,7 @@ function emitMemcmp(c, fallback) {
     c.get(b).i32(0x10000).lt_u().br_if(fallback);
     c.get(b).i32(0x7fff0000 - 8).get(L_LEN).sub().gt_u().br_if(fallback);
   }
-  at(c, 4); c.get(P.ESI).i32store(0); at(c, 8); c.get(P.EDI).i32store(0);
+  c.get(L_S).i32(4).sub().get(P.ESI).i32store(0); c.get(L_S).i32(8).sub().get(P.EDI).i32store(0);
   // L_I = the first differing byte (n: none)
   c.i32(0).set(L_I);
   const found = c.block();
@@ -337,7 +363,7 @@ function emitMemcmp(c, fallback) {
     c.get(L_LEN).i32(1).and();
     const odd = c.if_();
     c.get(L_I).eqz();
-    const first = c.if_(); c.i32(21).set(L_N); lowEcx(() => c.i32(0)); c.get(L_U).set(P.EDX); diffFlags(c); c.br(done); c.end(); void first;
+    const first = c.if_(); c.i32(21).set(L_N); lowEcx(() => c.i32(0)); c.get(L_U).set(P.EDX); diffFlags(c, L); c.br(done); c.end(); void first;
     c.get(L_LEN).i32(1).eq();
     const one = c.if_(); c.i32(23).set(L_N); lowEcx(() => c.i32(0)); c.get(L_U).set(P.EDX); eqFlags(c, LZ.SUB, 1, 1); c.br(done); c.end(); void one;
     c.i32(1).set(L_J); c.i32(20).set(L_N); // (the pairs from byte 1, 20 instructions before them)
@@ -347,7 +373,7 @@ function emitMemcmp(c, fallback) {
     c.get(L_I).get(L_LEN).lt_u();
     const d = c.if_(); // the pair holding byte I: 12 per pair before it, 4 or 8 in it, then sbb ... ret: 5
     c.get(L_N).get(L_I).get(L_J).sub().i32(1).shr_u().i32(12).mul().add().i32(9).get(L_I).get(L_J).sub().i32(1).and().i32(2).shl().add().add().set(L_N);
-    lowEcx(() => c.get(L_I)); b2At(() => c.get(L_I)); c.set(P.EDX); diffFlags(c); c.br(done);
+    lowEcx(() => c.get(L_I)); b2At(() => c.get(L_I)); c.set(P.EDX); diffFlags(c, L); c.br(done);
     c.end(); void d;
     c.get(L_N).get(L_LEN).get(L_J).sub().i32(1).shr_u().i32(12).mul().add().i32(3).add().set(L_N);
     lowEcx(() => c.get(L_LEN).i32(1).sub()); b2At(() => c.get(L_LEN).i32(1).sub()); c.set(P.EDX); eqFlags(c, LZ.SUB, 2, 2); c.br(done);
@@ -367,7 +393,7 @@ function emitMemcmp(c, fallback) {
     c.else_();
     c.i32(29).i32(27).get(L_I).i32(1).and().select().set(L_N);
     c.end(); void hiHalf;
-    diffFlags(c); c.br(done);
+    diffFlags(c, L); c.br(done);
     c.end(); void inWord;
     // the tail: t0 = 17 after repz cmpsd, 15 when n < 4 (shr's je)
     c.i32(17).i32(15).get(L_J).select().set(L_N);
@@ -376,7 +402,7 @@ function emitMemcmp(c, fallback) {
     c.get(L_B1).get(L_J).add().i32load(0).set(P.EDX); c.get(L_B2).get(L_J).add().i32load(0).set(P.ECX);
     const tail = (j, nDiff, nEq, last) => { // byte j of the tail: it differs (I = J + j), or the tail ends after it (U = j + 1)
       c.get(L_I).get(L_J).i32(j).add().eq();
-      const dj = c.if_(); c.get(L_N).i32(nDiff).add().set(L_N); diffFlags(c); c.br(done); c.end(); void dj;
+      const dj = c.if_(); c.get(L_N).i32(nDiff).add().set(L_N); diffFlags(c, L); c.br(done); c.end(); void dj;
       let e = null;
       if (!last) { c.get(L_U).i32(j + 1).eq(); e = c.if_(); }
       c.get(L_N).i32(nEq).add().set(L_N); eqFlags(c, LZ.SUB, 1, 1); c.br(done);
@@ -389,11 +415,30 @@ function emitMemcmp(c, fallback) {
   }
   c.end(); // done
 }
+/** memcmp's scratch locals in its kernel function (G: diffFlags' carry, written once S is no longer read: may share it) */
+const MEMCMP_LOCALS = Object.freeze({ S: L_S, G: L_G, N: L_N, LEN: L_LEN, B1: L_B1, B2: L_B2, I: L_I, U: L_U, J: L_J, Q: L_Q });
 /** the result of a difference at byte I: CF = b1[I] < b2[I]; sbb eax, eax ; sbb eax, -1 -> -1 / 1 and that sbb's flags */
-function diffFlags(c) {
-  c.get(L_B1).get(L_I).add().i32load8u(0).get(L_B2).get(L_I).add().i32load8u(0).lt_u().set(L_G);
-  c.i32(1).get(L_G).i32(1).shl().sub().tee(P.EAX).set(P.LZRES);
-  c.i32((LZ.SBB << 2) | 2).set(P.LZOP); c.i32(0).get(L_G).sub().set(P.LZA); c.i32(-1).set(P.LZB);
+function diffFlags(c, L) {
+  c.get(L.B1).get(L.I).add().i32load8u(0).get(L.B2).get(L.I).add().i32load8u(0).lt_u().set(L.G);
+  c.i32(1).get(L.G).i32(1).shl().sub().tee(P.EAX).set(P.LZRES);
+  c.i32((LZ.SBB << 2) | 2).set(P.LZOP); c.i32(0).get(L.G).sub().set(P.LZA); c.i32(-1).set(P.LZB);
+}
+
+/** the kernel kinds a translated region can run inline (emitLibInline) */
+export const LIB_INLINE_KINDS = new Set(['memcmp']);
+/**
+ * A kernel run inline by a translated region (translate.js libInlineOf, opts.libInline): at an import stub's `jmp [slot]`
+ * reached by a call (the return address on the stack: `ret` null) or at a `call [slot]` (`ret`: its return address,
+ * pushed below ESP), the slot holding the function's entry. The region's locals hold the registers, the lazy flags and
+ * the budget at the kernel parameters' indices (REGION_PARAMS' order: translate.js L_REG..., L_ICOUNT); `L` names its
+ * scratch locals: i32 S, G (may share S), N, LEN, B1, B2, I, U, J, i64 Q. The kernel's effects but for the return: ESP
+ * left as it is (the return address not popped), the function's instructions (its `ret` included) left in L.N, not
+ * charged. `fallback`: an input off the kernel's path, nothing changed (but the call's push of `ret`, which the ordinary
+ * call makes the same).
+ */
+export function emitLibInline(c, def, fallback, L, ret = null) {
+  if (def.kind !== 'memcmp') throw new Error(`libkernels: ${def.name} is not run inline`);
+  emitMemcmp(c, fallback, L, ret);
 }
 /** equal: eax = 0, the flags of the last `kind` instruction (a, b: its operands, the result 0) */
 function eqFlags(c, kind, a, b) {

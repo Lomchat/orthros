@@ -84,10 +84,16 @@ export async function openOpfsStore(dirName, fileName) {
 
 const sameBytes = (a, b) => { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
 
-/** The inline-API dependencies of discovered blocks: [slot, thunk, fid, ...] in block and instruction order. */
+/**
+ * The inline-API dependencies of discovered blocks: [slot, thunk, fid, ...] in block and instruction order — a library
+ * kernel run inline (translate.js libInlineOf) as [slot, entry, 0x100 + its definition's index].
+ */
 export function inlineDeps(blocks) {
   const out = [];
-  for (const b of blocks) for (const i of b.insns ?? []) if (i.inlineApi) out.push(i.inlineApi.slot >>> 0, i.inlineApi.thunk >>> 0, i.inlineApi.fid);
+  for (const b of blocks) for (const i of b.insns ?? []) {
+    if (i.inlineApi) out.push(i.inlineApi.slot >>> 0, i.inlineApi.thunk >>> 0, i.inlineApi.fid);
+    else if (i.libInline) out.push(i.libInline.slot >>> 0, i.libInline.entry >>> 0, 0x100 + i.libInline.index);
+  }
   return out;
 }
 
