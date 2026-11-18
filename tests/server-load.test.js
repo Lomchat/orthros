@@ -77,7 +77,9 @@ test('/gamez: the same range asked by many players at once is encoded once, ever
   for (const r of answers) { assert.equal(r.status, 200); assert.equal(r.headers['content-encoding'], 'gzip'); assert.deepEqual(plain(r), text.subarray(0, 1048576)); }
   const after = JSON.parse((await get(base, '/api/netstats', '')).body);
   assert.equal(after.requests - before.requests, 8);
-  assert.equal(after.joined - before.joined, 7, 'seven joined the first one\'s encoding');
+  // (each of the seven others either joined the first one's encoding or, arriving after it ended, took its cached result:
+  // on a busy runner some arrive late — never a second encoding)
+  assert.equal((after.joined - before.joined) + (after.cacheHits - before.cacheHits), 7, 'the seven others joined the first one\'s encoding or took its cached result');
   assert.ok(after.encodeMs >= before.encodeMs);
   assert.equal(after.server.encodeQueue.running, 0);
   assert.ok(after.server.encodedCache.bytes > 0 && after.server.encodedCache.entries === 1, 'one entry, counted once');
