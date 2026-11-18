@@ -481,6 +481,19 @@ frame comparison.
   pixels are read, as the backend allocates it (a level uploaded meanwhile sees no memory, as in-thread).
 - **Back-pressure**: the head is published after every draw (a store, no notification) and notified every 32 draws
   or 16 Ki words when the render worker sleeps; it wakes by itself every 2 ms; frames in flight: 2.
+- **Wake-ups** (2026-11-18): every wait reads its word *before* looking at its condition and waits on that value, so
+  an answer stored and notified between the look and the wait makes the wait return at once. The emulator's waits
+  (`RenderLink.waitForNow`: `TAIL`, `SHOWN`, `READBACK`) read it after the condition until then: the render worker's
+  answer landing between the two left the emulator asleep for the wait's whole 20 ms with its frame, fence or
+  readback already there (forced in a micro-benchmark, a second thread answering within 0-4 µs: 363 of 3 000 waits
+  slept 20 ms, none since). The render worker sleeps on its own `SLEEP` word, which the emulator clears before it
+  notifies (`RenderLink.wakeWorker`): a wake-up that leaves the head as it is — the emulator's own wait, which a held
+  static frame must answer — was lost when it came before the worker's wait (2 ms then). Counted: `waitTimeouts`
+  (the emulator's waits that reached 20 ms) and `lostWakes` (those whose answer was there), in the harness's `mark`
+  render line and `[cpu]` line. The race is rare in play: AotR's main menu (headless SwiftShader, both orders
+  alternated in one session, 20 s phases) lost none either way — the emulator waits there 3 times per 20 s, each
+  time for ~0.7 s while the render worker spends ~1 s in a batch ending with `PRESENT`: 92-102 timeouts per phase in
+  both orders, all with the render worker busy; frames > 40 ms 4-6 per phase in both.
 - Found and fixed on the way, for every path: render-target readbacks are packed in the surface's format (16-bit
   formats were written as 32-bit pixels, past the surface), `UpdateTexture` requires equal formats (it copied past
   smaller levels), new vertex/index buffers are zeroed (their contents depended on what the allocator reused), the

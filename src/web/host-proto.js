@@ -1,7 +1,8 @@
 // The page and its game worker share these: the control words and the input ring in SharedArrayBuffers, the input
 // events' encoding, the audio ring's size and rate. Their own module, without the host's graph (browser-host.js,
 // frame accounting, PNG): the page (src/web/main.js) imports them at its first load, home included.
-export const CTL = { IN_HEAD: 0, IN_TAIL: 1, WAKE: 2, STOP: 3, AUDIO_WRITE: 4, AUDIO_READ: 5, AUDIO_UNDERRUNS: 6, POINTER_LOCK: 7, FOCUS: 8, SIZE: 64 };
+// (word 2, WAKE until 2026-11-18, is free: the worker's nested waits sleep on IN_HEAD, which the page notifies)
+export const CTL = { IN_HEAD: 0, IN_TAIL: 1, STOP: 3, AUDIO_WRITE: 4, AUDIO_READ: 5, AUDIO_UNDERRUNS: 6, POINTER_LOCK: 7, FOCUS: 8, SIZE: 64 };
 export const IN_RING = 4096; // int32 slots (4 per event)
 // (MOUSEREL: a captured mouse's motion — a, b the device counts (movementX/Y), c the cursor's motion in screen pixels
 // packed as two int16 (y high), the type word's bits 8+ the page's sequence number of the move. A button event's `a`
