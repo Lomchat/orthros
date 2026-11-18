@@ -237,12 +237,17 @@ export class BrowserHost {
     // (a wait for a deadline — a guest timeout, a timer, a throttled Sleep(0) — wakes at it on a coarse host timer; the
     // deadlock watch's long waits are plain: core/host-wait.js)
     const precise = ms <= 50, deadline = performance.now() + t;
+    // (woken by input: the wait is on the input ring's head, from the value the last pump drained to — the page notifies
+    // it after each event —, so an event pushed since, during the work below or before this call, ends the wait at
+    // once. Until 2026-11-18 it waited on a word that never changed, and a notification before the wait was lost: the
+    // event waited up to 50 ms)
+    const seen = Atomics.load(this.ctl, CTL.IN_TAIL);
     this.audioHook?.(); // (the audio ring filled before blocking: a nested wait must not starve the output)
     // (deferrable work of the worker done in the wait first — the game waits anyway: see idleWork in worker.js)
     if (this.idleWork && t >= 1) { const t0 = performance.now(), p = acct.enter(ACCT.host); this.idleWork(t); acct.leave(p); }
     const cat = io ? ACCT.ioWait : ACCT.wait, ap = acct.enter(cat);
     const t0 = acct.stamp(), acc0 = acct.acc[cat];
-    const r = hostWaiter.waitUntil(this.ctl, CTL.WAKE, 0, deadline, precise);
+    const r = hostWaiter.waitUntil(this.ctl, CTL.IN_HEAD, seen, deadline, precise);
     acct.leave(ap);
     // (frame accounting: the host's wake-up past the deadline is lateness, not the game's pacing — Windows' coarse timer
     // shows here; before 2026-10-22 it stayed in `wait`. Not a frame limiter's earlier waits: waking them late does not

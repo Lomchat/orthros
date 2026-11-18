@@ -70,7 +70,7 @@ export class RenderLink {
     // streams by declaration object or FVF code — Recorder.streamsRead; the stale-read check, ORTHROS_VB_CHECK)
     this.u16 = null; this.u32 = null; this.lazyN = 0; this.layoutsByObj = new WeakMap(); this.layoutsByFvf = new Map(); this.vbCheck = null; this.checkStep();
     this.published = 0; this.notifiedAt = 0; this.drawsSinceNotify = 0;
-    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, eagerBufs: 0, bufDataBytes: 0, bufDataCalls: 0, ixScans: 0, ixScanned: 0, vbChecked: 0, vbStale: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
+    this.stats = { gpuWaitMs: 0, waits: 0, fenceWaits: 0, fenceMs: 0, frameWaits: 0, frameMs: 0, readbackMs: 0, readbacks: 0, ringWaits: 0, waitTimeouts: 0, lostWakes: 0, eagerBufs: 0, bufDataBytes: 0, bufDataCalls: 0, ixScans: 0, ixScanned: 0, vbChecked: 0, vbStale: 0, deferredFrees: 0, cows: 0, cowBytes: 0, fenceTex: 0, fenceBuf: 0 };
   }
   /** words the render worker has consumed (its 32-bit counter widened against what was produced) */
   consumedNow() {
@@ -85,8 +85,18 @@ export class RenderLink {
     const w = this.w;
     if (this.replayer) { if (urgent) this.drain(w.produced); return; }
     if (this.published !== w.produced) { this.published = w.produced; Atomics.store(this.ctl, CTL.HEAD, w.produced % TWO32 | 0); }
-    if ((urgent || this.drawsSinceNotify >= 32 || w.produced - this.notifiedAt > 16384) && this.notifiedAt !== w.produced && Atomics.load(this.ctl, CTL.SLEEP)) { this.notifiedAt = w.produced; this.drawsSinceNotify = 0; Atomics.notify(this.ctl, CTL.HEAD); }
+    if ((urgent || this.drawsSinceNotify >= 32 || w.produced - this.notifiedAt > 16384) && this.notifiedAt !== w.produced && this.wakeWorker()) { this.notifiedAt = w.produced; this.drawsSinceNotify = 0; }
     if (this.deferred.length) this.releaseDeferred();
+  }
+  /**
+   * Wake the render worker if it sleeps (render-loop.js): its SLEEP word cleared, then notified — it sleeps on that
+   * word while it is 1, so a wake-up given between its last look at the head and its wait is never lost. True if it slept.
+   */
+  wakeWorker() {
+    const ctl = this.ctl;
+    if (!Atomics.load(ctl, CTL.SLEEP) || Atomics.compareExchange(ctl, CTL.SLEEP, 1, 0) !== 1) return false;
+    Atomics.notify(ctl, CTL.SLEEP);
+    return true;
   }
   /** inline: replay up to `pos` on this thread */
   drain(pos) {
@@ -105,12 +115,17 @@ export class RenderLink {
     const t0 = performance.now();
     this.publish(true);
     if (this.replayer) { this.drain(this.w.produced); this.account(kind, t0); return cond(); }
-    const ctl = this.ctl;
+    const ctl = this.ctl, s = this.stats;
     Atomics.store(ctl, CTL.EMU_WAIT, 1);
     let beat = Atomics.load(ctl, CTL.HEARTBEAT), tail = Atomics.load(ctl, CTL.TAIL), still = t0;
-    while (!cond()) {
-      Atomics.notify(ctl, CTL.HEAD);
-      Atomics.wait(ctl, word, Atomics.load(ctl, word), 20);
+    for (;;) {
+      // (the word read before the condition, and the wait on that value: the render worker's store and notify between
+      // the two make the wait return at once. Read after the condition — until 2026-11-18 —, they could fall between
+      // the condition and the read: the wait then slept its full 20 ms for a frame, fence or readback already there)
+      const v = Atomics.load(ctl, word);
+      if (cond()) break;
+      this.wakeWorker(); // (a frame it holds, static-frames.js, is released for this wait: EMU_WAIT)
+      if (Atomics.wait(ctl, word, v, 20) === 'timed-out') { s.waitTimeouts++; if (cond()) s.lostWakes++; } // (lostWakes: the answer was there, unannounced)
       const b = Atomics.load(ctl, CTL.HEARTBEAT), t = Atomics.load(ctl, CTL.TAIL), now = performance.now();
       if (b !== beat || t !== tail) { beat = b; tail = t; still = now; }
       // (no progress, or never the answer)

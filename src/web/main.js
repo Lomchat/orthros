@@ -876,7 +876,7 @@ function push(type, a, b, c) {
   const i = (head % (IN_RING / 4)) * 4;
   ring[i] = type; ring[i + 1] = a | 0; ring[i + 2] = b | 0; ring[i + 3] = c | 0;
   Atomics.store(ctl, CTL.IN_HEAD, (head + 1) | 0);
-  Atomics.notify(ctl, CTL.WAKE);
+  Atomics.notify(ctl, CTL.IN_HEAD); // (a nested wait sleeps on the head: browser-host.js waitEvent)
   state.worker?.postMessage({ type: 'wake' });
 }
 /** Type a string as key down / char / key up events (letters, digits, space), for scripted runs. */

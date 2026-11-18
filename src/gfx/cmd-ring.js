@@ -99,7 +99,7 @@ export const CTL = {
   SHOWN: 64, // render worker: frames handed to the page
   READBACK: 80, // render worker: ticket of the last readback done
   HEARTBEAT: 96, // render worker: incremented as it runs
-  SLEEP: 112, // render worker: 1 while it sleeps waiting for HEAD
+  SLEEP: 112, // render worker: 1 while it sleeps (on this word); the emulator clears it, then notifies, to wake it
   READY: 128, // render worker: 1 when its context is up, -1 when it failed
   EPOCH: 144, // render worker: incremented at each context restoration
   REPLAY_US: 160, // render worker: microseconds spent replaying (running total)

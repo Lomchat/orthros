@@ -96,7 +96,8 @@ export function createRemoteGfx({ log, onFail, workerUrl }) {
       memories.push(memory); i = memories.length - 1;
       worker?.postMessage({ type: 'memory', index: i, memory });
       const end = performance.now() + 5000;
-      while (Atomics.load(ctl, CTL.MEMORIES) < i && !failed && performance.now() < end) Atomics.wait(ctl, CTL.MEMORIES, Atomics.load(ctl, CTL.MEMORIES), 50);
+      // (the wait on the value the condition read: an answer between the two returns at once — not 50 ms later)
+      for (let v; (v = Atomics.load(ctl, CTL.MEMORIES)) < i && !failed && performance.now() < end;) Atomics.wait(ctl, CTL.MEMORIES, v, 50);
       if (Atomics.load(ctl, CTL.MEMORIES) < i) { log(`render worker: guest memory ${i} not taken`); return false; }
     }
     gfx.link.w.put(OP.MEMORY, i); current.memory = memory;

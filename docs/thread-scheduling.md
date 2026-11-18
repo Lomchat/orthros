@@ -171,6 +171,12 @@ Tests: `tests/sched-priority.test.js` (every round-robin position: the equal-pri
 `src/core/host-wait.js` (`HostWaiter`, `hostWaiter`), used by `BrowserHost.waitEvent`, `RealClock.sleep` and the
 worker's pump timer (`armTimer`); pacing loops noted by kernel32's `Sleep` (`paceStep` / `paceWoke`).
 
+`BrowserHost.waitEvent` sleeps on the input ring's head (`CTL.IN_HEAD`, which the page notifies after each event),
+from the value its last pump drained to: an event pushed since — before the call, or during the idle work it does
+before blocking — ends the wait at once. Until 2026-11-18 it slept on a `WAKE` word that never changed, and a
+notification given before the wait was lost: the event then waited for the wait's deadline, up to 50 ms
+(`tests/lost-wakeup.test.js`).
+
 **What the owner measured.** BFME1 1.08 on a Windows laptop (Chrome 154, Iris Xe, 20 threads): menu 26.8 fps, frame
 p50 35.4 / p90 46.8 / p99 52.8 ms, 431 frames > 40 ms per minute, while the work per frame was p50 9.6 / p90 13.5 ms
 of a 33 ms budget and the GPU p99 19 ms. Mean ms per frame: wait 27.2, guest 6.4, api 2.2, late 0.5, draw 0.5.

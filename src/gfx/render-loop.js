@@ -60,11 +60,15 @@ export async function replayLoop(ctl, replayer, backend, stats, stop = () => fal
     Atomics.add(ctl, CTL.HEARTBEAT, 1);
     Atomics.store(ctl, CTL.SLEEP, 1);
     const t0 = performance.now();
-    // (caught up: sleep on the head word without blocking the event loop — waitAsync — at most 2 ms; in Node a pending
-    // waitAsync does not keep a worker thread alive: a blocking wait, then a return to the event loop)
-    if ((Atomics.load(ctl, CTL.HEAD) >>> 0) === head) {
-      const w = Atomics.waitAsync && !NODE ? Atomics.waitAsync(ctl, CTL.HEAD, head | 0, 2) : null;
-      if (w?.async) await w.value; else if (!w) { Atomics.wait(ctl, CTL.HEAD, head | 0, 2); await yieldTask(); }
+    // (caught up: sleep without blocking the event loop — waitAsync — at most 2 ms; in Node a pending waitAsync does not
+    // keep a worker thread alive: a blocking wait, then a return to the event loop. It sleeps on its SLEEP word, which
+    // the emulator clears before it notifies — RenderLink.wakeWorker, for new commands or for a wait of its own that a
+    // held frame must answer —, after looking at the head and EMU_WAIT once SLEEP is set: a wake-up given after that
+    // look finds the word cleared, one given before is seen by it. Until 2026-11-18 it slept on the head word, and the
+    // emulator's wake-up for its own wait, which leaves the head as it is, was lost when it came before the wait)
+    if ((Atomics.load(ctl, CTL.HEAD) >>> 0) === head && !(replayer.staticFrames?.heldFrom != null && Atomics.load(ctl, CTL.EMU_WAIT))) {
+      const w = Atomics.waitAsync && !NODE ? Atomics.waitAsync(ctl, CTL.SLEEP, 1, 2) : null;
+      if (w?.async) await w.value; else if (!w) { Atomics.wait(ctl, CTL.SLEEP, 1, 2); await yieldTask(); }
     }
     Atomics.store(ctl, CTL.SLEEP, 0);
     const t1 = performance.now();
