@@ -334,7 +334,12 @@ as a risk.
   `presentRefreshes`, message `pacing`); IMMEDIATE frames, the 2D and movie layers and a hidden page are shown at once;
   `?pace=0` (`tools/headless.mjs --pace 0`) shows every frame as it comes. Nothing changes on the guest side: the
   wait above, and the machine a snapshot keeps, are the same. The page counts the refreshes each frame stayed (the
-  `pace` telemetry, docs/real-machine-bench.md).
+  `pace` telemetry, docs/real-machine-bench.md). Measured: the owner's AotR report's arrivals replayed through it
+  (`tools/dev/flicker-report.mjs`), refreshes per frame 1/2/3 = 2/57/4 → 0/61/2, judder 0.19 → 0.06, arrival to
+  screen +0.6 ms on average; headless Chromium on this loaded server, `tools/pe/framepace.c` (900 frames, a BFME-like
+  33 ms limiter, `--pace 0` against the default): ~33.1 ms frames 26/856/18 (+1 held 4) → 19/878/4, judder 0.10 →
+  0.05; `p34` (~34 ms) 14/834/52 → 3/856/41, judder 0.15 → 0.10 (a 3 per drift cycle stays: the game is slower than
+  two refreshes).
 - Stats: `gpuWaitMs` on the emulator (ring full, frames in flight, readbacks, fences), `replayMs` per frame in the
   render worker; both in the HUD, the slow-frame lines and the telemetry, so a slow frame says which side was late.
 
