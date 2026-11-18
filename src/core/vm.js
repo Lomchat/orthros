@@ -180,7 +180,7 @@ export class Vm {
     sealVmSnapRegistry(this); // (what the construction built is the same in every Vm: snapshots restore it in place)
   }
 
-  log(kind, msg) { if (this.logKinds.has(kind) || this.logKinds.has('all')) this.logFn(kind, msg); }
+  log(kind, msg) { const k = this.logKinds; if (k !== undefined && (k.has(kind) || k.has('all'))) this.logFn(kind, msg); } // (k undefined: a line from the constructor's Jit, before the log is set up — ?log=jit crashed there)
   warn(msg) { this.log('warn', msg); }
 
   // ------------------------------------------------------------------ process lifecycle
