@@ -352,7 +352,7 @@ export class Recorder {
     this.texHook = 0; this.streamHook = 0; this.shaderHook = false; this.xfDirty = []; this.nXf = 0;
     this.srKey = undefined; this.sr = null; // (streamsRead: the last layout's streams)
     this.fbos = new Set(); // surfaces the backend holds a framebuffer for (its `fbos` keys): StretchRect's GPU path
-    this.s = { api9: !!dev.api9, rs: null, tss: null, samplers: null, pp: null, bb: null, rt: undefined, rtRes: null, vp: null, sc: undefined, fvf: undefined, decl: undefined, vs: undefined, ps: undefined, vs8: undefined, vs8o: undefined, ps8: undefined, ps8o: undefined,
+    this.s = { api9: !!dev.api9, rs: null, tss: null, samplers: null, pp: null, bb: null, rt: undefined, rtRes: null, ds: undefined, vp: null, sc: undefined, fvf: undefined, decl: undefined, vs: undefined, ps: undefined, vs8: undefined, vs8o: undefined, ps8: undefined, ps8o: undefined,
       texArr: null, tex: [], texRes: [], streamsArr: null, sVb: [], sStride: [], sOff: [], sRes: [], indices: null, ib: undefined, ibase: undefined, ibRes: null,
       versions: new Array(VERSION_FIELDS.length).fill(NaN), xf: null, xfSlots: null, xfVer: NaN, lights: null, lightVer: NaN, lightSize: -1, lightShadow: new Map(), enabled: [], enabledSet: null, material: null, matArr: null, matW: null,
       consts: CONST_FIELDS.map(() => null), cWords: CONST_FIELDS.map(() => null), cLo: new Array(6).fill(Infinity), cHi: new Array(6).fill(-1) };
@@ -442,8 +442,8 @@ export class Recorder {
     rr.destroyed = true;
     this.link.lazyDrop(rr);
     if (rr.slot >= 0) this.link.freeSlots.push(rr.slot);
-    // (destroyed while bound — a state block's texture is not reference-counted — its pointer may come back as
-    // another object: every binding is resolved again at the next flush)
+    // (destroyed while bound — a game releasing an object once too often — its pointer may come back as another object:
+    // every binding is resolved again at the next flush)
     if (rr.binds > 0) for (const x of this.link.recorders) { x.texHook = -1; x.streamHook = -1; x.s.ib = NaN; }
     for (const l of r.levels ?? (r.faces ? r.faces.flat() : r.type === 1 ? [r] : [])) if (l.id !== undefined) this.fbos.delete(l.id);
     this.lastTarget = null;
@@ -491,7 +491,7 @@ export class Recorder {
     }
     if (d.pp !== s.pp) { s.pp = d.pp; W.put(OP.PP, d.pp.width >>> 0, d.pp.height >>> 0, d.pp.swap >>> 0, d.pp.count >>> 0); }
     if (d.backBuffers !== s.bb) {
-      for (const b of s.bb ?? []) if (!d.backBuffers.includes(b) && b.rec && !b.rec.destroyed) { b.rec.destroyed = true; W.c1(OP.FORGET, b.id); } // (replaced by Reset)
+      for (const b of s.bb ?? []) if (!d.backBuffers.includes(b) && b.rec && !b.rec.destroyed) { b.rec.destroyed = true; W.c1(OP.FORGET_RES, b.id); } // (replaced by Reset)
       s.bb = d.backBuffers; for (const b of d.backBuffers) this.ensureRes(b); W.put(OP.BACKBUFFERS, d.backBuffers.map((b) => b.id));
     }
     if (d.renderTarget !== s.rt) {
@@ -501,6 +501,7 @@ export class Recorder {
       if (s.rtRes !== nres) { L.unbind(s.rtRes); L.bind(nres); s.rtRes = nres; }
       W.c1(OP.RT, rt ? rt.id : 0);
     }
+    if (d.depthTarget !== s.ds) { const ds = d.depthTarget ?? null; s.ds = ds; if (ds) this.ensureRes(ds); W.c1(OP.DS, ds ? ds.id : 0); } // (the depth-stencil the backend attaches: d3d8-webgl.js syncDepth)
     if (d.viewport !== s.vp) { const v = d.viewport; s.vp = v; W.put(OP.VIEWPORT, v.x, v.y, v.w, v.h, v.minZ, v.maxZ); }
     if (d.api9) {
       if (d.scissor !== s.sc) { const c = d.scissor; s.sc = c; if (c) W.put(OP.SCISSOR, 1, c.l, c.t, c.r, c.b); else W.put(OP.SCISSOR, 0, 0, 0, 0, 0); }

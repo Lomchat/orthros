@@ -39,6 +39,7 @@ export const OPS = [
   ['TEXTURE', 'uu'], // stage, texture id
   ['TEXTURES', 'u'], // fresh stage texture array of that length
   ['RT', 'u'], // render target 0 surface id
+  ['DS', 'u'], // depth-stencil surface id (0: none)
   ['BACKBUFFERS', 'w'],
   ['VERSION', 'un'], // counter index (VERSION_FIELDS), value
   ['XFORMS', ''], // fresh transform maps
@@ -66,7 +67,7 @@ export const OPS = [
   ['SHADER_DELETE', 'u'],
   ['DECL_CREATE', 'ub'],
   ['DECL_DELETE', 'u'],
-  ['FORGET', 'u'], // a resource the device no longer refers to (old back buffers after Reset): dropped from the mirror only
+  ['FORGET_RES', 'u'], // a resource the device no longer refers to (old back buffers after Reset): dropped from the mirror only
   // work
   ['BEGIN_SCENE', ''],
   ['CLEAR', 'uuunuw'], // rect count, flags, color, z, stencil, rects (4 words each)

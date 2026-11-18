@@ -57,7 +57,7 @@ export class DeviceMirror {
     this.transformWords = new Map(); this.constWords = [null, null]; this.lightWords = new Map(); // (word views of the matrices, float constants and lights: Replayer.applyFast)
     for (const f of VERSION_FIELDS) this[f] = 0;
     this.lights = new Map(); this.lightEnabled = new Set(); this.material = new Float32Array(17); this.materialWords = new Int32Array(this.material.buffer);
-    this.renderTarget = null; this.backBuffers = [];
+    this.renderTarget = null; this.depthTarget = null; this.backBuffers = [];
     this.gfx = null;
   }
 }
@@ -201,6 +201,7 @@ export class Replayer {
       case OP.TEXTURES: m.textures = new Array(a[0]).fill(0); break;
       case OP.TEXTURE: m.textures[a[0]] = a[1]; break;
       case OP.RT: m.renderTarget = this.res.get(a[0]) ?? null; break;
+      case OP.DS: m.depthTarget = this.res.get(a[0]) ?? null; break;
       case OP.BACKBUFFERS: m.backBuffers = Array.from(a[0], (id) => this.res.get(id)); break;
       case OP.VERSION: m[VERSION_FIELDS[a[0]]] = a[1]; break;
       case OP.XFORMS: m.transforms = new Map(); m.transformSlotVersion = new Map(); m.transformWords = new Map(); break;
@@ -267,7 +268,7 @@ export class Replayer {
       case OP.SHADER8: this.shaders.set(a[0], a[1] ? { handle: a[2], code: Uint32Array.from(a[5]) } : { handle: a[2], decl: Uint32Array.from(a[4]), code: a[5] ? Uint32Array.from(a[5]) : null, usage: a[3] }); break;
       case OP.SHADER_DELETE: { const s = this.shaders.get(a[0]); if (!s) break; this.shaders.delete(a[0]); if (s.decl || s.kind === 'vs') g?.deleteVertexShader(s); else g?.deletePixelShader(s); break; }
       case OP.DECL_DELETE: this.decls.delete(a[0]); break;
-      case OP.FORGET: this.res.delete(a[0]); break;
+      case OP.FORGET_RES: this.res.delete(a[0]); break;
       case OP.DECL_CREATE: { const bytes = a[1].slice(); this.decls.set(a[0], { layout: declLayout9(memOfBytes(bytes), 0), bytes }); break; }
       // work
       case OP.BEGIN_SCENE: g?.beginScene(); break;
@@ -332,6 +333,7 @@ export function compareDevice(d, m, max = 20) {
   if (!sameBits(d.material, m.material)) bad('material');
   for (const f of CONST_FIELDS) if (d[f] instanceof Uint8Array ? !sameArr(d[f], m[f]) : !sameBits(d[f], m[f])) bad(f);
   if ((d.renderTarget?.id ?? 0) !== (m.renderTarget?.id ?? 0)) bad(`renderTarget #${d.renderTarget?.id} / #${m.renderTarget?.id}`);
+  if ((d.depthTarget?.id ?? 0) !== (m.depthTarget?.id ?? 0)) bad(`depthTarget #${d.depthTarget?.id} / #${m.depthTarget?.id}`);
   if (!sameArr(d.backBuffers.map((b) => b.id), m.backBuffers.map((b) => b?.id))) bad('backBuffers');
   return out;
 }

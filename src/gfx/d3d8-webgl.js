@@ -15,6 +15,9 @@ import { FlickerProbe } from './flicker-probe.js';
 import { RenderScale, glRect, glEdgeX, glEdgeY, scaledSize, scaledLevel, resampleRgba } from './render-scale.js';
 import { gpuInfo, gpuClass } from '../web/gpu-class.js';
 
+/** the depth formats with stencil bits: D15S1, D24S8, D24X4S4, D24FS8 */
+const STENCIL_FORMATS = new Set([73, 75, 79, 82]);
+
 const D3D_OK = 0;
 const PT = { POINTLIST: 1, LINELIST: 2, LINESTRIP: 3, TRIANGLELIST: 4, TRIANGLESTRIP: 5, TRIANGLEFAN: 6 };
 const SAMP = { ADDRESSU: 1, ADDRESSV: 2, ADDRESSW: 3, BORDERCOLOR: 4, MAGFILTER: 5, MINFILTER: 6, MIPFILTER: 7, MIPMAPLODBIAS: 8, MAXMIPLEVEL: 9, MAXANISOTROPY: 10, SRGBTEXTURE: 11 };
@@ -214,6 +217,7 @@ export class WebGLDevice {
     this.texGen = 0; // (moves when the GL textures are all dropped: records kept on resources, see glTexture)
     this.buffers = new Map(); // resource id -> { buf, size }
     this.fbos = new Map(); // surface id -> fbo
+    this.depths = new Map(); // `<depth surface id>:<w>x<h>` -> a depth-stencil storage (syncDepth)
     this.samplerPool = new Map(); // parameter combination -> WebGLSampler
     this.cLog = [0, 1].map(() => ({ seq: 0, lo: new Int32Array(CLOG_N), hi: new Int32Array(CLOG_N) })); // (constant writes: constTouched)
     this.invalidateGlState();
@@ -358,14 +362,14 @@ export class WebGLDevice {
     this.floatExts();
     this.firstVertexConvention();
     this.programs.clear(); this.programsBySrc.clear(); this.progBySig?.clear(); this.lastProgram = null; if (this.pc) { this.pc.ready.clear(); this.pc.pending = 0; }
-    this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.backDepth = null; this.samplerPool.clear(); this.smpCache = null; this.fullTmp = null; this.nullTex = null; this.rsc.reset();
+    this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.fbos.clear(); this.depths.clear(); this.depthTmp = null; this.depthFbos = null; this.samplerPool.clear(); this.smpCache = null; this.fullTmp = null; this.nullTex = null; this.rsc.reset();
     this.vaos?.clear(); this.vaosByBuf?.clear(); this.curVao = null; this.gamma = null;
     this.upVbo = gl.createBuffer(); this.upIbo = gl.createBuffer(); this.vao = gl.createVertexArray();
     this.invalidateGlState(); gl.bindVertexArray(this.vao);
     this.reset(this.dev);
     this.log('d3d-webgl: context restored, resources recreated on use');
   }
-  destroy() { this.pc?.devices?.delete(this); const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const n of this.nullTex ?? []) if (n) gl.deleteTexture(n.tex); if (this.onesFbo) gl.deleteFramebuffer(this.onesFbo); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); this.dropTargets(); for (const p of this.programsBySrc.values()) gl.deleteProgram(p.prog); }
+  destroy() { this.pc?.devices?.delete(this); const gl = this.gl; for (const t of this.textures.values()) gl.deleteTexture(t.tex); for (const n of this.nullTex ?? []) if (n) gl.deleteTexture(n.tex); if (this.onesFbo) gl.deleteFramebuffer(this.onesFbo); for (const fb of this.depthFbos ?? []) gl.deleteFramebuffer(fb); for (const b of this.buffers.values()) gl.deleteBuffer(b.buf); this.dropTargets(); for (const p of this.programsBySrc.values()) gl.deleteProgram(p.prog); }
 
   // ---------------------------------------------------------------- resources
   createTexture() {} createBuffer() {} createSurface() {} surfaceUpdated() {} volumeUpdated() {}
@@ -385,6 +389,7 @@ export class WebGLDevice {
     const b = this.buffers.get(r.id); if (b) { this.dropVaos(r.id); gl.deleteBuffer(b.buf); this.buffers.delete(r.id); }
     const levels = r.levels ?? (r.faces ? r.faces.flat() : r.type === 1 ? [r] : []);
     for (const l of levels) { const f = this.fbos.get(l.id); if (f) { this.deleteTarget(f); this.fbos.delete(l.id); if (gs.fbo === f.fbo) gs.fbo = null; } }
+    if (this.depths.size) this.dropDepths(levels.map((l) => l.id)); // (a depth surface's storages)
   }
   /** GL texture for a texture resource, uploading dirty levels. */
   glTexture(t) {
@@ -588,7 +593,7 @@ export class WebGLDevice {
       // (cm: the channels draws and clears may write — a float format's own, see floatStore —, + NO_BLEND when blending
       // into it is not available: a 32-bit float target without EXT_float_blend; fl: its float storage)
       const fl = back ? null : this.floatStore(rt.fmt, true);
-      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, dw: rt.width, dh: rt.height, kx: 1, ky: 1, k: 1, scaled: false, surf: rt, depth: null, color: null, back, flip: !back, fl, cm: fl ? ((1 << fl.ch) - 1) | (!fl.half && !this.f32blend ? NO_BLEND : 0) : 15 };
+      f = { fbo: gl.createFramebuffer(), w: rt.width, h: rt.height, dw: rt.width, dh: rt.height, kx: 1, ky: 1, k: 1, scaled: false, surf: rt, depth: null, dsSurf: null, dsStore: null, color: null, back, flip: !back, fl, cm: fl ? ((1 << fl.ch) - 1) | (!fl.half && !this.f32blend ? NO_BLEND : 0) : 15 };
       gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); this.gs.fbo = f.fbo;
       if (rt.owner && (rt.owner.levels || rt.owner.faces)) {
         const g = this.glTexture(rt.owner);
@@ -599,7 +604,7 @@ export class WebGLDevice {
         f.color = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, f.color); gl.renderbufferStorage(gl.RENDERBUFFER, fl ? fl.internal : gl.RGBA8, f.w, f.h);
         gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, f.color);
       }
-      this.attachDepth(f);
+      // (the depth-stencil: attached by syncDepth, before the draws and clears that use it)
       // (checkFramebufferStatus is a round trip to the GPU process that waits for every command queued before it —
       // up to seconds behind a GPU backlog, for a status only logged: --gl-validate or ?dbg=ORTHROS_FBO_CHECK=1)
       if (this.glValidate || globalThis.ORTHROS_FBO_CHECK) { const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target FBO incomplete (${status})`); }
@@ -678,49 +683,109 @@ export class WebGLDevice {
     let n = 0;
     for (const g of this.textures.values()) if (g.res && g.target === gl.TEXTURE_2D && (g.scale ?? 1) !== this.texScale(g.res)) { this.rescaleTexture(g); n++; }
     for (const f of new Set(this.fbos.values())) if (f.color && f.k !== this.targetScale(f.surf)) { this.rescaleTarget(f); n++; }
+    if (n) { const live = new Set([...this.fbos.values()].map((f) => `${f.w}x${f.h}`)); this.dropDepths(null, (d) => live.has(`${d.w}x${d.h}`)); } // (the storages of the sizes no target has now)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.invalidateGlState();
     const st = this.rsc.stats; st.s = s; st.changes++; if (s < st.min) st.min = s;
     if (this.stats.gpu) { this.stats.gpu.scale = s; this.stats.gpu.scaleChanges = st.changes; }
     this.log(`d3d-webgl: render scale ${from} -> ${s} at frame ${this.frame} (${n} targets resized${st.frames ? `; render ${(st.renderMs / st.frames).toFixed(1)} ms per frame so far` : ''})`);
   }
-  /** new depth-stencil storage of the target's GL size, cleared, attached to its framebuffer (bound) */
-  newDepth(f) {
-    const gl = this.gl;
-    if (f.depth && !f.back) gl.deleteRenderbuffer(f.depth);
-    this.attachDepth(f);
-    gl.depthMask(true); gl.stencilMask(0xff); gl.clearDepth(1); gl.clearStencil(0); gl.clear(gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+  /** The target's framebuffer made again at another size (render scale): its depth-stencil is attached by the next syncDepth. */
+  newDepth(f) { f.depth = null; f.dsSurf = null; f.dsStore = null; }
+  /**
+   * The depth-stencil the game selected (Direct3D 9 SetDepthStencilSurface, Direct3D 8 SetRenderTarget's second surface;
+   * the automatic one after CreateDevice and Reset) attached to the bound target's framebuffer `f` before a draw or a
+   * clear — none when it selected none: depth and stencil tests then pass and write nothing, as a Direct3D draw without
+   * a depth buffer. A depth surface's storage (`depths`) is shared by every target of its GL size drawn with it: what a
+   * scene drawn into a texture left in the back buffer's depth is what the back buffer's next draws test against; a
+   * flipping chain's back buffers share the depth-stencil of the frame before (it is not part of the chain:
+   * D3DPRESENTFLAG_DISCARD_DEPTHSTENCIL aside, Direct3D 9 keeps it across presents).
+   * Size: Direct3D draws a target smaller than its depth surface with the surface's top-left part (the SAGE games: a
+   * 256x256 texture with the 1024x768 automatic depth in their menus); WebGL 2 refuses a framebuffer whose attachments
+   * differ in size (FRAMEBUFFER_INCOMPLETE_DIMENSIONS: nothing drawn). So a depth surface has one storage per GL size
+   * of the targets drawn with it, keyed `<surface id>:<w>x<h>` — the targets of one size share theirs, two sizes do
+   * not share contents (Direct3D's top-left part: not copied between them). Render scale (render-scale.js) likewise:
+   * a target stored scaled gets the storage of its stored size.
+   * Orientation: back buffers are stored with GL rows going up, every other target top row first (bindTarget). A storage's
+   * contents follow the target last drawn with it (`o`: 0 top row first, 1 rows going up, -1 not drawn yet); attached
+   * to a target of the other orientation they are mirrored once (orientDepth) — or only relabelled when the clear about
+   * to run replaces them all (`discard`).
+   */
+  syncDepth(f, discard) {
+    const ds = this.dev.depthTarget ?? null;
+    let rb = null;
+    if (ds !== null) {
+      let d = f.dsSurf === ds ? f.dsStore : null;
+      if (d === null || d.dead) { d = this.depthStore(ds, f.w, f.h); f.dsSurf = ds; f.dsStore = d; }
+      const o = f.flip ? 0 : 1;
+      if (d.o !== o) { if (d.o < 0 || discard) d.o = o; else this.orientDepth(d, o); }
+      rb = d.rb;
+    }
+    if (f.depth !== rb) {
+      const gl = this.gl; gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, rb); f.depth = rb;
+      if (this.glValidate || globalThis.ORTHROS_FBO_CHECK) { const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER); if (status !== gl.FRAMEBUFFER_COMPLETE) this.log(`d3d-webgl: render target ${f.dw}x${f.dh} with depth surface ${ds ? `#${ds.id} ${ds.width}x${ds.height}` : 'none'}: FBO incomplete (${status})`); }
+    }
+  }
+  /** a DEPTH24_STENCIL8 renderbuffer of w x h (every depth format: 24 bits of depth, 8 of stencil) */
+  depthStorage(w, h) { const gl = this.gl, rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, w, h); return rb; }
+  /** the storage of depth surface `ds` for targets of GL size w x h (made: its contents no orientation yet) */
+  depthStore(ds, w, h) {
+    const key = `${ds.id}:${w}x${h}`;
+    let d = this.depths.get(key);
+    if (d === undefined) {
+      d = { rb: this.depthStorage(w, h), w, h, o: -1, id: ds.id, dead: false };
+      this.depths.set(key, d);
+      const n = this.stats.depthStores = (this.stats.depthStores ?? 0) + 1;
+      if (n <= 8) this.log(`d3d-webgl: depth-stencil surface #${ds.id} ${ds.width}x${ds.height} fmt ${ds.fmt}: storage ${w}x${h}${w !== ds.width || h !== ds.height ? ' (a target of another size: its own contents)' : ''}`);
+    }
+    return d;
   }
   /**
-   * The depth-stencil storage of a target record (its framebuffer bound): its own for a texture level or a render-target
-   * surface; for the back buffers, ONE shared by all of them (`backDepth`, of their GL size). In Direct3D 9 the depth
-   * surface is not part of the swap chain: a flipping chain (D3DSWAPEFFECT_FLIP, two or more back buffers — present()
-   * rotates the back buffers' framebuffers) rotates the color buffers only, the depth and stencil drawn in a frame are
-   * still there in the next (unless D3DPRESENTFLAG_DISCARD_DEPTHSTENCIL makes them undefined). With a depth-stencil per
-   * back buffer, the frame after a present tested against the depth and stencil of the frame before the previous one.
+   * A depth storage's contents mirrored into orientation `o` (syncDepth): copied into a scratch renderbuffer of its size
+   * with the rows reversed, then back (two depth-stencil blits: the framebuffers holding it keep it attached). The caller's
+   * framebuffer is bound again.
    */
-  attachDepth(f) {
-    const gl = this.gl;
-    let rb;
-    if (f.back) {
-      const d = this.backDepth;
-      if (d && d.w === f.w && d.h === f.h) rb = d.rb;
-      else {
-        if (d) gl.deleteRenderbuffer(d.rb); // (a new size: every back buffer gets the new one — applyRenderScale, a Reset)
-        rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, f.w, f.h);
-        this.backDepth = { rb, w: f.w, h: f.h };
-      }
-    } else { rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, f.w, f.h); }
-    f.depth = rb;
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, rb);
+  orientDepth(d, o) {
+    const gl = this.gl, gs = this.gs, w = d.w, h = d.h;
+    let T = this.depthTmp;
+    if (!T || T.w !== w || T.h !== h) { if (T) gl.deleteRenderbuffer(T.rb); T = this.depthTmp = { rb: this.depthStorage(w, h), w, h }; }
+    const [fa, fb] = this.depthFbos ??= [gl.createFramebuffer(), gl.createFramebuffer()];
+    const scissor = gs.en[gl.SCISSOR_TEST]; if (scissor !== false) gl.disable(gl.SCISSOR_TEST);
+    const copy = (src, dst, flip) => {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fa); gl.framebufferRenderbuffer(gl.READ_FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, src);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fb); gl.framebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, dst);
+      gl.blitFramebuffer(0, 0, w, h, 0, flip ? h : 0, w, flip ? 0 : h, gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT, gl.NEAREST);
+    };
+    copy(d.rb, T.rb, true); copy(T.rb, d.rb, false);
+    gl.framebufferRenderbuffer(gl.READ_FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, null); gl.framebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, null);
+    if (scissor === true) gl.enable(gl.SCISSOR_TEST); else gs.en[gl.SCISSOR_TEST] = false;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, gs.fbo ?? null);
+    d.o = o;
+    const n = this.stats.depthFlips = (this.stats.depthFlips ?? 0) + 1;
+    if ((n & (n - 1)) === 0) this.log(`d3d-webgl: depth-stencil #${d.id} (${w}x${h}) mirrored for a target of the other orientation (${n} so far, frame ${this.frame})`);
   }
-  /** a target record's GL objects deleted (the back buffers' shared depth-stencil kept: dropTargets deletes it) */
-  deleteTarget(f) { const gl = this.gl; gl.deleteFramebuffer(f.fbo); if (f.depth && !f.back) gl.deleteRenderbuffer(f.depth); if (f.color) gl.deleteRenderbuffer(f.color); }
-  /** every target record's GL objects deleted, the back buffers' depth-stencil with them; the records forgotten */
+  /**
+   * Depth storages forgotten — those of the surfaces `ids`, or those `keep` refuses, else all —: detached from the
+   * framebuffers holding them, deleted.
+   */
+  dropDepths(ids = null, keep = null) {
+    const gl = this.gl, gone = new Set();
+    for (const [key, d] of this.depths) if (ids ? ids.includes(d.id) : !keep || !keep(d)) { gone.add(d.rb); d.dead = true; this.depths.delete(key); }
+    if (!gone.size) return;
+    for (const f of new Set(this.fbos.values())) if (gone.has(f.depth)) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fbo); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, null); f.depth = null; }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.gs.fbo ?? null);
+    for (const rb of gone) gl.deleteRenderbuffer(rb);
+  }
+  /** a target record's GL objects deleted (the depth storage it used kept: dropDepths deletes those) */
+  deleteTarget(f) { const gl = this.gl; gl.deleteFramebuffer(f.fbo); if (f.color) gl.deleteRenderbuffer(f.color); }
+  /** every target record's GL objects deleted, the depth storages with them; the records forgotten */
   dropTargets() {
     for (const f of this.fbos.values()) this.deleteTarget(f);
     this.fbos.clear();
-    if (this.backDepth) { this.gl.deleteRenderbuffer(this.backDepth.rb); this.backDepth = null; }
+    const gl = this.gl;
+    for (const d of this.depths.values()) { d.dead = true; gl.deleteRenderbuffer(d.rb); }
+    this.depths.clear();
+    if (this.depthTmp) { gl.deleteRenderbuffer(this.depthTmp.rb); this.depthTmp = null; }
   }
   /** a renderbuffer target (back buffer, render-target surface) at its new scale */
   rescaleTarget(f) {
@@ -965,8 +1030,8 @@ export class WebGLDevice {
         const s = f.surf, owner = s?.owner ? d.textures.get(s.owner.id)?.tex ?? null : null;
         out.set(f.fbo, { kind: 'fb', surf: id, fmt: s?.fmt ?? null, size: `${f.dw}x${f.dh}`, gl: `${f.w}x${f.h}`, back: !!f.back, float: f.fl?.tag ?? null, tex: owner, level: s?.owner ? s.level ?? 0 : null, color: f.color ?? owner, depth: f.depth ?? null });
         if (f.color) out.set(f.color, { kind: 'rb', fmt: f.fl ? f.fl.tag : 'RGBA8', size: `${f.w}x${f.h}` });
-        if (f.depth) out.set(f.depth, { kind: 'rb', fmt: 'DEPTH24_STENCIL8', size: `${f.w}x${f.h}` });
       }
+      for (const x of d.depths.values()) out.set(x.rb, { kind: 'rb', fmt: 'DEPTH24_STENCIL8', size: `${x.w}x${x.h}`, depthSurf: x.id });
       for (const r of [...d.programsBySrc.values(), ...(d.pc ? [...d.pc.ready.values()].map((e) => e.rec).filter(Boolean) : [])]) {
         out.set(r.prog, { kind: 'prog', key: String(r.key ?? '').slice(0, 200) });
         for (const n in r.locs ?? {}) { const l = r.locs[n]; if (l) out.set(l, { kind: 'loc', name: n }); }
@@ -1094,6 +1159,8 @@ export class WebGLDevice {
     if (this.capturing) { const rt = dev.renderTarget ?? dev.backBuffers[0], ds = dev.depthTarget; this.log(`d3d-webgl: [cap] clear flags ${flags} color ${(color >>> 0).toString(16)} z ${z} stencil ${stencil} target ${dev.backBuffers.includes(rt) ? 'screen' : 'FBO'} rt=${rt.owner ? `tex#${rt.owner.id}.${rt.level ?? 0}` : `surf#${rt.id}`}:${rt.width}x${rt.height} ds=${ds ? `surf#${ds.id}:${ds.width}x${ds.height}` : 'depthTarget' in dev ? 'none' : '?'} vp=${dev.viewport.x},${dev.viewport.y},${dev.viewport.w},${dev.viewport.h}${n ? ` rects ${n}` : ''}`); }
     const f = this.bindTarget(), r = this.tmpRect;
     const v = dev.viewport, gs = this.gs;
+    // (a clear of the whole depth storage, and its stencil when it has one, replaces what an orientation change would mirror)
+    this.syncDepth(f, (flags & 2) !== 0 && ((flags & 4) !== 0 || !STENCIL_FORMATS.has(dev.depthTarget?.fmt)) && !(n && rects) && v.x === 0 && v.y === 0 && v.w >= f.dw && v.h >= f.dh);
     // (the masks and the scissor are set directly below and the GL state cache told what they are now — not dropped: a
     // dropped cache made the next draw bind its program, textures, samplers, vertex array and every capability again,
     // 8 clears per frame in Age of the Ring's play; the raster states are compared again at the next draw)
@@ -1489,6 +1556,7 @@ export class WebGLDevice {
   applyState(P, info, type = 0, count = 0, ib = -1) {
     const gl = this.gl, dev = this.dev;
     const tgt = this.bindTarget(), { h, flip } = tgt;
+    this.syncDepth(tgt, false);
     if (this.sigOn) this.sigDraw(P, info, type, count, ib); // (the frame's signature, for the flicker probe: sigMix)
     const v = dev.viewport, gs = this.gs;
     // (a scaled target: the viewport and scissor rectangles in its GL storage — render-scale.js; the u_viewport uniform

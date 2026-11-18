@@ -359,6 +359,8 @@ back buffers of a flipping chain (D3DSWAPEFFECT_FLIP with two back buffers: AotR
 of the chain — the back buffers now share one (`attachDepth`, tests/d3d-flip-depth.test.js). **Left as it is**: Direct3D
 9 rotates `count + 1` buffers (the front buffer is in the queue), Orthros `count` (a single back buffer is never rotated,
 two alternate); a game that redraws its frames (AotR does) cannot see it, and changing it would expose games that rely on
-a single back buffer keeping its contents. **Not done**: the game's depth surface (`SetDepthStencilSurface`) is still
-not what GL attaches — each color target keeps its own; AotR's reflection and glow targets use the main 1600x1200 depth
-surface with a smaller viewport, which this happens to reproduce since they clear it first.
+a single back buffer keeping its contents. **Done since (2026-11-18)**: the game's depth surface (`SetDepthStencilSurface`,
+NULL included) is what GL attaches (d3d8-webgl.js `syncDepth`): one storage per depth surface and target size, shared by
+the targets of that size; a target smaller than its depth surface (the SAGE games' 256x256 menu textures with the
+1024x768 automatic depth) gets a storage of its own size — WebGL 2 refuses attachments of different sizes, and Direct3D 8
+only promises a depth surface's contents back with a color buffer of the size it was last paired with.
