@@ -14,9 +14,12 @@
 // (--ignore-certificate-errors-spki-list); its log in the out folder, each load's window of it in the map's line
 // (`proxy`: loadWindow — the game's reads, the ahead / want / background bytes) and the run's summary (`proxySummary`).
 // --spki <key> (an https --url behind a proxy started elsewhere: its key trusted) or --insecure (any certificate).
-// Each map's line also has its BSP's waits (`bspWaits`: count, ms — the engine's reads of the .bsp that waited) and the
-// background's bytes by producer during the load (`bgByMB`: wire MB) and the link as measured at its end (`link`: bw,
-// rtt, measured — NetLink.snapshot). Start it through the browser slot guard:
+// Each map's line also has the page's longest freeze during the load (`freeze`: its longest long task, their count and
+// total — the page's thread held 50 ms or more), the engine's suspensions while its reads waited (`jspi`, null when its
+// reads hold the page: ?jspi=0 — src/vfs/emscripten-suspend.js), its BSP's waits (`bspWaits`: count, ms — the
+// engine's reads of the .bsp that waited) and the background's bytes by producer during the load (`bgByMB`: wire MB)
+// and the link as measured at its end (`link`: bw, rtt, measured — NetLink.snapshot). Start it through the browser
+// slot guard:
 //   tools/with-browser-slot.sh node tools/goldsrc/maps.mjs <manifest> --url http://127.0.0.1:8080
 //     --steps "wait 5,map c1a0,wait 30,changelevel c1a0d" [--net 1024] [--latency 40] [--proxy 8m:85] [--spki k | --insecure]
 //     [--steady 20] [--report [--no-phases]] [--query q] [--out dir] [--tag t]
@@ -71,6 +74,10 @@ try {
   }
   // (every frame drawn, its time: the probe's draw count looked at each animation frame)
   await page.addInitScript(() => {
+    // (the page's long tasks — its thread held 50 ms or more: a read that waits on it, the engine's work —, for each
+    // load's longest freeze)
+    const L = window.__longTasks = [];
+    try { new PerformanceObserver((list) => { for (const e of list.getEntries()) L.push([e.startTime, e.duration]); }).observe({ type: 'longtask', buffered: true }); } catch { /* not here */ }
     const F = window.__mapFrames = [];
     const look = () => { const P = window.perfProbe; if (P && P.draws !== look.d) { look.d = P.draws; F.push(performance.now()); if (F.length > 20000) F.splice(0, 10000); } requestAnimationFrame(look); };
     requestAnimationFrame(look);
@@ -85,7 +92,8 @@ try {
   const stats = () => page.evaluate(() => {
     const f = portSession.files, s = f.stats, bsp = [0, 0];
     for (const [p, w] of Object.entries(s.fileWaits ?? {})) if (/\.bsp$/i.test(p)) { bsp[0] += w[0]; bsp[1] += w[1]; }
-    return { waits: s.waits, waitMs: s.waitMs, waitBytes: s.waitBytes, syncFetches: s.syncFetches, fetchedBytes: s.fetchedBytes, wants: s.wants, bsp, bgBy: f.net?.bgBy ?? null, link: f.net ? { bw: f.net.bw, rtt: f.net.rtt, measured: f.net.measured } : null, at: performance.now(), date: Date.now() };
+    const j = portSession.suspend;
+    return { suspensions: j?.suspensions ?? null, suspendedMs: j?.suspendedMs ?? null, waits: s.waits, waitMs: s.waitMs, waitBytes: s.waitBytes, syncFetches: s.syncFetches, fetchedBytes: s.fetchedBytes, wants: s.wants, bsp, bgBy: f.net?.bgBy ?? null, link: f.net ? { bw: f.net.bw, rtt: f.net.rtt, measured: f.net.measured } : null, at: performance.now(), date: Date.now() };
   });
   const bgDiff = (a, b) => (b ? Object.fromEntries(Object.entries(b).map(([k, v]) => [k, +(((v.wire ?? 0) - (a?.[k]?.wire ?? 0)) / 1048576).toFixed(2)]).filter(([, v]) => v)) : null);
   for (const step of steps) {
@@ -107,13 +115,19 @@ try {
     await page.waitForTimeout(1100); // (the worker's next NetLink.snapshot: bgBy up to the load's end)
     const s1 = await stats();
     const loadMs = Math.round(end - s0.at);
-    out.maps.push({ step, loadMs, waits: s1.waits - s0.waits, waitMs: Math.round(s1.waitMs - s0.waitMs), waitMB: +((s1.waitBytes - s0.waitBytes) / 1048576).toFixed(1),
+    // (the long tasks that started during the load: the longest — the page's longest freeze —, their total)
+    const tasks = await page.evaluate(({ from, to }) => window.__longTasks.filter(([t]) => t >= from && t <= to), { from: s0.at, to: end });
+    const freeze = { longestMs: Math.round(Math.max(0, ...tasks.map(([, d]) => d))), longTasks: tasks.length, longTaskMs: Math.round(tasks.reduce((a, [, d]) => a + d, 0)),
+      top: [...tasks].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t, d]) => [Math.round(t - s0.at), Math.round(d)]) }; // ([ms into the load, ms])
+    const jspi = s1.suspensions === null ? null : { suspensions: s1.suspensions - s0.suspensions, suspendedMs: Math.round(s1.suspendedMs - s0.suspendedMs) };
+    out.maps.push({ step, loadMs, freeze, jspi, waits: s1.waits - s0.waits, waitMs: Math.round(s1.waitMs - s0.waitMs), waitMB: +((s1.waitBytes - s0.waitBytes) / 1048576).toFixed(1),
       syncFetches: s1.syncFetches - s0.syncFetches, wants: s1.wants - s0.wants, backgroundMB: +((s1.fetchedBytes - s0.fetchedBytes) / 1048576).toFixed(1),
       bspWaits: { count: s1.bsp[0] - s0.bsp[0], ms: Math.round(s1.bsp[1] - s0.bsp[1]) }, bgByMB: bgDiff(s0.bgBy, s1.bgBy), link: s1.link });
     if (proxy) windows.push([out.maps.length - 1, s0.date - pt0, s0.date - pt0 + loadMs]);
     console.log(JSON.stringify(out.maps.at(-1)));
   }
   out.mapLogs = await page.evaluate(() => portSession.logs.filter((l) => /^Map /.test(String(l))).slice(-40));
+  out.suspend = await page.evaluate(() => portSession.suspend ?? null);
   await page.screenshot({ path: path.join(root, `end${tag ? `-${tag}` : ''}.png`) });
   out.load = fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0];
 } finally {

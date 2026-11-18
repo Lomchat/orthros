@@ -122,6 +122,17 @@ export const rendererOf = (page, selector = '#canvas') => page.evaluate((selecto
 }, selector);
 
 /**
+ * A port's game in, as the player sees it: the loading screen gone (`#loader.hidden`) and the engine's frames no longer
+ * suspended while they wait for its files for `quietMs` (`portSession.suspend`, src/vfs/emscripten-suspend.js: the page
+ * goes on meanwhile — a GoldSrc command that loads a map returns at once, its load in the frames after it).
+ */
+export const portInGame = (page, { timeout = 180000, quietMs = 2000 } = {}) => page.waitForFunction((quietMs) => {
+  const s = window.portSession?.suspend, w = (window.__inGame ??= { n: -1, since: 0 }), n = s ? s.suspensions + s.breaths : 0, now = performance.now();
+  if (n !== w.n) { w.n = n; w.since = now; }
+  return document.getElementById('loader')?.classList.contains('hidden') && now - w.since >= quietMs;
+}, quietMs, { timeout, polling: 250 });
+
+/**
  * The page's reports kept off the server (a measuring session is not a player's): its posts to the telemetry and to
  * what the server learns from sessions (prefetch order, first-launch profile, heat, programs, regions) answered here.
  */

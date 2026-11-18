@@ -313,12 +313,14 @@ order fetched ahead from the game's position.
   and time at the visitor's link, and "Prepare" downloads it ahead.
 - **The rest in the background.** Once the engine runs: the learned order from the game's position, then what the
   reader's policies add (blocks around a miss, a file read in order ahead of its reader).
-- **Reads not there yet.** A read of bytes not in the page waits for the worker on shared memory (the page's thread
-  waits — GoldSrc), or suspends the engine (JSPI — re3; OpenMW from orthros-r19, after waiting a few ms on the page's
-  thread first — 10 ms, in its loads only: `GameData.soon`, docs/openmw-history.md "Waits that yield to the
-  browser"); the worker answers with what was asked and as much of the file as it has here already — an image (a
-  texture) to its end at its first missing piece where the page asks for it (OpenMW's: `wholeLoads`; docs/slow-network.md
-  "A whole image at its first missing piece").
+- **Reads not there yet.** A read of bytes not in the page suspends the engine (JSPI — re3; OpenMW from orthros-r19,
+  after waiting a few ms on the page's thread first — 10 ms, in its loads only: `GameData.soon`, docs/openmw-history.md
+  "Waits that yield to the browser"; GoldSrc from 2026-11-18, the same 10 ms first, in its main loop's frames: its
+  prebuilt engine linked by the page, below "Reads that suspend GoldSrc's engine"), or waits for the worker on shared
+  memory where the engine cannot suspend (the page's thread waits — GoldSrc's start, its `main()`); the worker
+  answers with what was asked and as much of the file as it has here already — an image (a texture) to its end at its
+  first missing piece where the page asks for it (OpenMW's: `wholeLoads`; docs/slow-network.md "A whole image at its
+  first missing piece").
 - **Learning.** The worker reports the pieces the engine used (path, range, time since its start) to `/api/prefetch`.
 - **Phases: a map's reads together.** A page whose engine has phases of its own tells them (`GameData.phase(name)`;
   GoldSrc: each map's load — an open of `maps/<map>.bsp` that reads half the file or more, `phaseOnRead` in
@@ -340,8 +342,8 @@ order fetched ahead from the game's position.
   start, then removed.
 - **What the player sees.** Every game's indicators (`src/web/data-meter.js`, `shell.setData`): over the page,
   "Loading the game data" with the MB received, the rate, the step's percentage when the learned order tells its size —
-  drawn by a worker, so it moves while the page's thread waits (GoldSrc) and shows once the engine's reads have waited
-  1.5 s (re3: the page goes on painting) —; in the header, a pill while the learned order or the whole game loads in
+  drawn by a worker, so it moves while the page's thread waits (GoldSrc's start) and shows once the engine's reads have
+  waited 1.5 s (the page goes on painting while the engine is suspended) —; in the header, a pill while the learned order or the whole game loads in
   the background. The home screen's "download first" and the settings' offline copy (`offlineCopy`, kept in this
   browser for every game) fill the same store.
 
@@ -491,6 +493,60 @@ light copies).
 (`--join-keys "{n},1"`) pass on this code (2026-10-28, a scratch server; the multiplayer check's first run failed at its
 last step, player one's suicide scored 0 — the dedicated server's case the check describes, a player without a team —,
 its second passed).
+
+### Reads that suspend GoldSrc's engine (2026-11-18)
+
+The engine (`xash.wasm` of `xash3d-web-1.2.2`, a prebuilt third-party binary, unchanged — every GoldSrc release here
+has the same one) was not built with JSPI: each read of bytes not in the page held the page's thread until they came
+(`GameData.fetchSync`), the header, the lobby, the mouse frozen through a map's load — a player's Half Strike session
+(telemetry of 2026-11-02) had a 14.6 s frame, 13.7 s of it data waits. The page now links the engine itself
+(`Module.instantiateWasm`, `src/vfs/emscripten-suspend.js` — any Emscripten engine built without JSPI):
+- a **frame** runs under `WebAssembly.promising`: each main loop iteration (Emscripten's main loop looks it up in the
+  engine's table at every iteration: the table's `get` answers it with the promising function; the next iterations
+  are skipped while one is suspended) and each console command of the page's (`exec`: the command's text in the
+  engine's heap, `Cmd_ExecuteString` called promising — `map` spawns the map's server in the command itself, its
+  `.bsp` read whole: outside a frame that read held the page 4-8 s at 1 MB/s), after the frame under way; the page's
+  other calls into the engine and its timers (`emscripten_set_timeout`) wait for the frame's end;
+- the engine's **reads** (`fd_read`, `fd_pread`) are WebAssembly built by the page: a read asks first (the file's
+  node, `orthrosStreamed.soon`: in the page, or there within 10 ms of the page's thread — the browser's copy), and only
+  a read that must wait calls the suspending import (a `WebAssembly.Suspending` import called outside `promising`
+  throws, whatever it returns: the engine's `main()` reads as before, on the page's thread); a frame that has held the
+  page's thread 100 ms since its last turn gives it one at its next read (a message to itself), as OpenMW's loads do;
+- the engine's **setjmp / C++ exception trampolines** (`invoke_v`, `invoke_vd`, `invoke_vi`, `invoke_vii`) are
+  WebAssembly built by the page: Emscripten's are JavaScript, `COM_Frame` runs inside a `setjmp` (every frame's calls
+  go through one) and JSPI cannot suspend through a JavaScript frame. The same semantics: the call through the
+  engine's table in a `try`; a JavaScript number caught (`WebAssembly.JSTag`: Emscripten's longjmp throws `Infinity`, a
+  C++ exception its pointer) — the stack pointer restored, `setThrew(1, 0)` —, anything else thrown on.
+A browser without JSPI or `WebAssembly.JSTag`, or an engine whose imports or exports differ, runs as before (logged:
+"Engine reads wait on the page"); `?jspi=0` turns it off. `portSession.suspend`: the counts (frames' suspensions and
+their time, the page's turns, the iterations skipped, the calls put off, the longest the engine held the page's thread
+at once and its reads then).
+
+Measured (`maps.mjs --steps "wait 3,map c1a0,wait 5,changelevel c1a0d" --net 1024 --latency 40`: Chrome's emulation,
+1 MB/s; a scratch server with an empty learned order — every read of the maps from the network —, a new browser each
+run, SwiftShader, 4 cores; `freeze`: the page's long tasks during the load):
+
+| Half-Life | `map c1a0` | its longest freeze | page held | `changelevel c1a0d` | its longest freeze | page held |
+|---|---|---|---|---|---|---|
+| before (`?jspi=0`, 2 runs) | 33.0, 30.7 s | 12.8, 15.1 s | 27.1, 29.7 s | 4.6, 4.8 s | 3.3, 3.3 s | 4.4, 4.5 s |
+| after | 31.5 s | 0.12 s | 0.5 s | 4.7 s | 0.08 s | 0.14 s |
+
+The same waits (453 and 59), 400 and 41 of them suspensions (the others answered within the 10 ms spin); the load
+times within the runs' spread; the session's longest stretch of the engine on the page's thread 124 ms (one read in
+it), 2 turns given. The page's commands run outside a frame first (one run each): c1a0 39.1 s, its longest freeze
+4.1 s; with the turns, 46.6 s and 7.6 s — the `map` command's synchronous `.bsp` read (2 synchronous fetches) holding
+the link and the page. The start (`--steps "wait 1"`, to the page's `running`, sides alternated): 42.0 s without,
+42.1 s with. A command that loads a map now returns before the map is in: the tools that wait for it (`check.mjs`,
+`perf.mjs`, `tools/bench/data-matrix-run.mjs`) wait for the game shown and its frames no longer suspended for 2 s
+(`portInGame`, tools/bench/port-perf.mjs). `check.mjs half-life-original-en solo --guest` and
+`counter-strike-hl-arsenal-en solo --guest --no-save` pass (a scratch server, unthrottled); the multiplayer check not
+run (it plays on the live dedicated servers).
+
+Not covered: the engine's start (its `main()`, before its main loop: the learned startup set is loaded before it); a
+frame suspended in the middle of its drawing shows what it drew so far (a frame's reads come before its drawing, a load
+draws its loading plaque first); the sound callback goes on while a frame waits (SDL's copy of the engine's last
+mixed buffer: silence in a load, which clears it; a short repeat at a sound read mid-game, where the page used to
+stall the output).
 
 ## Game modules built from source
 
@@ -1032,10 +1088,11 @@ same telemetry (`port: "re3"`; `start`, `error`, `crash`, `end` with the frame r
 
 - **Start.** The module imported from the release, the Module created; the game's root `/game` made, the version's
   tree mounted there from the game data (`src/ports/port-files.js`, as GoldSrc: the learned startup set loaded first,
-  the rest in the background), with two options GoldSrc has not: `asyncReads` — a read of bytes not here suspends the
+  the rest in the background), with two options: `asyncReads` — a read of bytes not here suspends the
   engine (JSPI) while they come instead of holding the page (the engine's `fd_read` / `fd_pread`, `src/skel/orthros_fs.js`
   in the fork, ask the file's node, `orthrosStreamed`: missing, ensure, complete — a file the engine reads at random
-  wanted whole in the background); `rewritable` — a game file the engine writes anew becomes a file of the profile.
+  wanted whole in the background; GoldSrc has it too since 2026-11-18, its prebuilt engine linked by the page:
+  `src/vfs/emscripten-suspend.js`); `rewritable` (GoldSrc has not) — a game file the engine writes anew becomes a file of the profile.
 - **Frames.** Counted by `Module.orthrosFrame`: the header's frame rate; the loading screen hides after the first ten.
 - **Shared first-launch profile** (the manifest's `profileSeed`, as the Windows games'; `?profileseed=0` turns it off):
   an empty profile gets, before the engine starts, the small files first sessions of the version wrote identical
