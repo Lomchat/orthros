@@ -37,7 +37,8 @@ const target = args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWi
 if (!target) { console.error('usage: node tools/bench/startbench.mjs <manifest.json> [--until-api CreateProcessA] [--limit 600]'); process.exit(2); }
 const untilApi = opt('until-api', 'CreateProcessA'), limit = Number(opt('limit', 600));
 // --dbg NAME=value,...: debug globals set before the run (the page's ?dbg= switches, e.g. ORTHROS_HOST_TIMER_Q=15.625)
-for (const kv of (opt('dbg', '') || '').split(',').filter(Boolean)) { const [k, v] = kv.split('='); globalThis[k] = Number.isNaN(Number(v)) ? v : Number(v); }
+// (split at the commas that start another NAME=: a value may hold commas itself, as ORTHROS_INTERP_RANGES=lo:hi,lo:hi)
+for (const kv of (opt('dbg', '') || '').split(/,(?=[A-Za-z_]\w*=)/).filter(Boolean)) { const i = kv.indexOf('='), k = i < 0 ? kv : kv.slice(0, i), v = i < 0 ? undefined : kv.slice(i + 1); globalThis[k] = Number.isNaN(Number(v)) ? v : Number(v); }
 refreshApiOpt(); // (the API-layer switches among them: read from the debug globals once)
 // --until-insns <M>: stop after that many million guest instructions (a fixed amount of guest work: under
 // `perf stat -e instructions:u`, the host instructions per guest instruction of a JIT variant, insensitive to the load)
@@ -512,8 +513,11 @@ if (opt('mem')) {
     if (h < heapAt.length && el >= heapAt[h] * 1000) { const f = path.join(keepDir ?? '.', `heap-${heapAt[h]}s.heapsnapshot`); v8.writeHeapSnapshot(f); console.log(`[mem] heap snapshot ${f}`); h++; }
   };
 }
-vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides });
+// (as the page and the CLI start it: the manifest's patches of the game's code and its working directory included)
+vm.createProcess({ exePath: normalizeWin(manifest.mount + '\\' + manifest.exe), args: manifest.args, env: manifest.env, dllOverrides: manifest.dllOverrides, patches: manifest.patches, cwd: manifest.cwd ? normalizeWin(manifest.mount + '\\' + manifest.cwd) : undefined });
 if (learnedHeat) { heatModules = vm.proc.moduleList.length; vm.jit.heatAdd(learnedHeat.apply(vm.proc.moduleList)); }
 acct.enter(ACCT.guest); // (as the browser worker's slices: the VM's own sections enter their categories)
-try { vm.run(); report('exited'); } catch (e) { if (e.report) console.log(e.report); report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); } // (a guest crash: its report first)
+// (a failure exit — the game's own crash handler ending the process, as BFME1's exit 666 — prints the report the page
+// sends with its exit event: the exceptions raised last, the files opened, the threads' state; Vm.exitProcess)
+try { const r = vm.run(); if (vm.exitReport) console.log(vm.exitReport); report(r?.code ? `exited with code ${r.code}` : 'exited'); } catch (e) { if (e.report) console.log(e.report); report(`stopped (${String(e.message ?? e).split('\n')[0].slice(0, 120)})`); } // (a guest crash: its report first)
 if (!keepDir) fs.rmSync(saveDir, { recursive: true, force: true });
