@@ -173,11 +173,26 @@ export function suspendingEngine(o) {
   const settle = () => {
     if (gaveTurn) runEnd();
     frame = null; inside = false;
+    if (dead) later.length = 0;
     while (!frame && later.length) { const fn = later.shift(); try { fn(); } catch (e) { thrown(e); } }
     if (!frame) for (const r of idlers.splice(0)) r();
   };
   const thrown = (e) => { if (quiet(e)) return; if (o.onError) o.onError(e); else if (typeof reportError === 'function') reportError(e); else setTimeout(() => { throw e; }); };
+  /**
+   * A frame ended by an exception its trampolines did not take (a trap, a JavaScript import's error): the engine's state
+   * is broken — no iteration, call or timer of it runs again (Emscripten's main loop stopped there too) and the page is
+   * told (o.onFail: its error screen), its stack pointer put back where the frame began. Emscripten's own unwinding
+   * (`unwind`, ExitStatus) is no failure.
+   */
+  let dead = false;
+  const fatal = (e, sp, sp0) => {
+    if (quiet(e)) return;
+    try { if (sp && sp0 !== undefined) sp.value = sp0; } catch { /* not a global */ }
+    dead = true; stats.dead = true;
+    if (o.onFail) o.onFail(e); else thrown(e);
+  };
   const call = (fn) => {
+    if (dead) return undefined;
     if (!frame) return fn();
     stats.deferred++; later.push(fn);
     return undefined;
@@ -188,18 +203,20 @@ export function suspendingEngine(o) {
    */
   const asFrame = (run) => {
     inside = true; turnAt = performance.now(); runReads = 0; gaveTurn = false;
+    const sp = exports?.__stack_pointer, sp0 = sp?.value;
     let p;
-    try { p = run(); } catch (e) { inside = false; thrown(e); return null; }
+    try { p = run(); } catch (e) { inside = false; fatal(e, sp, sp0); return null; }
     inside = false;
     if (!gaveTurn) runEnd();
     frame = p;
-    p.then(settle, (e) => { settle(); thrown(e); });
+    p.then(settle, (e) => { if (!quiet(e)) dead = true; settle(); fatal(e, sp, sp0); });
     return p;
   };
   /** Each iteration of the engine's main loop (`raw`, its table entry) under promising, one at a time. */
   const iterating = (raw) => {
     const run = WebAssembly.promising(raw);
     return (...args) => {
+      if (dead) return;
       if (frame) { stats.skipped++; return; }
       stats.iterations++;
       asFrame(() => run(...args));
@@ -347,7 +364,7 @@ export function suspendingEngine(o) {
           loop = table = memory = null; instance = await WebAssembly.instantiate(module, imports);
         }
         done(instance, module);
-      })().catch((e) => thrown(e));
+      })().catch((e) => { if (o.onFail) o.onFail(e); else thrown(e); }); // (the engine not fetched nor compiled: Emscripten's own path aborts — the page's error screen)
       return {};
     },
   };

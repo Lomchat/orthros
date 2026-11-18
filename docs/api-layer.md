@@ -490,7 +490,8 @@ as a precomputed plan in one call. Measured here first — AotR skirmish (`fixes
   ~1.1 µs: 92 % of its shader bindings find their stage unchanged, 85 % of the constant bindings are skipped, 95 % of the
   sampler bindings take the texture-only shortcut. In all ~0.6 ms per frame of a thread at ~20 ms per frame; about
   1 M user instructions per frame in d3dx9-effect.js (perf).
-- Tried (local branch `d3dx-pass-plan-experiment`, two commits on c8e0d4c): (1) each pass compiled into typed arrays
+- Tried (not kept, not in the public repository: two commits 7359c58 and d0be6c4 on c8e0d4c, local branch
+  `d3dx-pass-plan-experiment`; its patch kept as evidence under `data/proof/d3dx-pass-plan/` when saved there): (1) each pass compiled into typed arrays
   (kind, arguments, constant values, value functions, objects) applied by one loop in state order, sampler parameters
   likewise, the top-level parameters' versions side by side for the bindings' and programs' checks; (2) on top, a
   commit applying only the operations that read a parameter changed since the pass was last applied, when the device
@@ -505,7 +506,7 @@ as a precomputed plan in one call. Measured here first — AotR skirmish (`fixes
 - Not faster. Instructions (perf stat, one process per variant): `effect-object-bench` 11.19-11.28 G → (1) 11.29-11.35 G,
   (2) 11.49-11.50 G; `effect-pass-bench` 2.29-2.38 G → (1) 2.40-2.45 G, (2) 2.54 G. AotR play: user instructions per
   frame outside the guest's code and the compilers 23.3 / 21.7 M (two base runs) → (1) 21.7 / 23.0 M, (2) 24.1 M — the
-  base's own spread (±1.6 M) is larger than the whole pass application; `BeginPass` 12.7-13.8 → 12.2-14.2 µs per call.
+  base's own spread (1.6 M between its two runs) is larger than the whole pass application; `BeginPass` 12.7-13.8 → 12.2-14.2 µs per call.
   RotWK play (19 `BeginPass` per frame): 9.9 → (1) 11.4 M per frame, `BeginPass` 11.1 → 11.0 µs. (2)'s bookkeeping (a
   changed-parameter list kept by every setter, the device's versions noted after every application) costs more than it
   saves: a commit binds its shaders again anyway whenever the world matrix moved — nearly always —, and what it skips

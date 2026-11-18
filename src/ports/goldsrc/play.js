@@ -449,7 +449,7 @@ async function start() {
   // (a read of the game's files that waits for the network suspends the engine's frame instead of holding the page —
   // its header, its menus, the lobby go on — : the engine linked by emscripten-suspend.js, JSPI; ?jspi=0 turns it off)
   suspend = params.get('jspi') !== '0' && canSuspend()
-    ? suspendingEngine({ wasm: at('engine/xash.wasm'), fs: () => engine?.em?.FS, log }) : null;
+    ? suspendingEngine({ wasm: at('engine/xash.wasm'), fs: () => engine?.em?.FS, log, onFail: (e) => fail(e instanceof Error ? e : new Error(String(e))) }) : null;
   session.suspend = suspend?.stats ?? null;
   engine = session.engine = new Xash3D({
     canvas: $('canvas'),
