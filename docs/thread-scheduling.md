@@ -351,6 +351,13 @@ A/B scenarios (ON = default, OFF = `ORTHROS_HOST_TIMER_HELPER_OFF=1`): `tools/sc
 
 ## The BFME1 investigation (2026-10-03/04)
 
+**Closed 2026-11-18: not a race** (docs/bfme1-skirmish-crash.md). At a player's first SKIRMISH click (no skirmish
+profile yet) the game copies the first name of an empty list — the list's uninitialized sentinel node, recycled with a
+stale pointer; when that pointer reads a count of 0 (a string buffer the program freed, or a block it gave back to the
+heap, whose links Orthros ended with 0 where Windows never writes 0 — fixed in src/win32/heap.js), the copy and its
+release free the block a second time. Timing only decides which recycled node the sentinel is: the history below is
+kept for the scheduling work it led to.
+
 Symptom: in about 1 run in 5 to 1 in 20 depending on the load, ~150 s after the click opening the skirmish setup, a
 call through a null / garbage function pointer on the main thread, or the loader thread spinning while holding a mutex
 the main thread waits for. With `ORTHROS_NULL_WATCH`, the first anomaly in every failing run is a write to address 0 by

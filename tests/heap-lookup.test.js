@@ -35,7 +35,7 @@ class LinearHeap extends Heap {
         let b = this.heads[c], prev = 0, mark = b, steps = 0, span = 1;
         while (b) {
           const bs = m.read32(b - 8);
-          if (!this.freeBlockOk(b, bs)) { if (prev) m.write32(prev, 0); else this.heads[c] = 0; this.stats.brokenLists = (this.stats.brokenLists ?? 0) + 1; break; }
+          if (!this.freeBlockOk(b, bs)) { if (prev) m.write32(prev, this.end); else this.heads[c] = 0; this.stats.brokenLists = (this.stats.brokenLists ?? 0) + 1; break; }
           if (bs >= size) {
             this.unlink(b, c);
             const rem = bs - size;
@@ -45,7 +45,7 @@ class LinearHeap extends Heap {
             return b;
           }
           prev = b; b = m.read32(b);
-          if (!plausible(b)) break;
+          if (b === this.end || !plausible(b)) break; // (the list's end: the heap's own mark, see heap.js)
           // (the cut of a looping list, which the walk did not have: without it such a program never ends)
           if (b === mark) { this.cutLoop(c, mark); break; }
           if (++steps === span) { mark = b; span *= 2; steps = 0; }

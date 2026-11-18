@@ -74,11 +74,32 @@ test('heap: a free list the program turned into a loop is cut, the allocation go
   mem.write32(d, d);
   assert.ok(![c, d].includes(heap.alloc(1900)));
   assert.equal(heap.stats.loopedLists, 2);
-  assert.equal(mem.read32(d), 0);
+  assert.equal(mem.read32(d), heap.end, 'the cut list ends at the heap\'s end mark');
   assert.equal(heap.alloc(1250), c);
   assert.equal(heap.alloc(1050), d);
   // the crash / hang report lists a heap whose only damage is a looping list
   const clean = new Heap({ mem, vmem: new VMem(), tag: 'clean' });
   heap.tag = 'looped';
   assert.deepEqual(heapDamageLines([clean, heap]), ['heap looped: 0 overwritten boundary tags, 0 broken free lists, 2 looping free lists']);
+});
+
+// A program counting a reference through a stale pointer into a block it freed reads the block's first words: Windows'
+// heap never makes them 0 (its free lists end at their head in the heap's header; its lookaside lists leave the second
+// word as the program left it). Orthros' lists ended at 0, so the most recently freed block of its size read a count
+// of 0: BFME1's first SKIRMISH click took one, + 1 then - 1, and freed the block again — the crash at
+// lotrbfme.exe+0x882c67 (docs/bfme1-skirmish-crash.md).
+test('heap: a freed block\'s first two words are never 0, its free list still served', () => {
+  const mem = new GuestMemory();
+  const heap = new Heap({ mem, vmem: new VMem() });
+  const a = heap.alloc(980), x = heap.alloc(16), b = heap.alloc(980), y = heap.alloc(16); // (x, y: no merge)
+  assert.ok(x && y);
+  assert.equal(heap.free_(a), true);
+  assert.ok(mem.read32(a) !== 0 && mem.read32(a + 4) !== 0, 'the only free block of its list');
+  assert.equal(heap.free_(b), true);
+  assert.ok(mem.read32(b) !== 0 && mem.read32(b + 4) !== 0, 'the head of a list of two');
+  assert.ok(mem.read32(a + 4) !== 0, 'the tail');
+  assert.equal(heap.alloc(980), b);
+  assert.equal(heap.alloc(980), a);
+  assert.equal(heap.free_(a), true);
+  assert.equal(heap.alloc(980), a, 'a list emptied and filled again');
 });

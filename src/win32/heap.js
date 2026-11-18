@@ -3,6 +3,11 @@
 //   [u32 user size][u32 magic] user area (8-aligned) [u32 user size (footer)]
 // Free blocks keep a doubly linked list in their user area (next, prev) per size class; chunks
 // obtained from VMem start and end with used sentinel blocks so coalescing stops at their edges.
+// A list's ends are marked by an address of the heap itself (`end`: its first chunk's start sentinel), not by 0, as
+// Windows' free lists end at their list head in the heap's header (and its lookaside lists leave a block's second word
+// as the program left it): a freed block's two first words are never zero there. A program counting a reference through
+// a stale pointer into a block it freed — BFME1's first SKIRMISH click (docs/bfme1-skirmish-crash.md) — read a count of
+// 0 where Windows gives a non-zero one, and freed the block again.
 import { PAGE_READWRITE, alignUp } from './vmem.js';
 
 // (FTR: the footer's 4 bytes and 4 of padding — header and footer together 16 bytes, so every user address stays
@@ -59,6 +64,7 @@ export class Heap {
     this.gmap = null;
     this.stats = {}; // (brokenLists: free lists cut at a block that was not one; loopedLists: cut where they looped back; see alloc)
     this.total = 0;
+    this.end = 0; // (the free lists' end mark: set by the first grow)
     this.grow(Math.max(opts.initial ?? MIN_CHUNK, MIN_CHUNK));
   }
 
@@ -68,6 +74,7 @@ export class Heap {
     const base = this.vmem.alloc(size, PAGE_READWRITE, 'heap:' + this.tag);
     if (!base) return false;
     this.chunks.push({ base, size });
+    if (!this.end) this.end = base + 8; // (the list end, see above: the start sentinel's empty user area — never a free block)
     if (this.gmap) this.mapChunk(this.chunks.length - 1);
     else if (this.chunks.length >= MAP_FROM) { this.gmap = new Uint16Array(1 << (32 - GRAN_SHIFT)); for (let i = 0; i < this.chunks.length; i++) this.mapChunk(i); }
     this.total += size;
@@ -84,7 +91,7 @@ export class Heap {
 
   link(b, c) {
     const m = this.mem, next = this.heads[c];
-    m.write32(b, next); m.write32(b + 4, 0);
+    m.write32(b, next || this.end); m.write32(b + 4, this.end);
     if (next) m.write32(next + 4, b);
     this.heads[c] = b;
   }
@@ -92,10 +99,10 @@ export class Heap {
     const m = this.mem;
     let next = m.read32(b), prev = m.read32(b + 4);
     // (links overwritten by a program using a freed block: dropped rather than followed out of the address space)
-    if (!plausible(next)) next = 0;
-    if (!plausible(prev)) prev = 0;
-    if (prev) m.write32(prev, next); else if (this.heads[c] === b) this.heads[c] = next;
-    if (next) m.write32(next + 4, prev);
+    if (next === this.end || !plausible(next)) next = 0;
+    if (prev === this.end || !plausible(prev)) prev = 0;
+    if (prev) m.write32(prev, next || this.end); else if (this.heads[c] === b) this.heads[c] = next;
+    if (next) m.write32(next + 4, prev || this.end);
   }
   setFree(b, size) {
     const m = this.mem;
@@ -107,7 +114,7 @@ export class Heap {
   alloc(size, zero = false) {
     size = Math.max(MIN_USER, alignUp(size >>> 0, 8));
     if (size > 0x7fffffff) return 0;
-    const m = this.mem, u32 = m.u32; // (u32[a >>> 2] = read32(a): every address read in the walk is 4-aligned)
+    const m = this.mem, u32 = m.u32, end = this.end; // (u32[a >>> 2] = read32(a): every address read in the walk is 4-aligned)
     for (let attempt = 0; attempt < 2; attempt++) {
       for (let c = classIndex(size); c < CLASSES; c++) {
         let b = this.heads[c], prev = 0, mark = b, steps = 0, span = 1;
@@ -118,7 +125,7 @@ export class Heap {
           // stack, with any size: the rest of that list is dropped (leaked) rather than handed out. freeBlockOk, inline)
           const ch = this.chunkOf(b);
           if (ch === null || u32[(b - 4) >>> 2] !== MAGIC_FREE || bs < MIN_USER || (bs & 7) !== 0 || b + bs + FTR + HDR > ch.base + ch.size || u32[(b + bs) >>> 2] !== bs) {
-            if (prev) m.write32(prev, 0); else this.heads[c] = 0;
+            if (prev) m.write32(prev, end); else this.heads[c] = 0;
             this.stats.brokenLists = (this.stats.brokenLists ?? 0) + 1;
             break;
           }
@@ -135,7 +142,7 @@ export class Heap {
             return b;
           }
           prev = b; b = u32[b >>> 2];
-          if (!plausible(b)) break; // (a list overwritten by the program: its rest ignored)
+          if (b === end || !plausible(b)) break; // (the list's end; or a list overwritten by the program: its rest ignored)
           // (links the program rewrote into a loop of free blocks too small for the request: the walk would never end.
           // Brent's cycle detection — `mark` moves to the current block after 1, 2, 4... steps; meeting it again means
           // the walk came back — then the list is cut where it closes, see cutLoop. A walk that ends is not affected)
@@ -162,7 +169,7 @@ export class Heap {
     while (first !== ahead) { first = u32[first >>> 2]; ahead = u32[ahead >>> 2]; }
     let last = first;
     for (let i = 1; i < len; i++) last = u32[last >>> 2];
-    this.mem.write32(last, 0);
+    this.mem.write32(last, this.end);
     this.stats.loopedLists = (this.stats.loopedLists ?? 0) + 1;
   }
 

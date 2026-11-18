@@ -21,3 +21,13 @@ test('first fit with the free hint: holes reused after release, small holes kept
   assert.ok(vm.release(a));
   assert.equal(vm.alloc(G), a, 'the lowest hole again');
 });
+
+// (a range wrapping around 4 GB — a register holding 0xffffffff, an SEH frame near the top — once read as committed:
+// the crash report's dump of the memory at the registers, and an SEH frame check, then read out of bounds)
+test('isCommitted: a range past the end of the space, wrapping around 4 GB included, is not committed', () => {
+  const vm = new VMem(), a = vm.alloc(0x10000);
+  assert.ok(vm.isCommitted(a, 128));
+  assert.equal(vm.isCommitted(0xffffffff, 128), false);
+  assert.equal(vm.isCommitted(0xfffffffc, 8), false);
+  assert.equal(vm.isCommitted(vm.top - 4, 8), false);
+});

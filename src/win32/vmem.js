@@ -198,6 +198,10 @@ export class VMem {
   }
 
   isCommitted(addr, size = 1) {
+    addr >>>= 0;
+    // (a range past the space's end, one wrapping around 4 GB included: its last page, taken modulo 2^32, came before
+    // its first and the loop below saw no page — 0xffffffff read as committed, the read after it out of bounds)
+    if (addr + Math.max(1, size) > this.top) return false;
     const p0 = this.pageOf(addr), p1 = this.pageOf(addr + size - 1);
     if (p1 >= this.pages) return false;
     for (let p = p0; p <= p1; p++) if (this.state[p] !== STATE_COMMITTED) return false;
