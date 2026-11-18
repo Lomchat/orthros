@@ -197,7 +197,11 @@ export class WebGLDevice {
     this.gl = gl; this.dev = dev; this.mem = dev.proc.mem;
     this.log = opts.log ?? (() => {});
     this.pc = opts.programCache ?? null; // (shared by the devices of this GL context, see createWebGLBackend)
-    this.pc?.devices?.add(this); // (their GL state caches told of the programs resolved between slices)
+    this.pc?.devices?.add(this);
+    // the GL state cache (`gs`, see invalidateGlState) is the context's, as the state it mirrors: one for every device of
+    // the context (programCache: one per context). Each device with its own, a device drawing after another believed its
+    // program, framebuffer, vertex array, textures and raster states still bound — GL had the other's, no error raised.
+    this.glCtx = this.pc ? (this.pc.glCtx ??= { gs: null }) : { gs: null };
     this.s3tc = gl.getExtension('WEBGL_compressed_texture_s3tc');
     if (opts.log) opts.log(`d3d-webgl: ${gl.getParameter(gl.RENDERER)} | s3tc ${this.s3tc ? 'yes' : 'no (DXT decoded on the CPU)'} | max texture ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`);
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
@@ -1036,7 +1040,7 @@ export class WebGLDevice {
       for (const smp of this.samplerPool.values()) gl.deleteSampler(smp);
       this.textures.clear(); this.texGen = (this.texGen ?? 0) + 1; this.buffers.clear(); this.samplerPool.clear(); this.smpCache = null; this.gamma = null; this.gammaDirty = true;
       const recs = [...this.programsBySrc.values(), ...(this.pc ? [...this.pc.ready.values()].map((e) => e.rec).filter(Boolean) : [])];
-      for (const r of recs) { r.v = undefined; r.cs = null; gl.useProgram(r.prog); setSamplerUnits(gl, r.u); }
+      for (const r of recs) { r.v = undefined; r.cs = null; if (r.failed) continue; gl.useProgram(r.prog); setSamplerUnits(gl, r.u); }
       this.invalidateGlState(); this.curVao = null; this.lastProgram = null;
       this.reset(this.dev);
       this.log(`d3d-webgl: GL null mode off (textures, buffers, targets, VAOs and samplers recreated; ${recs.length} programs kept)`);
@@ -1104,7 +1108,7 @@ export class WebGLDevice {
     else gl.clear(mask);
     gl.disable(gl.SCISSOR_TEST);
     gs.en[gl.SCISSOR_TEST] = false; gs.scx = r[0]; gs.scy = r[1]; gs.scw = r[2]; gs.sch = r[3];
-    if (this.rasterCache) this.rasterCache.gs = null; // (depth / color / stencil masks: applyRaster compares them with the cache again)
+    gs.rseq++; // (depth / color / stencil masks: applyRaster compares them with the cache again, whichever device draws next)
   }
   setTransform() {} setViewport() {} setMaterial() {} setLight() {} lightEnable() {} setClipPlane() {} setRenderState() {} setTexture() {} setTextureStageState() {} setSamplerState() {}
   createVertexShader() {} setVertexShader() {} setVertexShaderConstant() {} setStreamSource() {} setIndices() {} createPixelShader() {} setPixelShader() {} setPixelShaderConstant() {}
@@ -1377,17 +1381,27 @@ export class WebGLDevice {
     { const ms = performance.now() - t0; this.stats.programMs = (this.stats.programMs ?? 0) + ms; this.stats.programMaxMs = Math.max(this.stats.programMaxMs ?? 0, ms); // (report: GL program builds, the frame hitches of first uses)
       if (ms > 100 && (this.slowProgramLogs = (this.slowProgramLogs ?? 0) + 1) <= 10) this.log(`d3d-webgl: program built in ${ms.toFixed(0)} ms: VS ${vsSrc.length} chars, FS ${fsSrc.length} chars, key ${key.slice(0, 160)}`); }
     const pc = this.pc;
-    if (pc && pc.learned.length < 4096) pc.learned.push({ key, vs: vsSrc, fs: fsSrc, attrs: attrNames, t: Math.round(performance.now() - pc.t0) });
+    if (pc && !p.failed && pc.learned.length < 4096) pc.learned.push({ key, vs: vsSrc, fs: fsSrc, attrs: attrNames, t: Math.round(performance.now() - pc.t0) }); // (not a program GL refused: no later session builds it ahead)
     return p;
   }
   /** Compile and link a program without waiting for the result (no status query: the GPU process works meanwhile). */
   startProgram(vsSrc, fsSrc, attrNames) { return startProgram(this.gl, vsSrc, fsSrc, attrNames); }
-  /** The program record of a started build (resolveProgram), the device's GL state cache told of its useProgram. */
+  /** The program record of a started build (resolveProgram), the GL state cache told of its useProgram (a linked one only). */
   finishProgram(h, key, attrNames, vsSrc, fsSrc) {
     const r = resolveProgram(this.gl, h, key, attrNames, vsSrc, fsSrc, this.log);
     if (!r.ok) this.stats.errors++;
-    this.gs.prog = h.prog;
+    else this.gs.prog = h.prog;
     return r.rec;
+  }
+  /**
+   * A draw whose program GL refused to link (resolveProgram: `failed`) is not issued — GL would run the program left in
+   * use, or refuse the draw: counted (stats.failedDraws), logged at the first such draw of each program (10 at most).
+   */
+  skipFailed(P) {
+    this.stats.failedDraws = (this.stats.failedDraws ?? 0) + 1;
+    if (P.failLogged) return;
+    P.failLogged = true;
+    if ((this.failedProgramLogs = (this.failedProgramLogs ?? 0) + 1) <= 10) this.log(`d3d-webgl: draws with a program GL did not link are skipped (key ${String(P.key).slice(0, 160)})`);
   }
   /** Learned programs started at a present (prewarmPrograms): a few per frame. */
   prewarmStep() { const ap = acct.enter(ACCT.prog); try { prewarmPrograms(this.gl, this.pc, this.programsBySrc); } finally { acct.leave(ap); } }
@@ -1400,15 +1414,21 @@ export class WebGLDevice {
     const pc = this.pc, e = pc?.ready.get(srcKey);
     if (!e) return null;
     pc.ready.delete(srcKey);
-    pc.hits++;
-    if (pc.used && pc.used.length < 4096) pc.used.push(e.id ?? programSourceId(vsSrc, fsSrc, attrNames));
     // (resolved ahead, when the GPU process had caught up: no query at all; else the link status query waits for a
     // build the GPU process has not finished, and for the commands queued before it: timed apart from full builds)
-    if (e.rec) { if (!e.ok) this.stats.errors++; e.rec.key = key; pc.resolvedHits = (pc.resolvedHits ?? 0) + 1; return e.rec; }
-    pc.pending--;
-    const ap = acct.enter(ACCT.prog), t0 = acct.stamp();
-    let p; try { p = this.finishProgram(e, key, attrNames, vsSrc, fsSrc); } finally { acct.leave(ap); }
-    this.stats.prewarmTakeMs = (this.stats.prewarmTakeMs ?? 0) + acct.stamp() - t0;
+    let p;
+    if (e.rec) { p = e.rec; p.key = key; if (e.ok) pc.resolvedHits = (pc.resolvedHits ?? 0) + 1; else this.stats.errors++; }
+    else {
+      pc.pending--;
+      const ap = acct.enter(ACCT.prog), t0 = acct.stamp();
+      try { p = this.finishProgram(e, key, attrNames, vsSrc, fsSrc); } finally { acct.leave(ap); }
+      this.stats.prewarmTakeMs = (this.stats.prewarmTakeMs ?? 0) + acct.stamp() - t0;
+    }
+    // (a program GL refused — the same sources would fail again: its failed record is the program of these sources —
+    // is not reported as used: it ages out of the server's list)
+    if (p.failed) return p;
+    pc.hits++;
+    if (pc.used && pc.used.length < 4096) pc.used.push(e.id ?? programSourceId(vsSrc, fsSrc, attrNames));
     return p;
   }
 
@@ -1644,19 +1664,20 @@ export class WebGLDevice {
     }
     // depth / stencil / blending / color mask / culling: from the render states and the target's orientation only — not
     // looked at again while none of them changed since this device's last draw (the render state table's version) and
-    // the GL state cache is the one that draw filled (invalidateGlState replaces it whenever GL state is set around it)
+    // the GL state cache is the one that draw filled (invalidateGlState replaces it whenever GL state is set around it),
+    // with nothing written into these states since (gs.rseq: another device's draw, a clear's masks)
     // (the render states applyRaster reads are watched on the table: a change of another one — a fog color, a texture
     // factor, set by effects at every pass — leaves the cache valid)
-    const rsT = dev.rs, rc = this.rasterCache ??= { gs: null, rs: null, ver: -1, flip: false, dev: null };
+    const rsT = dev.rs, rc = this.rasterCache ??= { gs: null, seq: -1, rs: null, ver: -1, flip: false, dev: null };
     if (rc.rs !== rsT) rsT.watchKeys(WATCH_RASTER, RASTER_KEYS);
     const wv = rsT.wv[WATCH_RASTER];
     const cm = tgt.cm;
-    if (rc.gs === gs && rc.rs === rsT && rc.ver === wv && rc.flip === flip && rc.cm === cm && rc.dev === dev && !this.glValidate && !this.noStateCache) {
+    if (rc.gs === gs && rc.seq === gs.rseq && rc.rs === rsT && rc.ver === wv && rc.flip === flip && rc.cm === cm && rc.dev === dev && !this.glValidate && !this.noStateCache) {
       if (apiOpt.glCheck) { const before = JSON.stringify(gs); this.applyRaster(dev, gs, flip, cm); if (JSON.stringify(gs) !== before) this.cacheMiss('raster states'); }
       return;
     }
     this.applyRaster(dev, gs, flip, cm);
-    rc.gs = gs; rc.rs = rsT; rc.ver = wv; rc.flip = flip; rc.cm = cm; rc.dev = dev;
+    rc.gs = gs; rc.seq = ++gs.rseq; rc.rs = rsT; rc.ver = wv; rc.flip = flip; rc.cm = cm; rc.dev = dev;
   }
   /**
    * (dbg:ORTHROS_GL_CACHE_CHECK=1: what a per-draw cache skipped is derived anyway and compared — a difference is a stale
@@ -1774,10 +1795,16 @@ export class WebGLDevice {
   /** enable/disable a GL capability through the state cache */
   get noStateCache() { return this.noStateCacheOpt || apiOpt.glNoCache; }
   glEnable(cap, on) { const gs = this.gs; if (gs.en[cap] === on) return; gs.en[cap] = on; if (on) this.gl.enable(cap); else this.gl.disable(cap); }
-  /** forget every cached GL state (after code paths that set state without the cache: reset, clear, present) */
+  /** the GL state cache: the context's (glCtx), shared by its devices */
+  get gs() { return this.glCtx.gs; }
+  /**
+   * Forget every cached GL state (after code paths that set state without the cache: reset, present) — for every device
+   * of the context. `rseq` moves at every write of the raster states (applyRaster, a clear's masks): a device's raster
+   * cache holds while it is the one that last wrote them (applyState).
+   */
   invalidateGlState() {
-    this.gs = { en: {}, tex: new Array(16).fill(null), smp: new Array(16).fill(null), prog: null };
-    if (this.vao) { this.gl.bindVertexArray(this.vao); this.gs.vao = this.vao; } // the default VAO (cached ones keep their state)
+    const gs = this.glCtx.gs = { en: {}, tex: new Array(16).fill(null), smp: new Array(16).fill(null), prog: null, rseq: 0 };
+    if (this.vao) { this.gl.bindVertexArray(this.vao); gs.vao = this.vao; } // the default VAO (cached ones keep their state)
   }
   captureDraw(P, info, v, flip) {
     const gl = this.gl;
@@ -2022,6 +2049,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
+    if (P.failed) { this.skipFailed(P); return; }
     this.applyState(P, info, type, count, -1);
     if (!this.bindAttributes(P, info.L)) return;
     if (this.capturing) {
@@ -2059,6 +2087,7 @@ export class WebGLDevice {
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const ib = this.comImpl(dev.indices.ib); if (!ib) return;
     const info = this.program(); const P = info.p;
+    if (P.failed) { this.skipFailed(P); return; }
     this.applyState(P, info, type, count, ib.id);
     if (!this.bindAttributes(P, info.L, null, baseVertex | 0)) return;
     this.bindIndices(this.glBuffer(ib, 'ib').buf);
@@ -2091,6 +2120,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
+    if (P.failed) { this.skipFailed(P); return; }
     this.applyState(P, info, type, count, -2);
     const n = this.vertexCount(type, count);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.upVbo);
@@ -2106,6 +2136,7 @@ export class WebGLDevice {
     const gl = this.gl;
     if (this.fakeFlicker && this.fakeSkip()) return; // (debugging: ORTHROS_FAKE_FLICKER)
     const info = this.program(); const P = info.p;
+    if (P.failed) { this.skipFailed(P); return; }
     this.applyState(P, info, type, count, -2);
     const n = this.vertexCount(type, count);
     const short = ifmt === FMT.INDEX16;
@@ -2210,7 +2241,10 @@ function startProgram(gl, vsSrc, fsSrc, attrNames) {
 /**
  * The program record of a started build: link status (compile logs on failure), uniforms, sampler units (the program
  * left in use). The first query waits until the GPU process has linked it.
- * @returns {{ rec: { prog: WebGLProgram, u: (name: string) => WebGLUniformLocation|null, attrNames: string[], key: string, locs: object }, ok: boolean }}
+ * A program GL refused to link stops there: deleted, never made current (useProgram would fail and leave the previous
+ * program in use: a draw then ran that one, or none), its record marked `failed` — the draws that need it are not
+ * issued (WebGLDevice.skipFailed).
+ * @returns {{ rec: { prog: WebGLProgram, u: (name: string) => WebGLUniformLocation|null, attrNames: string[], key: string, locs: object, failed: boolean }, ok: boolean }}
  * (`locs`: the locations by uniform name, u's cache — a flicker capture names the uniforms it records with it)
  */
 function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
@@ -2218,6 +2252,8 @@ function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
   if (!ok) {
     for (const [sh, src] of [[h.vs, vsSrc], [h.fs, fsSrc]]) if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) log(`d3d-webgl: shader compile error: ${gl.getShaderInfoLog(sh)}\n${src.split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n')}`);
     log(`d3d-webgl: link error: ${gl.getProgramInfoLog(prog)}`);
+    gl.deleteShader(h.vs); gl.deleteShader(h.fs); gl.deleteProgram(prog);
+    return { rec: { prog, u: () => null, attrNames, key, locs: Object.create(null), failed: true }, ok };
   }
   gl.deleteShader(h.vs); gl.deleteShader(h.fs);
   const loc = Object.create(null); // uniform name -> location (null when absent), filled from the active uniforms then on demand
@@ -2227,7 +2263,7 @@ function resolveProgram(gl, h, key, attrNames, vsSrc, fsSrc, log) {
   // samplers: stage i always reads texture unit i (uniform values persist in the program: set once here)
   gl.useProgram(prog);
   setSamplerUnits(gl, u);
-  return { rec: { prog, u, attrNames, key, locs: loc }, ok };
+  return { rec: { prog, u, attrNames, key, locs: loc, failed: false }, ok };
 }
 /** The sampler uniforms of the program in use: stage i reads texture unit i. */
 function setSamplerUnits(gl, u) {
@@ -2257,7 +2293,7 @@ function resolvePrewarmed(gl, pc, log, budgetMs) {
       if (!done) { if (--checks === 0) break; continue; }
     }
     const r0 = performance.now(), r = resolveProgram(gl, e, '', e.attrs, e.vsSrc, e.fsSrc, log), r1 = performance.now();
-    e.rec = r.rec; e.ok = r.ok; used = e.prog; pc.pending--;
+    e.rec = r.rec; e.ok = r.ok; if (r.ok) used = e.prog; pc.pending--; // (a refused one was not made current)
     pc.resolved = (pc.resolved ?? 0) + 1; pc.resolveMs = (pc.resolveMs ?? 0) + r1 - r0; pc.resolveMaxMs = Math.max(pc.resolveMaxMs ?? 0, r1 - r0);
     if (r1 - r0 > budgetMs) { pc.resolveHoldUntil = r1 + RESOLVE_BACKOFF_MS; break; }
     if (r1 >= end) break;
@@ -2341,7 +2377,7 @@ export function createWebGLBackend(canvas, log, dump) {
       if (gl.getSyncParameter(f, gl.SYNC_STATUS) !== gl.SIGNALED) return;
       gl.deleteSync(f); programCache.fence = null; programCache.caughtUp = (programCache.caughtUp ?? 0) + 1;
       const prog = resolvePrewarmed(gl, programCache, log, budgetMs);
-      if (prog) for (const d of programCache.devices) d.gs.prog = prog; // (resolveProgram left it in use: every device's GL state cache — several devices share the context)
+      if (prog && programCache.glCtx?.gs) programCache.glCtx.gs.prog = prog; // (resolveProgram left it in use: the context's GL state cache, every device's)
     },
     createDevice(dev) { return this.device = new WebGLDevice(gl, dev, { log, dumpShaders: globalThis.ORTHROS_DUMP_SHADERS, captureFrame: globalThis.ORTHROS_CAPTURE_FRAME, captureDraws: globalThis.ORTHROS_CAPTURE_DRAWS, dump, noCull: globalThis.ORTHROS_NO_CULL, programCache, probe, busySource: backend }); },
   };
