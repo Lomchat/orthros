@@ -1164,9 +1164,9 @@ function onPageMessage(m) {
     const fast = vm?.jit ? [vm.mem.read32(FAST_STATS), vm.mem.read32(FAST_STATS + 4)] : null;
     const same = [...(vm?.d3dDevices ?? [])].reduce((a, d) => a + (d.sameSets ?? 0), 0);
     if (fast && markPrev?.fast) log('gfx', `mark ${m.label}: fast paths: ${fast[0] - markPrev.fast[0]} redundant state sets dropped, ${fast[1] - markPrev.fast[1]} AddRef/Release; ${same - (markPrev.same ?? 0)} texture / stream / index sets changing nothing ran in JavaScript`);
-    // (PeekMessage polling of the phase, user32.js peekIdle: waits, those up to the expected end, bouts of polling)
-    const pk = { parks: 0, longParks: 0, ends: 0, cut: 0 }; for (const t of vm?.proc?.threads ?? []) if (t.peekIdle) for (const k in pk) pk[k] += t.peekIdle[k];
-    if (markPrev?.pk && pk.parks > markPrev.pk.parks) log('gfx', `mark ${m.label}: PeekMessage polling: ${pk.parks - markPrev.pk.parks} waits (${pk.longParks - markPrev.pk.longParks} up to the expected end), ${pk.ends - markPrev.pk.ends} bouts of polling ended (${pk.cut - markPrev.pk.cut} right after a wait)`);
+    // (polling of the phase — PeekMessage, DirectInput..., win32/poll-idle.js: waits, those up to the expected end, bouts of polling)
+    const pk = { parks: 0, longParks: 0, ends: 0, cut: 0 }; for (const t of vm?.proc?.threads ?? []) if (t.pollIdle) for (const k in pk) pk[k] += t.pollIdle[k];
+    if (markPrev?.pk && pk.parks > markPrev.pk.parks) log('gfx', `mark ${m.label}: polling (PeekMessage, DirectInput...): ${pk.parks - markPrev.pk.parks} waits (${pk.longParks - markPrev.pk.longParks} up to the expected end), ${pk.ends - markPrev.pk.ends} bouts of polling ended (${pk.cut - markPrev.pk.cut} right after a wait)`);
     markPrev = { ...st, pk, guestInsns: vm?.guestInsns ?? 0, picks: vm?.sched?.picks ?? 0, slices: vm?.slices ?? 0, locks: { ...ls }, pool: host?.dxtPool ? { ...host.dxtPool.stats } : null, texJobs: host?.texJobs ? { ...host.texJobs.stats } : null, hist, at: performance.now(), gl: g ? { ...g } : null, fast, same, rsc: st.rscale ? { ...st.rscale } : null }; if (vm?.apiTimes) vm.apiTimesPhase = new Map();
   }
   else if (m.type === 'corpus') post({ type: 'corpus', text: vm ? insnCorpus() : '{}' });

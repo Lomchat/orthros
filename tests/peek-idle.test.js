@@ -1,8 +1,9 @@
-// PeekMessage polling (user32.js peekIdle): a thread calling PeekMessage with nothing to get, over and over, waits in
+// PeekMessage polling (win32/poll-idle.js): a thread calling PeekMessage with nothing to get, over and over, waits in
 // short steps instead of spinning, and spins again around the time its previous bouts of polling ended, so that a
 // frame limiter polling its clock is not made late. Driven on the virtual clock (outside the dispatcher the waits are
 // nested: the clock sleeps through them): a guest frame loop — some API calls, then PeekMessage + a clock read until
-// its deadline — with each polling iteration costing 1 µs.
+// its deadline — with each polling iteration costing 1 µs. The same for DirectInput's devices (a loop re-acquiring and
+// reading a keyboard).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,6 +13,7 @@ import { Vm } from '../src/core/vm.js';
 import { Vfs, MemBackend } from '../src/vfs/vfs.js';
 import { HeadlessHost } from '../src/server/display.js';
 import { Ctx } from '../src/win32/ctx.js';
+import { writeGuid } from '../src/win32/com.js';
 
 const EXE = new URL('../build/pe/hello.exe', import.meta.url).pathname;
 const skip = !fs.existsSync(EXE) && 'build/pe/hello.exe missing (make pe-tests)';
@@ -31,8 +33,43 @@ function setup() {
     const r = vm.api.lookup(dll, name).fn(c); return r === PARK || r === undefined ? r : r >>> 0;
   };
   const peek = () => call('user32.dll', 'PeekMessageA', msg, 0, 0, 0, 1);
-  return { vm, clock, th, call, peek };
+  // a COM method of the object at `ptr` (arguments after `this`), counted as the dispatcher counts it
+  const method = (ptr, name, ...args) => {
+    mem.write32(frame + 4, ptr); args.forEach((a, i) => mem.write32(frame + 8 + 4 * i, a >>> 0));
+    th.apiCalls++; vm.apiCalls++;
+    const c = new Ctx(vm); c.thread = th; c.cpu = th.cpu; c.sp = frame;
+    return vm.com.implAt(ptr)[name](c) >>> 0;
+  };
+  return { vm, clock, th, mem, call, method, peek };
 }
+
+/** A DirectInput 8 system keyboard, acquired, buffered: acquire() and read() as a game's input loop calls them. */
+function diKeyboard(env) {
+  const { vm, mem, call, method } = env, heap = vm.proc.processHeap, out = heap.alloc(8, true);
+  const guid = (s) => { const p = heap.alloc(16, true); writeGuid(mem, p, s); return p; };
+  assert.equal(call('dinput8.dll', 'DirectInput8Create', 0x400000, 0x800, guid('bf798030-483a-4da2-aa99-5d64ed369700'), out, 0), 0);
+  assert.equal(method(mem.read32(out), 'CreateDevice', guid('6f1d2b61-d5a0-11cf-bfc7-444553540000'), out + 4, 0), 0);
+  const dev = mem.read32(out + 4), fmt = heap.alloc(24, true), prop = heap.alloc(20, true), data = heap.alloc(16 * 8, true), n = heap.alloc(4, true);
+  mem.write32(fmt, 24); mem.write32(fmt + 4, 16); mem.write32(fmt + 12, 256);
+  assert.equal(method(dev, 'SetDataFormat', fmt), 0);
+  mem.write32(prop, 20); mem.write32(prop + 4, 16); mem.write32(prop + 16, 32);
+  assert.equal(method(dev, 'SetProperty', 1 /* DIPROP_BUFFERSIZE */, prop), 0);
+  assert.equal(method(dev, 'Acquire'), 0);
+  return {
+    acquire: () => method(dev, 'Acquire'),
+    read: () => { mem.write32(n, 8); assert.equal(method(dev, 'GetDeviceData', 16, data, n, 0), 0); return Array.from({ length: mem.read32(n) }, (_, i) => [mem.read32(data + 16 * i), mem.read32(data + 16 * i + 4)]); },
+  };
+}
+
+test('DirectInput polling (a video player re-acquiring and reading its keyboard until the next picture) waits; a key ends the wait at once', { skip }, () => {
+  const env = setup(), kb = diKeyboard(env), t0 = env.clock.now();
+  env.vm.host.at(t0 + 30.0123, { type: 'keydown', vk: 0x1b, scan: 1 });
+  let polls = 0, got = [];
+  while (!got.length) { assert.equal(kb.acquire(), 1, 'S_FALSE: already acquired'); got = kb.read(); polls++; env.clock.t += 0.002; }
+  assert.deepEqual(got, [[1, 0x80]], 'Escape pressed');
+  assert.ok(env.th.pollIdle.parks > 0 && polls < 2000, `${polls} polls in 30 ms (15 000 spinning)`);
+  assert.ok(env.clock.now() - (t0 + 30.0123) < 0.01, `read ${(env.clock.now() - t0 - 30.0123).toFixed(4)} ms after the key: woken by it`);
+});
 
 /**
  * `frames` frames of a limiter: `work` ms of other calls (8 API calls), then PeekMessage until the clock reaches the
@@ -58,7 +95,7 @@ function limiter(env, frames, period, work = 12, rel = true) {
 test('PeekMessage polling waits, and frames start on time once the polling rate is known', { skip }, () => {
   const env = setup();
   const { starts, peeks } = limiter(env, 40, 100 / 3);
-  const st = env.th.peekIdle;
+  const st = env.th.pollIdle;
   assert.ok(st.parks > 0, 'the polling waited');
   // without waits each frame polls ~21 ms at 1 µs per call: ~21 000 calls
   for (let f = 6; f < 40; f++) assert.ok(peeks[f] < 1500, `frame ${f}: ${peeks[f]} PeekMessage calls`);
@@ -87,7 +124,7 @@ test('PeekMessage polling: waits that last longer than asked (a coarse host time
   let late = 0;
   for (let f = 10; f < 59; f++) { const d = starts[f + 1] - starts[f] - 100 / 3; if (d > 0.01) late++; assert.ok(d < 2, `frame ${f}: ${d.toFixed(3)} ms late`); }
   assert.ok(late <= 2, `${late} frames late after the first ten`);
-  assert.ok(env.th.peekIdle.over > 0.5, 'the overshoot is known');
+  assert.ok(env.th.pollIdle.over > 0.5, 'the overshoot is known');
   // a 15.625 ms system timer: the first frames late, then on time (spinning where a wait would overshoot)
   const env2 = setup();
   env2.vm.host.waitEvent = (ms) => { const c = env2.clock; c.sleepUntil(Math.ceil((c.now() + ms) / 15.625) * 15.625); };
@@ -102,18 +139,18 @@ test('PeekMessage: no wait with ORTHROS_PEEK_IDLE_MS=0, nor when other calls com
     const t0 = env.clock.now();
     for (let i = 0; i < 5000; i++) { env.peek(); env.clock.t += 0.001; }
     assert.ok(Math.abs(env.clock.now() - t0 - 5) < 1e-6, 'the clock moved by the polling only');
-    assert.equal(env.th.peekIdle, null);
+    assert.equal(env.th.pollIdle, null);
   } finally { globalThis.ORTHROS_PEEK_IDLE_MS = undefined; }
   { // two other API calls between the polls: not message-loop polling
     const env = setup(), t0 = env.clock.now();
     for (let i = 0; i < 5000; i++) { env.peek(); env.call('kernel32.dll', 'GetLastError'); env.call('kernel32.dll', 'GetLastError'); env.clock.t += 0.001; }
     assert.ok(Math.abs(env.clock.now() - t0 - 5) < 1e-6);
-    assert.equal(env.th.peekIdle.parks, 0);
+    assert.equal(env.th.pollIdle.parks, 0);
   }
   { // a message is returned at once
     const env = setup();
     for (let i = 0; i < 200; i++) { env.peek(); env.clock.t += 0.001; }
-    assert.ok(env.th.peekIdle.parks > 0);
+    assert.ok(env.th.pollIdle.parks > 0);
     env.call('user32.dll', 'PostThreadMessageA', env.vm.proc.threads[0].id, 0x400, 7, 9);
     const t0 = env.clock.now();
     assert.equal(env.peek(), 1);
@@ -126,10 +163,10 @@ test('PeekMessage: a loop pumping messages between small chunks of guest work (n
     const env = setup(), t0 = env.clock.now(), n = 20000;
     for (let i = 0; i < n; i++) { env.peek(); env.clock.t += chunkMs; env.vm.guestInsns += insns; }
     assert.ok(Math.abs(env.clock.now() - t0 - n * chunkMs) < 1e-6, `${chunkMs} ms chunks: ${(env.clock.now() - t0).toFixed(1)} ms for ${(n * chunkMs).toFixed(1)}`);
-    assert.equal(env.th.peekIdle.parks, 0);
+    assert.equal(env.th.pollIdle.parks, 0);
   }
   // a polling loop of ~100 guest instructions per call still waits
   const env = setup();
   for (let i = 0; i < 2000; i++) { env.peek(); env.clock.t += 0.001; env.vm.guestInsns += 100; }
-  assert.ok(env.th.peekIdle.parks > 0);
+  assert.ok(env.th.pollIdle.parks > 0);
 });

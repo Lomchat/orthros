@@ -3,7 +3,7 @@
 // (src/gfx/gdi) onto per-window client surfaces which are presented by the host display.
 import { E } from './errors.js';
 import { displayModes } from './display-modes.js';
-import { INFINITE, WAIT_OBJECT_0, WAIT_TIMEOUT, WAIT_FAILED, PARK } from '../core/sched.js';
+import { INFINITE, WAIT_OBJECT_0, WAIT_IO_COMPLETION, WAIT_TIMEOUT, WAIT_FAILED, PARK } from '../core/sched.js';
 import { makeDC, gdiOf, crToRgb, parseBitmapInfo, dibSurface, fillRect, blit, dcFont } from './gdi32.js';
 import { allocSurface, freeSurface } from '../gfx/gdi/surface.js';
 import { clipRect, rectEmpty } from '../gfx/gdi/raster.js';
@@ -11,8 +11,9 @@ import { parseCursorFile } from '../gfx/gdi/cursor.js';
 import { caseMap, decodeBytes, encodeString } from './strings.js';
 import { formatPrintf } from './wsprintf.js';
 import { findResource } from '../loader/pe.js';
-import { isSignaled, consumeSignal, waitObject, allocString } from './kernel32.js';
+import { isSignaled, consumeSignal, waitObject, allocString, runUserApcs, userApcsDue } from './kernel32.js';
 import { CC_CDECL } from './api.js';
+import { pollWait, pollFound } from './poll-idle.js';
 import { TS } from './process.js';
 
 export const WM = Object.freeze({
@@ -1150,85 +1151,21 @@ export function registerUser32(api, vm) {
   };
   U.GetMessageA = [4, (c) => getMessage(c, false)];
   U.GetMessageW = [4, (c) => getMessage(c, true)];
-  // Message-loop polling: a thread calling PeekMessage over and over with no message to get (a frame limiter waiting
-  // for its clock to reach the next frame: tens of thousands of calls per frame, no other API call between them but
-  // its clock reads) would burn the worker. After PEEK_IDLE_STREAK + PEEK_IDLE_AGAIN empty calls in a row, each within
-  // 50 µs of the previous one with at most one other JS API call of the thread and PEEK_IDLE_INSNS guest instructions
-  // between them (Vice City's polling: 64-127; a loop doing small chunks of work between its calls is not polling), and no other thread
-  // runnable, the call waits (or until a message arrives), and again after every PEEK_IDLE_AGAIN calls while the
-  // polling goes on — what an OS preempting a spinning thread looks like to it.
-  // How long, so that the waits do not make the guest late: the times at which the last bouts of polling ended (the
-  // thread went on with other calls: its next frame) give the shortest interval between them, hence when the current
-  // bout should end. The thread waits until a margin before that (PEEK_IDLE_MARGIN plus the latest overshoot of its
-  // waits: a host whose timed waits follow a coarse system timer, other threads run after the wake-up; at most
-  // PEEK_IDLE_MAX ms at a time), then spins until shortly after it: a guest polling at a steady rate sees its clock
-  // reach its deadline at full speed, whatever its deadline rule. Without such an estimate (or past it) the waits are
-  // peekIdleMs() long (default 0.25 ms; ORTHROS_PEEK_IDLE_MS=0: never wait). A bout that ended right after a wait may
-  // have ended during it: its interval counts up to the start of that wait (shorter: more spinning, never later).
-  const PEEK_IDLE_STREAK = 56, PEEK_IDLE_AGAIN = 8, PEEK_IDLE_MARGIN = 0.4, PEEK_IDLE_AFTER = 0.5;
-  const PEEK_IDLE_INSNS = 4096; // (guest instructions between two calls of the polling, at most)
-  const PEEK_IDLE_MAX = 2; // (2 ms: the browser worker waits in Atomics.wait; longer waits go back to its event loop and its timers)
-  const peekIdleMs = () => { const v = globalThis.ORTHROS_PEEK_IDLE_MS; return v === undefined || v === '' ? 0.25 : Number(v); };
-  /** An empty PeekMessage of `t`: how long it should wait (ms, 0: not at all; see above). */
-  const peekIdle = (t, ms) => {
-    const st = t.peekIdle ??= { streak: 0, last: -1, lastPeek: -1, lastApi: 0, polled: false, waitAt: -1, waitEnd: -1, sinceWait: -1, over: 0, endAt: -1, ivs: [], predEnd: -1,
-      parks: 0, longParks: 0, ends: 0, cut: 0, near: 0, late: 0, lateMs: 0, insns: 0, loose: 0 };
-    const now = vm.clock.now(), own = t.apiCalls - st.lastApi <= 2, insns = vm.guestInsns - st.insns;
-    // (polling, not work: a few guest instructions since the previous call — a loop pumping messages between small
-    // chunks of computation, none calling an API, is not slowed down; the call after a wait, other threads ran)
-    const tight = own && (st.waitEnd >= 0 || insns <= PEEK_IDLE_INSNS);
-    if (globalThis.ORTHROS_PEEK_INSNS_HIST && own && st.waitEnd < 0) { const h = (st.hist ??= new Array(33).fill(0)); h[32 - Math.clz32(insns)]++; }
-    if (own && !tight && st.streak >= PEEK_IDLE_STREAK) st.loose++;
-    st.insns = vm.guestInsns;
-    if (st.waitEnd >= 0) { const o = now - st.waitEnd; if (own) st.over = Math.max(o > 0 ? o : 0, st.over * 0.995); st.waitEnd = -1; } // (the call after a wait, none between)
-    if (!own) {
-      // the end of a bout of empty calls: when it was polling, the time of its last call
-      if (st.polled) {
-        st.ends++; if (st.predEnd >= 0 && st.lastPeek > st.predEnd) { st.late++; st.lateMs += st.lastPeek - st.predEnd; }
-        if (st.endAt >= 0) {
-          const cut = st.sinceWait >= 0 && st.sinceWait <= PEEK_IDLE_AGAIN + 1; // (ended right after a wait)
-          const iv = (cut ? st.waitAt : st.lastPeek) - st.endAt; if (cut) st.cut++;
-          if (iv >= 2 && iv <= 250) { st.ivs.push(iv); if (st.ivs.length > 8) st.ivs.shift(); }
-        }
-        st.endAt = st.lastPeek;
-        st.predEnd = st.ivs.length >= 3 ? st.endAt + Math.min(...st.ivs) : -1;
-      }
-      st.polled = false; st.sinceWait = -1;
-    }
-    // (the call after a wait goes on with the run when it comes within 0.2 ms of the wait's planned end)
-    st.streak = tight && now - st.last < (st.streak >= PEEK_IDLE_STREAK ? 0.2 : 0.05) ? st.streak + 1 : 0;
-    st.last = now; st.lastPeek = now; st.lastApi = t.apiCalls;
-    if (st.sinceWait >= 0) st.sinceWait++;
-    if (st.streak < PEEK_IDLE_STREAK + PEEK_IDLE_AGAIN) return 0;
-    st.polled = true;
-    let wait = ms;
-    if (st.predEnd >= 0 && now <= st.predEnd + PEEK_IDLE_AFTER + st.over) {
-      const room = st.predEnd - PEEK_IDLE_MARGIN - st.over - now;
-      if (room < ms) { st.near++; return 0; } // (close to the expected end: spin)
-      wait = Math.min(room, PEEK_IDLE_MAX);
-    }
-    if (vm.sched.hasRunnable(t)) return 0;
-    st.parks++; if (wait > ms) st.longParks++;
-    st.streak = PEEK_IDLE_STREAK; st.last = st.waitEnd = now + wait; st.waitAt = now; st.sinceWait = 0;
-    return wait;
-  };
+  // Message-loop polling (an empty PeekMessage over and over: a frame limiter waiting for its clock) waits instead of
+  // spinning: poll-idle.js, shared with the other polling APIs.
   const peekMessage = (c) => {
     const p = c.arg(0), hf = c.arg(1), min = c.arg(2), max = c.arg(3), flags = c.arg(4);
     const w = wm();
     w.present();
     const m = w.peek(c.thread, hf, min, max, (flags & PM_REMOVE) !== 0, true);
     if (!m) {
-      const t = c.thread, ms = peekIdleMs(), wait = ms > 0 ? peekIdle(t, ms) : 0;
-      if (wait > 0) {
-        const r = vm.sched.park(t, () => w.hasMessage(t, hf, min, max), wait, 'peek');
-        if (r === PARK) return PARK; // (the call runs again once woken: that is the bout's latest call)
-        t.peekIdle.lastPeek = vm.clock.now(); // (a nested wait, over: the bout's latest moment)
-        return 0;
-      }
+      const t = c.thread, r = pollWait(vm, c, () => w.hasMessage(t, hf, min, max));
+      if (r === PARK) return PARK;
+      if (r > 0) return 0; // (a nested wait, over)
       if (++w.idleSpins > 64) { w.idleSpins = 0; vm.sched.yieldFrom(c.thread); vm.clock.tick?.(0.1); }
       return 0;
     }
-    if (c.thread.peekIdle) { const st = c.thread.peekIdle; st.streak = 0; st.polled = false; st.endAt = -1; st.sinceWait = -1; } // (a message: the polling's timing chain restarts)
+    pollFound(c.thread); // (a message: within a bout of polling, its timing chain restarts)
     w.idleSpins = 0;
     w.writeMsg(p, m);
     return 1;
@@ -1303,21 +1240,27 @@ export function registerUser32(api, vm) {
   U.ReplyMessage = [1, () => 1];
   U.RegisterWindowMessageA = [1, (c) => { const s = c.str(0) ?? ''; let a = [...c.proc.atoms].find(([, v]) => v === s)?.[0]; if (!a) { a = c.proc.nextAtom++; c.proc.atoms.set(a, s); } return a; }];
   U.RegisterWindowMessageW = [1, (c) => { const s = c.wstr(0) ?? ''; let a = [...c.proc.atoms].find(([, v]) => v === s)?.[0]; if (!a) { a = c.proc.nextAtom++; c.proc.atoms.set(a, s); } return a; }];
-  U.MsgWaitForMultipleObjects = [5, (c) => {
-    const n = c.arg(0), ph = c.arg(1), all = c.arg(2) !== 0, ms = c.arg(3);
+  /** MsgWaitForMultipleObjects(Ex): the objects, or a message for the thread, or (alertable) its user APCs */
+  const msgWait = (c, n, ph, all, ms, alertable) => {
     const objs = []; for (let i = 0; i < n; i++) { const o = waitObject(c, mem.read32(ph + 4 * i)); if (!o) return WAIT_FAILED; objs.push(o); }
     const t = c.thread;
-    const ready = () => (n > 0 && (all ? objs.every((o) => isSignaled(o, t)) : objs.some((o) => isSignaled(o, t)))) || wm().hasMessage(t, 0, 0, 0);
+    const objsReady = () => n > 0 && (all ? objs.every((o) => isSignaled(o, t)) : objs.some((o) => isSignaled(o, t)));
+    const ready = () => objsReady() || wm().hasMessage(t, 0, 0, 0) || (alertable && t.apcQueue.length > 0);
     const claim = () => {
       const i = objs.findIndex((o) => isSignaled(o, t));
       if (i >= 0 && (!all || objs.every((o) => isSignaled(o, t)))) { if (all) objs.forEach((o) => consumeSignal(o, t)); else consumeSignal(objs[i], t); return WAIT_OBJECT_0 + (all ? 0 : i); }
-      return WAIT_OBJECT_0 + n; // a message
+      return wm().hasMessage(t, 0, 0, 0) ? WAIT_OBJECT_0 + n : WAIT_IO_COMPLETION; // (a message; else the APCs)
     };
+    if (alertable && t.wakeResult === undefined) userApcsDue(vm, t); // (the waitable timers due by now: their APCs queued)
     const ok = vm.sched.block(t, ready, ms === INFINITE ? INFINITE : ms, 'MsgWait', claim, true);
     if (!ok) return WAIT_TIMEOUT;
+    if (t.wakeValue === WAIT_IO_COMPLETION) runUserApcs(vm, t);
     return t.wakeValue;
-  }];
-  U.MsgWaitForMultipleObjectsEx = [5, (c) => U.MsgWaitForMultipleObjects[1](c)];
+  };
+  U.MsgWaitForMultipleObjects = [5, (c) => msgWait(c, c.arg(0), c.arg(1), c.arg(2) !== 0, c.arg(3), false)];
+  // (nCount, pHandles, dwMilliseconds, dwWakeMask, dwFlags: MWMO_WAITALL 1, MWMO_ALERTABLE 2 — before 2026-11-18 it was
+  // read as MsgWaitForMultipleObjects' arguments: its timeout as bWaitAll, its wake mask as the timeout)
+  U.MsgWaitForMultipleObjectsEx = [5, (c) => msgWait(c, c.arg(0), c.arg(1), (c.arg(4) & 1) !== 0, c.arg(2), (c.arg(4) & 2) !== 0)];
 
   // ---------------------------------------------------------------- timers
   U.SetTimer = [4, (c) => {

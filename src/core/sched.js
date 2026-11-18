@@ -29,7 +29,7 @@ export const STARVE_INSNS = 6_000_000;
  * ?dbg=ORTHROS_QUANTUM_INSNS=<n> turns it on (QUANTUM_INSNS: the Windows-like value).
  */
 export const QUANTUM_INSNS = STARVE_INSNS; // (an equal ready that long is starved anyway: see pickRunnable)
-export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xffffffff;
+export const WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80, WAIT_IO_COMPLETION = 0xc0, WAIT_TIMEOUT = 0x102, WAIT_FAILED = 0xffffffff;
 
 /**
  * Thrown by a blocking API handler at top level to park its thread (see block()). Not an Error
@@ -146,11 +146,22 @@ export class Scheduler {
     return w;
   }
 
+  /**
+   * The process's waitable timers due by `now` expire (win32/kernel32.js WaitableTimer: signaled, their completion
+   * routines queued, the periodic ones armed again) — at every scheduling pass, and at an alertable wait's first test.
+   */
+  expireTimers(now) {
+    const p = this.vm.proc; if (!p?.waitableArmed) return; // (none set: one test per pass)
+    const tl = p.timers;
+    for (let i = tl.length - 1; i >= 0; i--) { const tm = tl[i]; if (tm.kind === 'waitable' && tm.due <= now) tm.expire(this.vm, now); }
+  }
+
   /** Wake parked threads whose condition holds or whose timeout passed. Returns true if any woke. */
   /** @param {number} [now] the clock's time when the caller has just read it */
   wakeBlocked(now = this.vm.clock.now()) {
     this.checkedAt = now;
     if (this.vm.media && now >= this.vm.media.due) this.vm.media.tick(now); // (movies advanced first: their events may wake waiters)
+    this.expireTimers(now); // (and the waitable timers: signaled, their completion routines queued)
     let any = false;
     for (const t of this.threads) {
       if (t.state !== TS.BLOCKED || !t.wait) continue;
@@ -235,7 +246,7 @@ export class Scheduler {
     let idleSince = -1;
     // (for the host's frame accounting: a wait for a file read — this thread's, or one another thread's read holds up,
     // or while the thread presenting frames waits for one — is not the game's pacing)
-    const ioReason = reason === 'file read' || reason === 'file busy' || (this.vm.readsInFlight > 0 && reason !== 'sleep' && reason !== 'mmtimer' && reason !== 'peek'); // (peek: PeekMessage polling waits, user32.js peekIdle — pacing)
+    const ioReason = reason === 'file read' || reason === 'file busy' || (this.vm.readsInFlight > 0 && reason !== 'sleep' && reason !== 'mmtimer' && reason !== 'poll'); // (poll: the waits of polling APIs, win32/poll-idle.js — pacing)
     const io = () => ioReason || !!this.vm.frameThreadWaitsForRead?.();
     const note = (ms) => { const k = `t${thread.id} ${reason}${io() ? ' (io)' : ''}`, m = (this.vm.nestedWaitLog ??= new Map()); if (m.size < 64 || m.has(k)) m.set(k, (m.get(k) ?? 0) + ms); }; // (diagnostics: who waits nested, for what)
     for (;;) {

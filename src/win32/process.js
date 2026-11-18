@@ -47,7 +47,7 @@ export class Thread {
     this.wait = null; // parked wait { cond, deadline, reason }
     this.wakeResult = undefined; // result handed to the re-executed blocking call
     this.apiCalls = 0; // API calls dispatched to JavaScript (user32 PeekMessage: the polling it does between them)
-    this.peekIdle = null; // (user32.js peekIdle: the thread's message-loop polling)
+    this.pollIdle = null; // (poll-idle.js: the thread's polling of PeekMessage, DirectInput...)
     this.wakeValue = undefined; // what the wait's claim took at wake-up time (wait result code)
     this.yieldRequested = false;
     this.baseDepth = -1;
@@ -162,6 +162,7 @@ export class Process {
     this.atoms = new Map();
     this.nextAtom = 0xc000;
     this.timers = [];
+    this.waitableArmed = 0; // (waitable timers set among `timers`: kernel32.js WaitableTimer, Scheduler.expireTimers)
     this.startTime = vm.clock.now();
     this.errorMode = 0;
     this.priorityClass = 0x20;

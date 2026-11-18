@@ -18,7 +18,7 @@ import { Heap } from '../win32/heap.js';
 import { PeImage } from '../loader/pe.js';
 import { Com } from '../win32/com.js';
 import { Seh } from '../win32/seh.js';
-import { Mutex } from '../win32/kernel32.js';
+import { Mutex, WaitableTimer } from '../win32/kernel32.js';
 import { Registry } from '../win32/registry.js';
 import { WindowManager } from '../win32/user32.js';
 import { GdiState } from '../win32/gdi32.js';
@@ -58,7 +58,7 @@ snapshotClass(Heap, { skip: ['watchLog'] }); // (debugging hook)
 snapshotClass(PeImage, { skip: ['bytes', 'dv'], init: (img) => { img.bytes = null; img.dv = null; } });
 snapshotClass(Com, { skip: ['vm', 'failedSeen', 'notImpl'], init: (c, vm) => { c.vm = vm; c.failedSeen = new Map(); c.notImpl = new Map(); } });
 snapshotClass(Seh, { skip: ['vm'], init: (s, vm) => { s.vm = vm; } });
-snapshotClass(Mutex);
+snapshotClass(Mutex); snapshotClass(WaitableTimer);
 snapshotClass(Registry);
 snapshotClass(WindowManager, { resume: (wm) => wm.resumeHost() });
 snapshotClass(GdiState);
