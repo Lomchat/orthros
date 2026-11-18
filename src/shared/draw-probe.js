@@ -307,12 +307,14 @@ export function analyse(rec) {
     });
     const cov = perRect.filter((p) => p.covered), rts = cov.filter((p) => p.ratio !== null).map((p) => p.ratio);
     const kind = !cov.length ? 'keeps' : rts.length && rts.every((q) => q < 1) ? 'darkens' : cov.every((p) => p.after > p.before) ? 'adds' : 'changes';
-    const set = (rs, i) => [...new Set(rs.map((q) => rec.vals[q.e[2]]?.[i]))].sort((a, b) => a - b);
+    const set = (rs, i) => [...new Set(rs.map((q) => rec.vals[q.e[2]]?.[i]).filter((v) => v !== undefined))].sort((a, b) => a - b);
+    // (the world / view / projection hashes: their own bounded table, entry slot 10 — a moving camera fills it, values past it unknown)
+    const xfSet = (rs) => [...new Set(rs.map((q) => rec.xfs?.[q.e[10]]).filter((v) => v !== undefined))].sort((a, b) => a - b);
     const tf = (i) => set(rows, i);
     draws.push({ pos: x.pos, n: rows.length, kind, ratio: median(rts), ratioSpread: Math.max(0, ...cov.map((p) => p.ratioSpread)), beforeSpread: Math.max(0, ...perRect.map((p) => p.beforeSpread)),
       oddBefore: Math.max(0, ...perRect.map((p) => p.oddBefore)), oddAfter: Math.max(0, ...perRect.map((p) => p.oddAfter)), perRect,
       metas: new Set(rows.map((q) => q.e[1])).size, tms: new Set(rows.map((q) => q.e[3])).size, tfP: tf(0), tfM: tf(1), svBefore: tf(2), sent: tf(4),
-      odd: { tfP: set(odr, 0), tfM: set(odr, 1), sv: set(odr, 2), sent: set(odr, 4), xf: set(odr, 6) }, normal: { tfP: set(nrm, 0), tfM: set(nrm, 1), sv: set(nrm, 2), sent: set(nrm, 4), xf: set(nrm, 6) } });
+      odd: { tfP: set(odr, 0), tfM: set(odr, 1), sv: set(odr, 2), sent: set(odr, 4), xf: xfSet(odr) }, normal: { tfP: set(nrm, 0), tfM: set(nrm, 1), sv: set(nrm, 2), sent: set(nrm, 4), xf: xfSet(nrm) } });
   }
   // (in drawing order — the farthest from the end first —: the first draw whose result moved in the odd frames while what it drew over did not)
   const order = [...draws].sort((a, b) => b.pos - a.pos), moved = order.filter((d) => d.perRect.some((p) => p.oddAfter >= 8 && p.oddBefore < 4));
@@ -327,8 +329,8 @@ export function analyse(rec) {
     if (!same(o.tfP, n.tfP)) verdict = `${what}: the game's own TEXTUREFACTOR changed with it (producer ${list(n.tfP)} in normal frames, ${list(o.tfP)} in odd ones) — the game's values`;
     else if (!same(o.tfM, n.tfM)) verdict = `${what}: the producer's TEXTUREFACTOR stayed ${list(n.tfP)} but the backend read ${list(o.tfM)} in the odd frames — the render worker's replay`;
     else if (!same(o.sv, n.sv) || !same(o.sent, n.sent)) verdict = `${what}: same TEXTUREFACTOR (${list(n.tfM)}) but the program's cached / sent value differed in the odd frames (cache ${list(o.sv)}, sent ${list(o.sent)}; normal: ${list(n.sv)}, ${list(n.sent)}) — Orthros' uniform cache`;
-    else if (o.xf.length && !same(o.xf, n.xf) && o.xf.some((x) => !n.xf.includes(x))) verdict = `${what}: same TEXTUREFACTOR (${list(n.tfM)}) but its world / view / projection matrices differed in the odd frames (${list(o.xf)} against ${list(n.xf)}) — the game's matrices or Orthros' handling of them, not GL`;
     else if (top.tms > 1) verdict =`${what}: its texture matrices moved (${top.tms} sets) — an animated layer (a scroll going back and forth comes back A-B-A), not a fault`;
+    else if (o.xf.length && n.xf.length === 1 && o.xf.some((x) => !n.xf.includes(x))) verdict = `${what}: same TEXTUREFACTOR (${list(n.tfM)}) but its world / view / projection matrices differed in the odd frames (${list(o.xf)} against ${list(n.xf)}) — the game's matrices or Orthros' handling of them, not GL`;
     else verdict = `${what} with the same values in every frame (TEXTUREFACTOR ${list(n.tfM)}, producer ${list(n.tfP)}, uniform last sent ${list(n.sent)}, ${top.metas} draw description${top.metas > 1 ? 's' : ''}) — what GL makes of the same commands and values`;
   }
   return { frames: frames.length, probed: probed.length, control: frames.length - probed.length, odd: odd.length, oddProbed: oddP.length, oddControl: oddC.length, normal: normal.length, draws, moved: moved.map((d) => d.pos), verdict };

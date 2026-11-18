@@ -58,7 +58,7 @@ export class DrawProbe {
     this.ms = o.ms ?? PROBE_MS; this.controlMs = o.controlMs ?? CONTROL_MS; this.lastN = o.lastN ?? LAST_N; this.force = !!o.force;
     this.phase = 'start'; this.sent = false; this.frames = []; this.notes = []; this.shots = []; this.free = []; this.waited = 0;
     this.objIds = new WeakMap(); this.nObj = 0;
-    this.metas = []; this.metaIdx = new Map(); this.vals = []; this.valIdx = new Map(); this.tms = []; this.tmIdx = new Map();
+    this.metas = []; this.metaIdx = new Map(); this.vals = []; this.valIdx = new Map(); this.tms = []; this.tmIdx = new Map(); this.xfs = []; this.xfIdx = new Map();
     this.k = 0; this.prevN = -1; this.slot = 0; this.cur = null; this.entries = []; this.dev = null; this.atlas = null; this.lostFrames = 0;
     this.maxSlots = 2 * this.lastN + 1; this.rows = Math.ceil(this.maxSlots / COLS);
   }
@@ -183,13 +183,13 @@ export class DrawProbe {
     const d = c.d, dev = d.dev, P = c.P, pv = P.v, tgt = c.tgt, gs = d.gs, gl = this.gl, id = (o) => this.id(o);
     const hasU = !!P.u('u_tfactor'), svA = pv?.sv?.tf;
     const flags = (hasU ? 1 : 0) | (c.pvS ? 2 : 0) | (hasU && svA !== c.svB ? 4 : 0) | (c.pvT ? 8 : 0) | (c.tfP !== undefined ? 16 : 0);
-    const vals = [c.tfP === undefined ? null : c.tfP >>> 0, c.tfM, c.svB === undefined ? null : c.svB >>> 0, svA === undefined ? null : svA >>> 0, P.tfSent === undefined ? null : P.tfSent >>> 0, flags, c.xh];
+    const vals = [c.tfP === undefined ? null : c.tfP >>> 0, c.tfM, c.svB === undefined ? null : c.svB >>> 0, svA === undefined ? null : svA >>> 0, P.tfSent === undefined ? null : P.tfSent >>> 0, flags];
     const rt = dev.renderTarget ?? dev.backBuffers[0], v = d.curVao, s0 = dev.streams?.[0], vb = s0 ? d.comImpl(s0.vb) : null, ib = d.comImpl(dev.indices?.ib);
     const en = (cap) => (gs.en[cap] ? 1 : 0);
     const meta = `prog ${id(P.prog)} sig ${P.sid ?? '-'} key ${keyHash(P.key)}${hasU ? ' tf' : ''} | target fb ${id(tgt.fbo)} color ${id(tgt.color)} depth ${id(tgt.depth)} surface ${rt?.id ?? '-'} ds ${dev.depthTarget?.id ?? '-'} ${tgt.w}x${tgt.h}${tgt.flip ? ' flipped' : ''}`
       + ` | vao ${id(v?.vao)} ebo ${id(v?.ib)} vb ${vb?.id ?? '-'} buf ${id(vb ? d.buffers.get(vb.id)?.buf : null)} stride ${s0?.stride ?? '-'} off ${s0?.offset ?? 0} ib ${ib?.id ?? '-'} | mode ${c.mode}`
       + ` | blend ${en(gl.BLEND)} ${gs.bs ?? '-'}/${gs.bd ?? '-'} op ${gs.bop ?? '-'} cw ${gs.cw ?? '-'} depth ${en(gl.DEPTH_TEST)} ${gs.depthFunc ?? '-'} zw ${gs.depthMask ? 1 : 0} stencil ${en(gl.STENCIL_TEST)} cull ${en(gl.CULL_FACE)} scissor ${en(gl.SCISSOR_TEST)} vp ${gs.vpx},${gs.vpy},${gs.vpw},${gs.vph}`;
-    return [c.k, intern(this.metas, this.metaIdx, meta, meta), intern(this.vals, this.valIdx, vals.join(','), vals), c.tm ? intern(this.tms, this.tmIdx, JSON.stringify(c.tm), c.tm) : -1, c.start, c.count, v?.base ?? null, d.stats.uploads - c.up0, c.bs, c.as];
+    return [c.k, intern(this.metas, this.metaIdx, meta, meta), intern(this.vals, this.valIdx, vals.join(','), vals), c.tm ? intern(this.tms, this.tmIdx, JSON.stringify(c.tm), c.tm) : -1, c.start, c.count, v?.base ?? null, d.stats.uploads - c.up0, c.bs, c.as, intern(this.xfs, this.xfIdx, String(c.xh), c.xh)];
   }
 
   // ---------------------------------------------------------------- frames, readbacks
@@ -308,13 +308,13 @@ export class DrawProbe {
       size: [this.w, this.h], mode: `${this.dev.dev.pp?.width}x${this.dev.dev.pp?.height}`, path: this.path, stamps: !!this.stamps, grid: [GW, GH], lastN: this.lastN,
       rects, rectKinds: kinds,
       frames: this.frames.map((f) => ({ f: f.f, t: f.t, n: f.n, sig: f.sig, vsig: f.vsig, tf: f.tf, fb: f.fb, ctl: f.ctl, odd: f.odd ?? null, away: f.away ?? null, mad: f.mad ?? null, d: f.d, p: f.p ?? null })),
-      metas: this.metas, vals: this.vals, tms: this.tms, pics, summary: null, cut: [], notes: this.notes.slice(), took: null,
+      metas: this.metas, vals: this.vals, tms: this.tms, xfs: this.xfs, pics, summary: null, cut: [], notes: this.notes.slice(), took: null,
     };
     if (this.lostFrames) rec.notes.push(`${this.lostFrames} frames' pictures given up (no free pixel buffer: the GPU behind)`);
     const sum = await step(() => analyse(rec));
     rec.summary = { frames: sum.frames, probed: sum.probed, control: sum.control, odd: sum.odd, oddProbed: sum.oddProbed, oddControl: sum.oddControl, moved: sum.moved, verdict: sum.verdict };
     // (nothing varied — no frame came back A-B-A, no value moved —: not sent, the flicker probe tries at another screen)
-    const valuesMoved = sum.draws.some((d) => d.tfP.length > 1 || d.tfM.length > 1);
+    const valuesMoved = sum.draws.some((d) => d.tfP.length > 1 || d.tfM.length > 1); // (values past the bounded tables are unknown, never 'moved')
     // (odd frames whose culprit is a layer with moving texture matrices: an animation going back and forth — a menu's,
     // the pause menu's swirl —, not the session's one record: tried again at another screen)
     const culprit = sum.draws.find((d) => d.pos === sum.moved[0]), animated = !valuesMoved && (culprit?.tms ?? 0) > 1;
