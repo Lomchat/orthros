@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildSessions, report, benchComparison, formatReport, summaryStretches, machineLine, telemetryFiles } from '../tools/dev/telemetry-report.mjs';
+import { buildSessions, report, benchComparison, formatReport, summaryStretches, machineLine, telemetryFiles, sampleClasses, summaryClasses, perfSessions, perfReport } from '../tools/dev/telemetry-report.mjs';
 import { PerfWindow } from '../src/web/perf-summary.js';
 import { FrameStats, N_CATS, C } from '../src/core/frame-acct.js';
 
@@ -58,7 +58,7 @@ test('sessions: batches grouped, events sorted out, date and game filters', () =
 test('summaries merged per stretch: percentiles from the merged histograms, rates per minute', () => {
   const s = buildSessions(batches()).get('sessA');
   const [st] = summaryStretches(s.summaries);
-  assert.equal(st.kind, '3D'); assert.equal(st.summaries, 2);
+  assert.equal(st.kind, 'play'); assert.equal(st.summaries, 2);
   assert.equal(st.p50, 31); // (30 ms frames: the bucket [30, 31))
   assert.ok(st.p99 >= 60 && st.p99 <= 120, `p99 ${st.p99}`);
   assert.equal(st.max, 120);
@@ -87,6 +87,35 @@ test('report and bench comparison', () => {
   const extra = benchRecord(50, 30); extra.phases.splice(1, 0, { label: 'loadscreen', seconds: 9, fps: 12, per33: 1 });
   const cmp2 = benchComparison(report(buildSessions([...batches(), { at: '2026-10-05T10:00:00.000Z', session: 'sessD', env, samples: [extra] }]), { bench: true }));
   assert.deepEqual(cmp2[0].phases, ['start', 'loadscreen', 'play']);
+});
+
+// (the owner's telemetry, 2026-11-18 audit: the worst minutes were a 24 fps video and frames spanning a hidden tab)
+test('windows told apart: a hidden tab and its frame back, a video, a menu are not play — samples, summaries, --perf minutes', () => {
+  const T0 = Date.parse('2026-11-18T10:00:00.000Z'), smp = [];
+  const put = (n, o) => { for (let i = 0; i < n; i++) smp.push({ t: T0 + 500 * (smp.length + 1), dt: 0.5, busy: 50, mips: 300, s33: 0, s50: 0, max: 34, vis: true, ...o }); };
+  put(40, { fps: 30, draws: 15 * 500 }); // play: 500 draws a frame
+  put(40, { fps: 24, draws: 12 * 2, s33: 12, max: 42 }); // a video: 2 draws a frame, every frame over 33 ms
+  put(40, { fps: 0, draws: 0, vis: false, mips: 30, busy: 20 }); // the tab hidden
+  put(1, { fps: 2, draws: 500, s33: 1, s50: 1, max: 20000, wf: [20000, 50, { late: 19950 }] }); // the frame back spans the hidden time
+  put(40, { fps: 30, draws: 15 * 500 });
+  put(20, { fps: 30, draws: 15 * 20 }); // a 2D menu
+  const cls = sampleClasses(smp), count = (k) => cls.filter((c) => c === k).length;
+  assert.deepEqual([count('play'), count('loading'), count('hidden'), count('menu')], [80, 40, 41, 20]);
+  // (a summary that holds the frame back is set apart though its tab was visible all along)
+  assert.deepEqual(summaryClasses([{ t: T0 + 20000, seconds: 20, frames: 600, d3dFrames: 600, drawsPerFrame: 500, visible: 1 }, { t: T0 + 80000, seconds: 20, frames: 590, d3dFrames: 590, drawsPerFrame: 500, visible: 1 }], smp), ['play', 'hidden']);
+  const [r] = report(buildSessions([{ at: '2026-11-18T10:01:31.000Z', session: 'sessH', game: 'g', env, samples: smp }]));
+  assert.deepEqual(r.windows, { play: 40, loading: 20, hidden: 21, menu: 10 });
+  assert.equal(r.play.samples.per33, 0); assert.equal(r.play.samples.worst, null); // (neither the video's frames nor the frame back)
+  assert.deepEqual([r.hiddenTab.seconds, r.hiddenTab.times, r.hiddenTab.mipsHidden, r.hiddenTab.mipsBefore], [20, 1, 30, 300]);
+  // the passive record of the same session: its minutes classed by the samples; without them the video's is play
+  const m = (t, s, n, p, f40, o = {}) => ({ t, ph: 'running', s, hid: 0, n, fps: Math.round(n / s), p50: p, p90: p, p99: p, max: p, f40, f100: 0, ...o });
+  const rec = { at: new Date(T0 + 91000).toISOString(), event: 'perf', v: 1, session: 'sessH', game: 'g', runtime: 'win32', seq: 0, final: true, len: 91, vis: 70.5, hid: 20, env,
+    mins: [m(0, 20, 600, 34, 0), m(20, 20, 480, 42, 480), m(40, 0.5, 1, 20000, 1, { hid: 20, f100: 1 }), m(61, 20, 600, 34, 0), m(81, 10, 300, 34, 0)],
+    tot: { s: 70.5, n: 1981, fps: 28, p50: 34, p90: 42, p99: 42, max: 20000, f40: 481, f100: 1 } };
+  const [g] = perfReport(perfSessions([rec]), { samples: new Map([['sessH', smp]]) });
+  assert.deepEqual(g.worst.map((w) => w.t), [0, 61]); assert.equal(g.merged.max, 34); assert.equal(g.minutes, 0.7);
+  assert.deepEqual(g.apart, { loading: 0.3, hidden: 0.3, menu: 0.2 });
+  assert.equal(perfReport(perfSessions([rec]))[0].worst[0].t, 20);
 });
 
 test('command line: a directory, a date range, --bench, --json', () => {

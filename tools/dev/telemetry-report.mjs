@@ -1,11 +1,15 @@
 // Report of the server's telemetry (src/server/server.js --telemetry: <dir>/telemetry-<date>.jsonl, one batch per line):
 // per session, the machine (browser, GPU, cores, memory, screen), the game / version, the build and the options it ran
 // with (render mode actually used), then
-// - per stretch of play (consecutive ~0.5 s samples of one kind: a 3D scene — many draws per frame — or not) the
-//   frames > 33 / > 50 ms per minute, the mean work per frame and the time by category (docs/frame-accounting.md);
+// - its time by window class (windowClass: visible play, menu, video / loading, hidden tab — the hidden time and the
+//   first frame back from it), the visible play's figures only (rates, causes, compiles from the samples; percentiles,
+//   GPU, draws from the summaries; any field the report does not know, as its mean), the hidden tab's effect on the
+//   guest (MIPS hidden vs visible and just before hiding);
+// - per stretch (consecutive ~0.5 s samples of one class) the frames > 33 / > 50 ms per minute, the mean work per
+//   frame and the time by category (docs/frame-accounting.md);
 // - the ~20 s summaries (frame-time percentiles, frames > 33 / 40 / 50 / 100 ms, draws and GL calls per frame, GPU
-//   time per frame when the browser measures it, render worker waits) merged per stretch, with the slow frames'
-//   categories;
+//   time per frame when the browser measures it, render worker waits) merged per stretch of one class, with the slow
+//   frames' categories;
 // - the flicker probe's counters (gfx/flicker-probe.js: `altSame` / `altCmdAba`, the alternating samples whose frames'
 //   command signatures were the same / went A-B-A), its logged samples' command patterns, and whether the session sent
 //   its flicker capture (read with tools/dev/flicker-capture.mjs); its draw probe's verdict (tools/dev/draw-probe.mjs);
@@ -22,11 +26,13 @@
 //   --compat: per game, over its sessions, the compatibility gaps the sessions met (unknown imports called, COM methods
 //          answering E_NOTIMPL, untranslated shader instructions: core/compat-stats.js), by number of sessions
 //   --perf [--gpu <part of its name>]: the passive session records (every runtime, src/shared/perf-record.js) per game ×
-//          GPU: medians over the sessions, all frames merged, the worst minutes, the slow frames' causes, host timing
+//          GPU, over their play minutes only (a Windows game's minutes classed by its samples, a port's by its phase;
+//          the others' time set apart): medians over the sessions, the play frames merged, the worst play minutes,
+//          the slow frames' causes, host timing
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HIST_N, histAddSparse, histQuantile } from '../../src/core/frame-acct.js';
+import { HIST_N, histAddSparse, histBucket, histQuantile } from '../../src/core/frame-acct.js';
 import { audioVerdict, audioText } from '../../src/web/sound.js';
 import { probeLine } from '../../src/web/timing-probe.js';
 
@@ -94,38 +100,190 @@ export function readLines(files) {
 
 const add = (into, o, k = 1) => { for (const [n, v] of Object.entries(o ?? {})) into[n] = (into[n] ?? 0) + v * k; };
 const fmt = (o, scale = 1, min = 0.3) => Object.entries(o).map(([k, v]) => [k, v * scale]).filter(([, v]) => v >= min).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(', ');
-const kindOf = (frames, draws) => (frames > 0 && draws / frames >= 50 ? '3D' : frames > 0 ? 'other' : 'no frames');
 
-/** Consecutive samples of one kind (3D scene or not, by draws per frame) as stretches. */
-export function stretches(samples) {
-  const out = []; let cur = null;
-  for (const x of samples) {
-    const frames = (x.fps ?? 0) * x.dt, kind = kindOf(frames, x.draws ?? 0);
-    if (!cur || cur.kind !== kind) out.push(cur = { kind, t0: x.t, seconds: 0, frames: 0, s33: 0, s50: 0, acctFrames: 0, work: 0, cats: {}, slowCats: {}, worst: null, busy: 0 });
-    cur.seconds += x.dt; cur.frames += frames; cur.s33 += x.s33 ?? 0; cur.s50 += x.s50 ?? 0; cur.busy += (x.busy ?? 0) * x.dt;
-    if (x.c) { cur.acctFrames += frames; cur.work += (x.w ?? 0) * frames; add(cur.cats, x.c, frames); }
-    if (x.sc) add(cur.slowCats, x.sc);
-    if (x.wf && (!cur.worst || x.wf[0] > cur.worst[0])) cur.worst = x.wf;
+// ---------------------------------------------------------------- what each window of a session showed
+// A session's windows (its ~0.5 s samples, its ~20 s summaries, its passive records' minutes) are told apart before
+// any play figure is computed: `hidden` (the tab hidden in it: the browser presents nothing and the game runs at the
+// pace it is given; the first frame back spans the hidden time, hundreds of seconds), `loading` (under MIN_FPS frames a
+// second, or fewer than MENU_DRAWS draws a frame: a video at its own rate — ~2 draws a frame, 24 fps, every frame over
+// 40 ms —, a loading or a still screen), `menu` (fewer than PLAY_DRAWS draws a frame: a 2D screen), `play` (a 3D scene;
+// a menu drawn over a 3D backdrop too — the draws cannot tell it). The ports name theirs (`phase`). The play statistics
+// are the visible play's only; the other windows are marked and counted apart.
+export const PLAY_DRAWS = 50, MENU_DRAWS = 8, MIN_FPS = 1;
+export const CLASS_LABEL = { play: 'play', menu: 'menu', loading: 'video/loading', hidden: 'hidden' };
+const CLASSES = Object.keys(CLASS_LABEL);
+const PHASE_CLASS = { menu: 'menu', choosing: 'menu', loading: 'loading', starting: 'loading' };
+
+/**
+ * A window's class from its frames, draws per frame (`dpf`: null when the game draws no Direct3D — then by its frames
+ * only), visibility and the runtime's own phase name (the ports: menu / choosing, loading / starting).
+ * @param {{ seconds: number, frames: number, dpf?: number|null, hidden?: boolean, phase?: string|null }} w
+ */
+export function windowClass({ seconds, frames, dpf = null, hidden = false, phase = null }) {
+  if (hidden) return 'hidden';
+  if (phase && PHASE_CLASS[phase]) return PHASE_CLASS[phase];
+  if (!(seconds > 0) || frames / seconds < MIN_FPS) return 'loading';
+  if (dpf === null || dpf === undefined) return 'play';
+  return dpf < MENU_DRAWS ? 'loading' : dpf < PLAY_DRAWS ? 'menu' : 'play';
+}
+
+/**
+ * Each sample's class: `hidden` while the page was hidden (`vis` false) and after it up to the first frame shown (the
+ * one that spans the hidden time); the others by their frames and draws (a session without a Direct3D draw — a GDI or
+ * DirectDraw game —: by frames only).
+ */
+export function sampleClasses(samples) {
+  const d3d = samples.some((x) => (x.draws ?? 0) > 0);
+  let back = false;
+  return samples.map((x) => {
+    const frames = (x.fps ?? 0) * x.dt;
+    if (x.vis === false) { back = true; return 'hidden'; }
+    if (back) { if (frames > 0) back = false; return 'hidden'; }
+    return windowClass({ seconds: x.dt, frames, dpf: d3d && frames > 0 ? (x.draws ?? 0) / frames : null });
+  });
+}
+
+/** the first index of sorted `a` whose value is >= v */
+const lowerBound = (a, v) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < v) lo = m + 1; else hi = m; } return lo; };
+/** The samples' classes by time ([t, class], t sorted) and a query of a time range's: hidden if any is, else the longest. */
+function classTimeline(samples, classes) {
+  const idx = samples.map((x, i) => i).filter((i) => Number.isFinite(samples[i].t)).sort((a, b) => samples[a].t - samples[b].t);
+  const ts = idx.map((i) => samples[i].t);
+  return {
+    /** the class of the samples in (a, b] (ms), null when none */
+    of(a, b) {
+      const by = {}; let any = false;
+      for (let k = lowerBound(ts, a); k < ts.length && ts[k] <= b; k++) { if (ts[k] <= a) continue; const i = idx[k], c = classes[i]; if (c === 'hidden') return 'hidden'; any = true; by[c] = (by[c] ?? 0) + (samples[i].dt ?? 0.5); }
+      return any ? Object.entries(by).sort((x, y) => y[1] - x[1])[0][0] : null;
+    },
+  };
+}
+
+/**
+ * Each summary's class: hidden when the session's samples in its window have a hidden one (or the tab return's
+ * frame), or its own visible share is under 1; else by its frames and draws per frame.
+ */
+export function summaryClasses(summaries, samples = [], classes = sampleClasses(samples)) {
+  const d3d = summaries.some((x) => (x.d3dFrames ?? 0) > 0) || samples.some((x) => (x.draws ?? 0) > 0), tl = classTimeline(samples, classes);
+  return summaries.map((x) => {
+    // (its window: the samples after the previous summary's — half a sample's margin for the rounded seconds)
+    const t1 = x.t, t0 = t1 - (x.seconds ?? 20) * 1000 + 250;
+    const hidden = (x.visible ?? 1) < 1 || (Number.isFinite(t1) && tl.of(t0, t1) === 'hidden');
+    return windowClass({ seconds: x.seconds ?? 0, frames: x.frames ?? 0, dpf: d3d ? x.drawsPerFrame ?? 0 : null, hidden });
+  });
+}
+
+// (the samples', summaries' and passive records' minutes' fields this report reads: any other numeric one — a newer
+// page's, e.g. a pacing or compile counter — is shown as its mean over the play)
+const SAMPLE_FIELDS = new Set(['t', 'dt', 'fps', 'busy', 'jit', 'max', 's33', 's50', 'p99', 'mips', 'api', 'draws', 'io', 'net', 'netReq', 'prog', 'progMs', 'frames', 'st', 'mem', 'au', 'fs', 'vis', 'bw', 'nw', 'rx', 'w', 'c', 'sc', 'wf']);
+const ENTRY_FIELDS = new Set(['t', 'ph', 's', 'hid', 'n', 'fps', 'p50', 'p90', 'p99', 'max', 'f40', 'f100', 'work', 'wait', 'cats', 'slow', 'gpu', 'data']);
+const SUMMARY_FIELDS = new Set(['t', 'event', 'seconds', 'frames', 'fps', 's33', 's40', 's50', 's100', 'per33', 'per50', 'per100', 'dt', 'work', 'cats', 'slowCats', 'worst', 'h', 'busy', 'mips', 'visible', 'fullscreen', 'status', 'renderMode', 'd3dFrames', 'drawsPerFrame', 'gpu', 'glCalls', 'render', 'hostWait', 'audio', 'flicker']);
+/** a record's numeric fields unknown to the report (one level of objects too: `a.b`), weighted by `w` into `into` */
+function addExtra(into, x, known, w) {
+  for (const k in x) {
+    if (known.has(k)) continue;
+    const v = x[k];
+    if (typeof v === 'number' && Number.isFinite(v)) { const e = (into[k] ??= [0, 0]); e[0] += v * w; e[1] += w; }
+    else if (v && typeof v === 'object' && !Array.isArray(v)) for (const [kk, vv] of Object.entries(v)) if (typeof vv === 'number' && Number.isFinite(vv)) { const e = (into[`${k}.${kk}`] ??= [0, 0]); e[0] += vv * w; e[1] += w; }
   }
-  // (a stretch shorter than 10 s is merged into the previous one — a loading hiccup — then neighbours of one kind)
-  const merge = (a, b) => { a.seconds += b.seconds; a.frames += b.frames; a.s33 += b.s33; a.s50 += b.s50; a.busy += b.busy; a.acctFrames += b.acctFrames; a.work += b.work; add(a.cats, b.cats); add(a.slowCats, b.slowCats); if (b.worst && (!a.worst || b.worst[0] > a.worst[0])) a.worst = b.worst; };
+}
+const extraOut = (o) => (Object.keys(o).length ? Object.fromEntries(Object.entries(o).map(([k, [s, w]]) => [k, w ? +(s / w).toFixed(2) : null])) : null);
+
+/** A stretch of samples (or every sample of a class) being added up. */
+const sampleAcc = (kind, t0) => ({ kind, t0, seconds: 0, frames: 0, s33: 0, s50: 0, acctFrames: 0, work: 0, cats: {}, slowCats: {}, worst: null, busy: 0, mips: 0, mipsS: 0, draws: 0, jit: 0, prog: 0, progMs: 0, extra: {} });
+function addSample(a, x) {
+  const frames = (x.fps ?? 0) * x.dt;
+  a.seconds += x.dt; a.frames += frames; a.s33 += x.s33 ?? 0; a.s50 += x.s50 ?? 0; a.busy += (x.busy ?? 0) * x.dt; a.draws += x.draws ?? 0;
+  if (x.mips >= 0) { a.mips += x.mips * x.dt; a.mipsS += x.dt; } // (a negative one: a counter that restarted)
+  a.jit += Math.max(0, x.jit ?? 0); a.prog += Math.max(0, x.prog ?? 0); a.progMs += Math.max(0, x.progMs ?? 0);
+  if (x.c) { a.acctFrames += frames; a.work += (x.w ?? 0) * frames; add(a.cats, x.c, frames); }
+  if (x.sc) add(a.slowCats, x.sc);
+  if (x.wf && (!a.worst || x.wf[0] > a.worst[0])) a.worst = x.wf;
+  addExtra(a.extra, x, SAMPLE_FIELDS, x.dt);
+}
+function mergeSamples(a, b) {
+  for (const k of ['seconds', 'frames', 's33', 's50', 'busy', 'mips', 'mipsS', 'draws', 'jit', 'prog', 'progMs', 'acctFrames', 'work']) a[k] += b[k];
+  add(a.cats, b.cats); add(a.slowCats, b.slowCats); if (b.worst && (!a.worst || b.worst[0] > a.worst[0])) a.worst = b.worst;
+  for (const [k, [s, w]] of Object.entries(b.extra)) { const e = (a.extra[k] ??= [0, 0]); e[0] += s; e[1] += w; }
+}
+/** A samples' stretch as the report shows it. */
+function sampleOut(st) {
+  const sec = st.seconds || 1, min = sec / 60, n = st.acctFrames || 1, slowTotal = Object.values(st.slowCats).reduce((a, b) => a + b, 0);
+  return { kind: st.kind, at: Number.isFinite(st.t0) ? new Date(st.t0).toISOString().slice(11, 19) : null, seconds: Math.round(st.seconds), fps: +(st.frames / sec).toFixed(1), busy: Math.round(st.busy / sec), mips: st.mipsS ? Math.round(st.mips / st.mipsS) : null, per33: Math.round(st.s33 / min), per50: Math.round(st.s50 / min),
+    work: st.acctFrames ? +(st.work / n).toFixed(1) : null, cats: st.acctFrames ? fmt(st.cats, 1 / n) : null, slowShares: slowTotal ? fmt(st.slowCats, 100 / slowTotal, 1) : null, worst: st.worst,
+    drawsPerFrame: st.frames ? Math.round(st.draws / st.frames) : null, jitMsPerMin: Math.round(st.jit / min), programs: st.prog, programMs: Math.round(st.progMs), extra: extraOut(st.extra) };
+}
+
+/** The runs of consecutive samples of one class (sampleClasses), each added up. */
+function classRuns(samples, classes) {
+  const out = []; let cur = null;
+  samples.forEach((x, i) => {
+    if (!cur || cur.kind !== classes[i]) out.push(cur = sampleAcc(classes[i], x.t));
+    addSample(cur, x);
+  });
+  return out;
+}
+const copyAcc = (a) => { const c = sampleAcc(a.kind, a.t0); mergeSamples(c, a); return c; };
+
+/** Consecutive samples of one class (sampleClasses) as stretches. */
+export function stretches(samples, classes = sampleClasses(samples), runs = classRuns(samples, classes)) {
+  // (a stretch shorter than 10 s is merged into the previous one — a loading hiccup — then neighbours of one class;
+  // never a hidden one into another or another into it: the play figures are counted per sample, not per stretch, but
+  // a stretch's own should not mix them either)
   const kept = [];
-  for (const st of out) {
+  for (const st of runs) {
     const last = kept[kept.length - 1];
-    if (last && (st.seconds < 10 || st.kind === last.kind)) merge(last, st); else kept.push(st);
+    if (last && (st.kind === last.kind || (st.seconds < 10 && st.kind !== 'hidden' && last.kind !== 'hidden'))) mergeSamples(last, st); else kept.push(copyAcc(st));
   }
   return kept;
 }
 
+/** Every sample of each class added up (from its runs): { play, menu, loading, hidden } (those the session has). */
+function samplesByClass(runs) {
+  const by = {};
+  for (const r of runs) mergeSamples(by[r.kind] ??= sampleAcc(r.kind, r.t0), r);
+  return by;
+}
+
 /**
- * The ~20 s summaries merged per stretch (consecutive summaries of one kind, a 3D scene or not): frame-time
- * percentiles from the merged histograms, slow-frame rates, draws / GL calls / GPU time / render waits per frame.
+ * The hidden tab's effect on the game (the samples' `vis`): its time and how many times the page was hidden, the guest's
+ * MIPS and the worker's busy share while hidden against the visible time's — all of it, and the BEFORE_S seconds before
+ * each hiding (the same activity, most often) —, the frames presented while hidden. null when never hidden.
  */
-export function summaryStretches(summaries) {
-  const out = []; let cur = null;
-  for (const x of summaries) {
-    const kind = kindOf(x.d3dFrames ?? x.frames ?? 0, (x.drawsPerFrame ?? 0) * (x.d3dFrames ?? 0));
-    if (!cur || cur.kind !== kind) out.push(cur = { kind, t0: x.t, n: 0, seconds: 0, frames: 0, s33: 0, s40: 0, s50: 0, s100: 0, max: 0, hist: new Array(HIST_N).fill(0), cats: {}, slowCats: {}, work: 0, d3dFrames: 0, draws: 0, glFrames: 0, glCalls: 0, gpuFrames: 0, gpuMs: 0, gpuHist: new Array(HIST_N).fill(0), gpuState: null, gpuMax: 0, rwWait: 0, rwReplay: 0, rwFrames: 0, render: null, visible: 0 });
+export const BEFORE_S = 10;
+export function hiddenTab(samples) {
+  const vis = { s: 0, busy: 0, mips: 0, ms: 0 }, hid = { s: 0, busy: 0, mips: 0, ms: 0, frames: 0 }, before = { mips: 0, ms: 0 };
+  let times = 0, prev = false;
+  samples.forEach((x, i) => {
+    const h = x.vis === false, a = h ? hid : vis;
+    a.s += x.dt; a.busy += (x.busy ?? 0) * x.dt;
+    if (x.mips >= 0) { a.mips += x.mips * x.dt; a.ms += x.dt; }
+    if (h) {
+      hid.frames += (x.fps ?? 0) * x.dt;
+      if (!prev) { times++; for (let j = i - 1; j >= 0 && samples[j].vis !== false && x.t - samples[j].t <= BEFORE_S * 1000; j--) if (samples[j].mips >= 0) { before.mips += samples[j].mips * samples[j].dt; before.ms += samples[j].dt; } }
+    }
+    prev = h;
+  });
+  if (!hid.s) return null;
+  const m = (a) => (a.ms ? Math.round(a.mips / a.ms) : null), mv = m(vis), mh = m(hid);
+  return { seconds: Math.round(hid.s), times, mipsHidden: mh, mipsVisible: mv, mipsBefore: m(before), ratio: mv ? +(mh / mv).toFixed(2) : null, ratioBefore: before.ms && before.mips ? +(mh / (before.mips / before.ms)).toFixed(2) : null,
+    busyHidden: Math.round(hid.busy / hid.s), busyVisible: vis.s ? Math.round(vis.busy / vis.s) : null, fpsHidden: +(hid.frames / hid.s).toFixed(1) };
+}
+
+/** A stretch of summaries (or every summary of a class) being added up. */
+const summaryAcc = (kind, t0) => ({ kind, t0, n: 0, seconds: 0, frames: 0, s33: 0, s40: 0, s50: 0, s100: 0, max: 0, hist: new Array(HIST_N).fill(0), cats: {}, slowCats: {}, work: 0, d3dFrames: 0, draws: 0, glFrames: 0, glCalls: 0, gpuFrames: 0, gpuMs: 0, gpuHist: new Array(HIST_N).fill(0), gpuState: null, gpuMax: 0, rwWait: 0, rwReplay: 0, rwFrames: 0, render: null, visible: 0, extra: {} });
+
+/**
+ * The ~20 s summaries merged per stretch (consecutive summaries of one class: summaryClasses): frame-time percentiles
+ * from the merged histograms, slow-frame rates, draws / GL calls / GPU time / render waits per frame. `all`: one
+ * entry per class instead, every summary of it merged (the play figures).
+ */
+export function summaryStretches(summaries, classes = summaryClasses(summaries), { all = false } = {}) {
+  const out = [], by = {}; let cur = null;
+  summaries.forEach((x, i) => {
+    const kind = classes[i];
+    if (all) cur = by[kind] ??= (out.push(summaryAcc(kind, x.t)), out[out.length - 1]);
+    else if (!cur || cur.kind !== kind) out.push(cur = summaryAcc(kind, x.t));
     cur.n++; cur.seconds += x.seconds ?? 0; cur.frames += x.frames ?? 0;
     for (const k of ['s33', 's40', 's50', 's100']) cur[k] += x[k] ?? 0;
     if ((x.dt?.max ?? 0) > cur.max) cur.max = x.dt.max;
@@ -139,7 +297,8 @@ export function summaryStretches(summaries) {
     if (x.renderMode) cur.render = x.renderMode;
     if (x.flicker) { const f = cur.flk ??= { n: 0, aba: 0, still: 0, stillN: 0, chg: 0, max: 0, over1: 0, alt: 0, abaAlt: 0, altSame: 0, altCmdAba: 0, glErrors: 0, glError: null }; const n = x.flicker.n ?? 0; f.n += n; f.aba += (x.flicker.aba ?? 0) * n; f.chg += (x.flicker.chg ?? 0) * n; if (x.flicker.still != null) { f.still += x.flicker.still * n; f.stillN += n; } if ((x.flicker.max ?? 0) > f.max) f.max = x.flicker.max; f.over1 += x.flicker.over1 ?? 0; f.alt += x.flicker.alt ?? 0; f.abaAlt += x.flicker.abaAlt ?? 0; f.altSame += x.flicker.altSame ?? 0; f.altCmdAba += x.flicker.altCmdAba ?? 0; f.glErrors += x.flicker.glErrors ?? 0; if (x.flicker.glError) f.glError = x.flicker.glError; }
     cur.visible += (x.visible ?? 1) * (x.seconds ?? 0);
-  }
+    addExtra(cur.extra, x, SUMMARY_FIELDS, x.seconds ?? 0);
+  });
   return out.map((c) => {
     const min = c.seconds / 60, n = c.frames || 1, slowTotal = Object.values(c.slowCats).reduce((a, b) => a + b, 0), hasGpuHist = c.gpuHist.some((v) => v);
     return {
@@ -152,6 +311,7 @@ export function summaryStretches(summaries) {
       renderWaitMs: c.rwFrames ? +(c.rwWait / c.rwFrames).toFixed(2) : null, replayMs: c.rwFrames ? +(c.rwReplay / c.rwFrames).toFixed(2) : null, render: c.render,
       visible: c.seconds ? +(c.visible / c.seconds).toFixed(2) : null,
       flicker: c.flk ? { n: c.flk.n, aba: c.flk.n ? +(c.flk.aba / c.flk.n).toFixed(4) : null, still: c.flk.stillN ? +(c.flk.still / c.flk.stillN).toFixed(4) : null, chg: c.flk.n ? +(c.flk.chg / c.flk.n).toFixed(4) : null, max: c.flk.max, over1: c.flk.over1, alt: c.flk.alt, abaAlt: c.flk.abaAlt, altSame: c.flk.altSame, altCmdAba: c.flk.altCmdAba, glErrors: c.flk.glErrors, glError: c.flk.glError } : null,
+      extra: extraOut(c.extra),
     };
   });
 }
@@ -176,13 +336,16 @@ export function report(sessions, { minSeconds = 60, bench = undefined, players =
     if (bench !== undefined && !benches.length) continue;
     if (seconds < minSeconds && !benches.length && !s.capture && !s.drawProbe) continue;
     const cmds = {}; for (const x of s.flickerLogs) cmds[x.cmd] = (cmds[x.cmd] ?? 0) + 1;
-    const r = { session: s.id, game: s.game, bench: s.bench, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events, stretches: [], summaryStretches: summaryStretches(s.summaries), audio: audioVerdict(s.summaries.map((x) => x.audio)), compat: s.compat, benches,
+    // (each window's class: the play figures are the visible play's — the samples' for the rates and causes, the
+    // summaries' for the percentiles, GPU and draws —, the time of the others counted apart)
+    const sc = sampleClasses(s.samples), mc = summaryClasses(s.summaries, s.samples, sc), runs = classRuns(s.samples, sc), byClass = samplesByClass(runs);
+    const sumAll = summaryStretches(s.summaries, mc, { all: true }), windows = {};
+    if (s.samples.length) for (const [k, a] of Object.entries(byClass)) windows[k] = Math.round(a.seconds);
+    else for (const st of sumAll) windows[st.kind] = st.seconds;
+    const r = { session: s.id, game: s.game, bench: s.bench, first: s.first, machine: machineLine(s.env), env: s.env, version: s.version, options: s.options, render: renderModeOf(s), seconds: Math.round(seconds), slowEvents: s.slow, events: s.events,
+      windows, play: { samples: byClass.play ? sampleOut(byClass.play) : null, summaries: sumAll.find((x) => x.kind === 'play') ?? null, of: s.summaries.length }, hiddenTab: hiddenTab(s.samples),
+      stretches: stretches(s.samples, sc, runs).map(sampleOut), summaryStretches: summaryStretches(s.summaries, mc), audio: audioVerdict(s.summaries.map((x) => x.audio)), compat: s.compat, benches,
       flickerCapture: s.capture, drawProbe: s.drawProbe, flickerLogs: s.flickerLogs.length ? { n: s.flickerLogs.length, maxStill: Math.max(...s.flickerLogs.map((x) => x.still).filter((v) => !Number.isNaN(v)), 0), commands: cmds } : null };
-    for (const st of stretches(s.samples)) {
-      const min = st.seconds / 60, n = st.acctFrames || 1, slowTotal = Object.values(st.slowCats).reduce((a, b) => a + b, 0);
-      r.stretches.push({ kind: st.kind, at: new Date(st.t0).toISOString().slice(11, 19), seconds: Math.round(st.seconds), fps: +(st.frames / st.seconds).toFixed(1), busy: Math.round(st.busy / st.seconds), per33: Math.round(st.s33 / min), per50: Math.round(st.s50 / min),
-        work: st.acctFrames ? +(st.work / n).toFixed(1) : null, cats: st.acctFrames ? fmt(st.cats, 1 / n) : null, slowShares: slowTotal ? fmt(st.slowCats, 100 / slowTotal, 1) : null, worst: st.worst });
-    }
     out.push(r);
   }
   return out;
@@ -279,6 +442,11 @@ export function formatCompat(groups) {
 }
 
 const cell = (p) => (p ? `${p.fps} fps p99 ${p.dt?.p99 ?? '?'} >33 ${p.per33}/min${p.gpu?.frames ? ` gpu p99 ${p.gpu.p99}` : ''}` : '-');
+const pairs = (o) => Object.entries(o ?? {}).map(([k, v]) => `${k} ${v}`).join(', ');
+const worstText = (w) => `worst ${w[0]} ms (work ${w[1]}: ${pairs(w[2])})`;
+/** a merged summaries' figures: frame times, slow frames, draws, GPU, render worker */
+const summaryText = (st) => `frame ms p50 ${st.p50} p90 ${st.p90} p99 ${st.p99} max ${st.max}; >33 ${st.per33}/min >40 ${st.per40} >50 ${st.per50} >100 ${st.per100}; draws/frame ${st.drawsPerFrame ?? '-'}, GL calls/frame ${st.glCallsPerFrame ?? '-'}; GPU ${typeof st.gpu === 'object' && st.gpu ? `${st.gpu.mean} ms/frame p50 ${st.gpu.p50} p99 ${st.gpu.p99} (${st.gpu.frames} frames timed)` : st.gpu ?? '-'}${st.renderWaitMs !== null ? `; render worker waits ${st.renderWaitMs} ms/frame, replay ${st.replayMs}` : ''}`;
+const label = (k) => (CLASS_LABEL[k] ?? k).padEnd(13);
 
 /** The text report. */
 export function formatReport(reports, comparison) {
@@ -291,15 +459,32 @@ export function formatReport(reports, comparison) {
     if (r.drawProbe) { const d = r.drawProbe; L.push(`  draw probe: ${d.at ? d.at.slice(11, 19) : '?'}, started by ${d.why ?? '?'} (${d.path ?? '?'}); ${d.frames} frames, ${d.odd ?? '?'} odd${d.cut.length ? `; cut ${d.cut.join(', ')}` : ''}; ${d.verdict ?? ''} — node tools/dev/draw-probe.mjs <telemetry .jsonl> --session ${r.session}`); }
     if (r.flickerCapture) { const c = r.flickerCapture; L.push(`  flicker capture: ${c.at ? c.at.slice(11, 19) : '?'}, trigger ${c.trigger ? `${c.trigger.asked ? 'asked' : `${c.trigger.still} % flickering, commands ${c.trigger.cmd ?? '?'}`}` : '?'}; ${c.frames} frames, ${c.images} pictures${c.small ? ` (${c.small.aba} % A-B-A)` : ''}${c.alt && Object.keys(c.alt).length ? `; alternating draw fields ${Object.entries(c.alt).map(([k, v]) => `${k} ${v}`).join(', ')}` : ''}${c.cut.length ? `; cut ${c.cut.join(', ')}` : ''}${c.took ? `; made in ${c.took.ms} ms, longest slice ${c.took.longest} ms` : ''} — node tools/dev/flicker-capture.mjs <telemetry .jsonl> --session ${r.session}`); }
     if (r.options) L.push(`  options: ${Object.entries(r.options).filter(([, v]) => v !== '' && v !== false && v !== null).map(([k, v]) => `${k}=${v}`).join(' ')}`);
+    // (the session's time by window class, the visible play's figures — the only ones to read as the game's pace —, the
+    // hidden tab's effect on the guest)
+    if (Object.keys(r.windows).length) L.push(`  time: ${CLASSES.filter((k) => r.windows[k]).map((k) => `${CLASS_LABEL[k]} ${r.windows[k]} s`).join(', ')}`);
+    const p = r.play.samples, q = r.play.summaries;
+    if (p) {
+      L.push(`  visible play: ${p.seconds} s ${p.fps} fps busy ${p.busy}%${p.mips !== null ? ` MIPS ${p.mips}` : ''}${p.drawsPerFrame !== null ? ` draws/frame ${p.drawsPerFrame}` : ''}; >33 ms ${p.per33}/min >50 ms ${p.per50}/min${p.work !== null ? `; work ${p.work} ms/frame: ${p.cats}` : ''}; compiles: JIT ${p.jitMsPerMin} ms/min, ${p.programs} GL programs built (${p.programMs} ms)`);
+      if (p.slowShares) L.push(`      slow frames' time (%): ${p.slowShares}; ${worstText(p.worst)}`);
+      if (p.extra) L.push(`      other sample fields (mean): ${pairs(p.extra)}`);
+    }
+    if (q) {
+      L.push(`  visible play, ${q.summaries} of ${r.play.of} summaries (${q.seconds} s): ${q.fps} fps; ${summaryText(q)}`);
+      if (q.extra) L.push(`      other summary fields (mean): ${pairs(q.extra)}`);
+    }
+    if (!p && !q) L.push('  visible play: none');
+    if (r.hiddenTab) { const h = r.hiddenTab; L.push(`  hidden tab: ${h.seconds} s, ${h.times} time(s); guest MIPS ${h.mipsHidden ?? '-'} hidden vs ${h.mipsVisible ?? '-'} visible (x${h.ratio ?? '-'})${h.mipsBefore !== null ? `, ${h.mipsBefore} in the ${BEFORE_S} s before hiding (x${h.ratioBefore ?? '-'})` : ''}; worker busy ${h.busyHidden}% vs ${h.busyVisible ?? '-'}%; ${h.fpsHidden} fps presented while hidden`); }
     for (const st of r.stretches) {
-      L.push(`  ${st.at} ${st.kind.padEnd(9)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps busy ${st.busy}% >33 ms ${st.per33}/min >50 ms ${st.per50}/min${st.work !== null ? `; work ${st.work} ms/frame: ${st.cats}` : ''}`);
-      if (st.slowShares) L.push(`      slow frames' time (%): ${st.slowShares}; worst ${st.worst[0]} ms (work ${st.worst[1]}: ${Object.entries(st.worst[2]).map(([k, v]) => `${k} ${v}`).join(', ')})`);
+      if (st.kind === 'hidden') { L.push(`  ${st.at} ${label(st.kind)} ${String(st.seconds).padStart(5)} s (set apart: the tab hidden, or its first frame back) ${st.fps} fps busy ${st.busy}%${st.mips !== null ? ` MIPS ${st.mips}` : ''}${st.worst ? `; longest frame ${st.worst[0]} ms` : ''}`); continue; }
+      L.push(`  ${st.at} ${label(st.kind)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps busy ${st.busy}%${st.mips !== null ? ` MIPS ${st.mips}` : ''} >33 ms ${st.per33}/min >50 ms ${st.per50}/min${st.work !== null ? `; work ${st.work} ms/frame: ${st.cats}` : ''}`);
+      if (st.slowShares) L.push(`      slow frames' time (%): ${st.slowShares}; ${worstText(st.worst)}`);
     }
     if (r.audio && r.audio.verdict !== 'none') L.push(`  ${audioText(r.audio)}`);
     for (const line of compatLines(r.compat)) L.push(`  ${line}`);
     if (r.summaryStretches.length) L.push('  summaries (every ~20 s), merged per stretch:');
     for (const st of r.summaryStretches) {
-      L.push(`  ${st.at ?? '--:--:--'} ${st.kind.padEnd(9)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps; frame ms p50 ${st.p50} p90 ${st.p90} p99 ${st.p99} max ${st.max}; >33 ${st.per33}/min >40 ${st.per40} >50 ${st.per50} >100 ${st.per100}; draws/frame ${st.drawsPerFrame ?? '-'}, GL calls/frame ${st.glCallsPerFrame ?? '-'}; GPU ${typeof st.gpu === 'object' && st.gpu ? `${st.gpu.mean} ms/frame p50 ${st.gpu.p50} p99 ${st.gpu.p99} (${st.gpu.frames} frames timed)` : st.gpu ?? '-'}${st.renderWaitMs !== null ? `; render worker waits ${st.renderWaitMs} ms/frame, replay ${st.replayMs}` : ''}${st.visible !== null && st.visible < 0.99 ? `; visible ${Math.round(st.visible * 100)}%` : ''}`);
+      if (st.kind === 'hidden') { L.push(`  ${st.at ?? '--:--:--'} ${label(st.kind)} ${String(st.seconds).padStart(5)} s (set apart) visible ${Math.round((st.visible ?? 1) * 100)}%, ${st.fps} fps, longest frame ${st.max} ms`); continue; }
+      L.push(`  ${st.at ?? '--:--:--'} ${label(st.kind)} ${String(st.seconds).padStart(5)} s ${String(st.fps).padStart(5)} fps; ${summaryText(st)}`);
       if (st.work !== null) L.push(`      work ${st.work} ms/frame: ${st.cats}${st.slowShares ? `; slow frames' time (%): ${st.slowShares}` : ''}`);
       // (gfx/flicker-probe.js: frame triples sampled every 10 s, % of their pixels going A-B-A where nothing moved — the
       // flicker; a summary without `still`, from the probe's first version (2026-11-17 morning): only A-B-A anywhere, a
@@ -353,10 +538,13 @@ export function perfSessions(lines, { from = null, to = null, session = null, ga
     const day = typeof r.at === 'string' ? r.at.slice(0, 10) : null;
     if (day && ((from && day < from) || (to && day > to))) continue;
     let s = by.get(r.session);
-    if (!s) by.set(r.session, (s = { id: r.session, game: r.game ?? null, runtime: r.runtime, first: r.at ?? null, env: null, probe: null, seqs: new Set(), mins: [], tot: null, totSeq: -1, len: 0, vis: 0, hid: 0, final: false, version: null, build: null, tier: null, bench: null }));
+    if (!s) by.set(r.session, (s = { id: r.session, game: r.game ?? null, runtime: r.runtime, first: r.at ?? null, t0: null, env: null, probe: null, seqs: new Set(), mins: [], tot: null, totSeq: -1, len: 0, vis: 0, hid: 0, final: false, version: null, build: null, tier: null, bench: null }));
     if (s.seqs.has(r.seq)) continue; // (a record sent twice)
     s.seqs.add(r.seq);
     if (r.at && (!s.first || r.at < s.first)) s.first = r.at;
+    // (the recording's start on the server's clock — its minutes' `t` count from it —: a record's receipt less its age,
+    // the least delayed record's)
+    const t0 = Date.parse(r.at) - (r.len ?? NaN) * 1000; if (Number.isFinite(t0) && (s.t0 === null || t0 < s.t0)) s.t0 = t0;
     if (r.env) s.env = r.env; if (r.probe) s.probe = r.probe;
     for (const k of ['version', 'build', 'tier', 'bench']) if (r[k]) s[k] = r[k];
     s.mins.push(...(r.mins ?? []));
@@ -380,33 +568,98 @@ function sessionFigures(s) {
     machine: machineLine(s.env), probe: s.probe };
 }
 
-/** The sessions grouped per game × GPU: medians over the sessions, the merged frame times, the worst minutes, the slow frames' causes. */
-export function perfReport(sessions, { minSeconds = 60 } = {}) {
+/**
+ * A passive record's minutes' classes (windowClass): by the session's samples in the minute's time when the page sent
+ * them too (`samples`: the Windows games' — draws per frame, visibility, the frame back from a hidden tab), else by its
+ * hidden time, its phase (the ports': menu, loading) and its frames.
+ */
+export function entryClasses(s, samples = null) {
+  const tl = samples?.length && s.t0 !== null ? classTimeline(samples, sampleClasses(samples)) : null;
+  return s.mins.map((e) => {
+    if ((e.hid ?? 0) > 0) return 'hidden';
+    if (tl) { const a = s.t0 + e.t * 1000, c = tl.of(a, a + ((e.s ?? 0) + (e.hid ?? 0)) * 1000); if (c) return c; }
+    return windowClass({ seconds: e.s ?? 0, frames: e.n ?? 0, phase: e.ph ?? null });
+  });
+}
+
+/**
+ * A minute's frames into a histogram from its percentiles (a record keeps no histogram per minute): those up to its p50
+ * (the frame at floor(0.5 n) included) at its p50, those up to its p90 at its p90, the others at its p99 but one at its
+ * maximum — each at its range's top (the percentiles are bucket tops), the tail above p99 at p99: its frames are
+ * unknown, and putting 1 % of every minute at its maximum would make the merged p99 a maximum.
+ */
+function entryHist(h, e) {
+  const n = e.n ?? 0; if (!n || e.p50 === null || e.p50 === undefined) return;
+  const c50 = Math.min(n, Math.floor(0.5 * n) + 1), c90 = Math.min(n, Math.floor(0.9 * n) + 1), top = n > c90 ? 1 : 0;
+  const put = (v, k) => { if (k > 0 && Number.isFinite(v)) h[histBucket(Math.max(0, v - 0.001))] += k; };
+  put(e.p50, c50); put(e.p90 ?? e.p50, c90 - c50); put(e.p99 ?? e.p90 ?? e.p50, n - c90 - top);
+  if (top) h[histBucket(e.max ?? e.p99 ?? 0)] += 1;
+}
+
+const r2 = (v) => Math.round(v * 100) / 100;
+/**
+ * One session's figures over its play minutes (`classes`: entryClasses): its totals' when every minute is play (exact),
+ * else added up from its play minutes (the frame-time percentiles then approximate: entryHist). null without a play
+ * minute. `windows`: its minutes' seconds per class; `hist` its play frames.
+ */
+function playFigures(s, classes) {
+  const base = sessionFigures(s), windows = {}, hist = new Array(HIST_N).fill(0);
+  s.mins.forEach((e, i) => { windows[classes[i]] = (windows[classes[i]] ?? 0) + (e.s ?? 0) + (e.hid ?? 0); });
+  for (const k of Object.keys(windows)) windows[k] = Math.round(windows[k]);
+  if (classes.every((c) => c === 'play')) { if (s.tot?.h) histAddSparse(hist, s.tot.h); return { ...base, windows, hist, approx: false }; }
+  const P = s.mins.filter((_, i) => classes[i] === 'play');
+  if (!P.length) return null;
+  const a = { sec: 0, n: 0, f40: 0, f100: 0, max: 0, wN: 0, work: 0, wait: 0, data: null }, gp = {};
+  const series = (k, x) => { if (!(x?.n > 0)) return; const o = (gp[k] ??= { n: 0, ms: 0, p90: 0 }); o.n += x.n; o.ms += x.mean * x.n; o.p90 += (x.p90 ?? x.p99 ?? 0) * x.n; };
+  for (const e of P) {
+    a.sec += e.s ?? 0; a.n += e.n ?? 0; a.f40 += e.f40 ?? 0; a.f100 += e.f100 ?? 0; if ((e.max ?? 0) > a.max) a.max = e.max;
+    if (Number.isFinite(e.work) && e.n) { a.work += e.work * e.n; a.wait += (e.wait ?? 0) * e.n; a.wN += e.n; }
+    series('gpu', e.gpu); series('run', e.gpu?.run); series('fence', e.gpu?.fence);
+    if (e.data) { a.data ??= { n: 0, ms: 0 }; a.data.n += e.data.n ?? 0; a.data.ms += e.data.ms ?? 0; }
+    entryHist(hist, e);
+  }
+  const q = (x) => histQuantile(hist, x, a.max || Infinity), sr = (k) => (gp[k] ? { n: gp[k].n, mean: r2(gp[k].ms / gp[k].n), p90: Math.round(gp[k].p90 / gp[k].n * 10) / 10 } : null);
+  return { ...base, windows, hist, approx: true, seconds: Math.round(a.sec), fps: a.sec ? Math.round(a.n / a.sec * 10) / 10 : null, p50: q(0.5), p90: q(0.9), p99: q(0.99), max: a.max || null,
+    per40: per(a.f40, a.sec), per100: per(a.f100, a.sec), work: a.wN ? r2(a.work / a.wN) : null, wait: a.wN ? r2(a.wait / a.wN) : null,
+    gpu: sr('gpu'), gpuRun: sr('run'), gpuFence: sr('fence'), dataMsPerMin: a.data ? per(a.data.ms, a.sec) : null, dataWaits: a.data?.n ?? null };
+}
+
+/**
+ * The sessions grouped per game × GPU, over their play minutes only (entryClasses: the hidden tab's, the videos' and
+ * loading screens', the menus' minutes set apart and counted): medians over the sessions, the merged frame times, the
+ * worst minutes, the slow frames' causes. `samples`: the classic sessions' samples by session id (buildSessions), to
+ * tell a Windows game's minutes apart.
+ */
+export function perfReport(sessions, { minSeconds = 60, samples = null } = {}) {
   const groups = new Map();
   for (const s of sessions.values()) {
     if ((s.tot?.s ?? s.vis ?? 0) < minSeconds) continue;
     const key = `${s.game ?? '?'}\n${s.gpu}`;
     let g = groups.get(key);
-    if (!g) groups.set(key, (g = { game: s.game, gpu: s.gpu, runtime: s.runtime, sessions: [], hist: new Array(HIST_N).fill(0), max: 0, minutes: [], slow: {}, seconds: 0, noFrames: 0 }));
+    if (!g) groups.set(key, (g = { game: s.game, gpu: s.gpu, runtime: s.runtime, sessions: [], hist: new Array(HIST_N).fill(0), max: 0, minutes: [], slow: {}, seconds: 0, noFrames: 0, noPlay: 0, apart: {}, approx: false, extra: {} }));
     if (!(s.tot?.n > 0)) { g.noFrames++; continue; } // (no frame shown: a start that never drew — counted, not in the medians)
-    g.sessions.push(s); g.seconds += s.tot?.s ?? 0;
-    if (s.tot?.h) histAddSparse(g.hist, s.tot.h);
-    if ((s.tot?.max ?? 0) > g.max) g.max = s.tot.max;
-    for (const e of s.mins) { g.minutes.push({ session: s.id, ...e }); add(g.slow, e.slow); }
+    const classes = entryClasses(s, samples?.get(s.id) ?? null), f = playFigures(s, classes);
+    s.mins.forEach((e, i) => { if (classes[i] !== 'play') g.apart[classes[i]] = (g.apart[classes[i]] ?? 0) + (e.s ?? 0) + (e.hid ?? 0); });
+    if (!f) { g.noPlay++; continue; } // (no play minute: counted, not in the medians)
+    g.sessions.push(f); g.seconds += f.seconds; g.approx ||= f.approx;
+    f.hist.forEach((v, i) => { g.hist[i] += v; });
+    if ((f.max ?? 0) > g.max) g.max = f.max;
+    s.mins.forEach((e, i) => { if (classes[i] === 'play') { g.minutes.push({ session: s.id, ...e }); add(g.slow, e.slow); addExtra(g.extra, e, ENTRY_FIELDS, e.n ?? 0); } });
   }
-  return [...groups.values()].filter((g) => g.sessions.length || g.noFrames).map((g) => {
-    const f = g.sessions.map(sessionFigures), slowTotal = Object.values(g.slow).reduce((a, b) => a + b, 0);
+  return [...groups.values()].filter((g) => g.sessions.length || g.noFrames || g.noPlay).map((g) => {
+    const f = g.sessions.map(({ hist, ...x }) => x), slowTotal = Object.values(g.slow).reduce((a, b) => a + b, 0);
     const m = (k) => median(f.map((x) => x[k]));
     // (the worst minutes: those with the most frames over 40 ms a minute, then the highest p99; at least 20 s of play)
     const worst = g.minutes.filter((e) => (e.s ?? 0) >= 20 && e.n > 0).map((e) => ({ ...e, per40: per(e.f40 ?? 0, e.s) })).sort((a, b) => (b.per40 - a.per40) || ((b.p99 ?? 0) - (a.p99 ?? 0))).slice(0, 3);
     const probes = f.map((x) => x.probe).filter(Boolean);
     return {
-      game: g.game, gpu: g.gpu, runtime: g.runtime, sessions: f.length, noFrames: g.noFrames, minutes: +(g.seconds / 60).toFixed(1),
+      game: g.game, gpu: g.gpu, runtime: g.runtime, sessions: f.length, noFrames: g.noFrames, noPlay: g.noPlay, minutes: +(g.seconds / 60).toFixed(1),
+      apart: Object.fromEntries(Object.entries(g.apart).map(([k, v]) => [k, +(v / 60).toFixed(1)])),
       median: { fps: m('fps'), p50: m('p50'), p90: m('p90'), p99: m('p99'), per40: m('per40'), per100: m('per100'), work: m('work'), wait: m('wait'), gpuMean: median(f.map((x) => x.gpu?.mean)), runMean: median(f.map((x) => x.gpuRun?.mean)), fenceMean: median(f.map((x) => x.gpuFence?.mean)), gpuP90: median(f.map((x) => x.gpu?.p90)), dataMsPerMin: m('dataMsPerMin'), visible: m('visible') },
-      merged: { p50: histQuantile(g.hist, 0.5, g.max || Infinity), p90: histQuantile(g.hist, 0.9, g.max || Infinity), p99: histQuantile(g.hist, 0.99, g.max || Infinity), max: g.max || null },
+      merged: { p50: histQuantile(g.hist, 0.5, g.max || Infinity), p90: histQuantile(g.hist, 0.9, g.max || Infinity), p99: histQuantile(g.hist, 0.99, g.max || Infinity), max: g.max || null, approx: g.approx },
       gpuStates: [...new Set(f.map((x) => x.gpuState).filter(Boolean))],
       slowShares: slowTotal ? Object.fromEntries(Object.entries(g.slow).map(([k, v]) => [k, Math.round(v / slowTotal * 100)]).filter(([, v]) => v >= 1).sort((a, b) => b[1] - a[1])) : null,
-      worst, probe: probes.length ? { atomicsWait1P50: median(probes.map((p) => p.atomicsWait1?.[0])), setTimeout1P50: median(probes.map((p) => p.setTimeout1?.[0])), onBattery: probes.filter((p) => p.battery && !p.battery.charging).length, n: probes.length } : null,
+      extra: extraOut(g.extra), worst, probe: probes.length ? { atomicsWait1P50: median(probes.map((p) => p.atomicsWait1?.[0])), setTimeout1P50: median(probes.map((p) => p.setTimeout1?.[0])), onBattery: probes.filter((p) => p.battery && !p.battery.charging).length, n: probes.length } : null,
       perSession: f,
     };
   }).sort((a, b) => String(a.game).localeCompare(String(b.game)) || a.gpu.localeCompare(b.gpu));
@@ -419,13 +672,15 @@ export function formatPerf(groups) {
   if (!groups.length) L.push('no passive session records (event "perf") in the selection');
   for (const g of groups) {
     const md = g.median;
-    L.push(`${g.game ?? '?'} (${g.runtime}) × ${g.gpu}: ${g.sessions} session(s), ${g.minutes} min of visible play${g.noFrames ? `; ${g.noFrames} session(s) without a frame shown` : ''}`);
-    L.push(`  medians over the sessions: ${v(md.fps)} fps; frame ms p50 ${v(md.p50)} p90 ${v(md.p90)} p99 ${v(md.p99)}; >40 ms ${v(md.per40)}/min >100 ms ${v(md.per100)}/min; work ${v(md.work)} wait ${v(md.wait)} ms/frame; GPU ${md.gpuMean !== null ? `${md.gpuMean} ms/frame p90 ${v(md.gpuP90)}${md.runMean !== null ? `, draw run ${md.runMean}` : ''}${md.fenceMean !== null ? `, fence backlog ${md.fenceMean}` : ''}` : g.gpuStates.join('/') || '-'}; data waits ${v(md.dataMsPerMin)} ms/min; visible ${md.visible !== null ? Math.round(md.visible * 100) + '%' : '-'}`);
-    L.push(`  all frames merged: p50 ${v(g.merged.p50)} p90 ${v(g.merged.p90)} p99 ${v(g.merged.p99)} max ${v(g.merged.max)} ms`);
+    const apart = (o, unit) => CLASSES.filter((k) => k !== 'play' && o?.[k]).map((k) => `${CLASS_LABEL[k]} ${o[k]} ${unit}`).join(', ');
+    L.push(`${g.game ?? '?'} (${g.runtime}) × ${g.gpu}: ${g.sessions} session(s), ${g.minutes} min of visible play${apart(g.apart, 'min') ? `; set apart: ${apart(g.apart, 'min')}` : ''}${g.noPlay ? `; ${g.noPlay} session(s) without a play minute` : ''}${g.noFrames ? `; ${g.noFrames} session(s) without a frame shown` : ''}`);
+    L.push(`  medians over the sessions' play: ${v(md.fps)} fps; frame ms p50 ${v(md.p50)} p90 ${v(md.p90)} p99 ${v(md.p99)}; >40 ms ${v(md.per40)}/min >100 ms ${v(md.per100)}/min; work ${v(md.work)} wait ${v(md.wait)} ms/frame; GPU ${md.gpuMean !== null ? `${md.gpuMean} ms/frame p90 ${v(md.gpuP90)}${md.runMean !== null ? `, draw run ${md.runMean}` : ''}${md.fenceMean !== null ? `, fence backlog ${md.fenceMean}` : ''}` : g.gpuStates.join('/') || '-'}; data waits ${v(md.dataMsPerMin)} ms/min; visible ${md.visible !== null ? Math.round(md.visible * 100) + '%' : '-'}`);
+    L.push(`  play frames merged${g.merged.approx ? ' (≈: a session with other minutes counts its play minutes\' percentiles)' : ''}: p50 ${v(g.merged.p50)} p90 ${v(g.merged.p90)} p99 ${v(g.merged.p99)} max ${v(g.merged.max)} ms`);
     if (g.slowShares) L.push(`  slow frames' time by cause (%): ${Object.entries(g.slowShares).map(([k, x]) => `${k} ${x}`).join(', ')}`);
-    for (const w of g.worst) L.push(`  worst minute: ${w.session} t=${w.t}s ${w.ph ?? '-'} ${w.fps} fps p99 ${v(w.p99)} >40 ms ${w.per40}/min${w.work !== undefined ? ` work ${w.work} wait ${w.wait}` : ''}${w.gpu?.n ? ` gpu ${w.gpu.mean}` : ''}${w.data?.ms ? ` data ${w.data.ms} ms` : ''}${w.slow ? ` slow: ${Object.entries(w.slow).map(([k, x]) => `${k} ${x}`).join(', ')}` : ''}`);
+    if (g.extra) L.push(`  other minute fields (mean over the play frames): ${pairs(g.extra)}`);
+    for (const w of g.worst) L.push(`  worst play minute: ${w.session} t=${w.t}s ${w.ph ?? '-'} ${w.fps} fps p99 ${v(w.p99)} >40 ms ${w.per40}/min${w.work !== undefined ? ` work ${w.work} wait ${w.wait}` : ''}${w.gpu?.n ? ` gpu ${w.gpu.mean}` : ''}${w.data?.ms ? ` data ${w.data.ms} ms` : ''}${w.slow ? ` slow: ${Object.entries(w.slow).map(([k, x]) => `${k} ${x}`).join(', ')}` : ''}`);
     if (g.probe) L.push(`  host timing: Atomics.wait(1) late p50 ${v(g.probe.atomicsWait1P50)} ms, setTimeout(1) ${v(g.probe.setTimeout1P50)} ms (median of ${g.probe.n}); ${g.probe.onBattery} on battery`);
-    for (const s of g.perSession) L.push(`    ${(s.at ?? '').slice(0, 16).replace('T', ' ')} ${s.session} ${s.seconds} s${s.visible !== null && s.visible < 0.99 ? ` (visible ${Math.round(s.visible * 100)}%)` : ''}${s.final ? '' : ' (no end record)'}: ${v(s.fps)} fps p99 ${v(s.p99)} >40 ${v(s.per40)}/min work ${v(s.work)} gpu ${s.gpu ? s.gpu.mean : v(s.gpuState)}${s.gpuRun ? ` run ${s.gpuRun.mean}` : ''}${s.gpuFence ? ` fence ${s.gpuFence.mean}` : ''}${s.tier ? ` tier ${s.tier}` : ''} | ${s.machine}${s.build ? ` | build ${s.build}` : ''}`);
+    for (const s of g.perSession) L.push(`    ${(s.at ?? '').slice(0, 16).replace('T', ' ')} ${s.session} ${s.seconds} s of play${apart(s.windows, 's') ? ` (set apart: ${apart(s.windows, 's')})` : ''}${s.visible !== null && s.visible < 0.99 ? ` (visible ${Math.round(s.visible * 100)}%)` : ''}${s.final ? '' : ' (no end record)'}: ${v(s.fps)} fps p99 ${s.approx ? '≈' : ''}${v(s.p99)} >40 ${v(s.per40)}/min work ${v(s.work)} gpu ${s.gpu ? s.gpu.mean : v(s.gpuState)}${s.gpuRun ? ` run ${s.gpuRun.mean}` : ''}${s.gpuFence ? ` fence ${s.gpuFence.mean}` : ''}${s.tier ? ` tier ${s.tier}` : ''} | ${s.machine}${s.build ? ` | build ${s.build}` : ''}`);
   }
   return L.join('\n');
 }
@@ -445,7 +700,10 @@ function main(args) {
   if (!inputs.length) { console.error('usage: node tools/dev/telemetry-report.mjs <telemetry dir | file.jsonl>... [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--session id] [--game manifest] [--bench [name]] [--suite [run]] [--players] [--compat] [--perf [--gpu name]] [--min-seconds 60] [--json]'); return 2; }
   const range = { from: opt('from', null), to: opt('to', null) };
   if (args.includes('--perf')) {
-    const groups = perfReport(perfSessions(readLines(telemetryFiles([...new Set(inputs)], range)), { ...range, session: opt('session', null), game: opt('game', null), gpu: opt('gpu', null), players: args.includes('--players') }), { minSeconds: Number(opt('min-seconds', 60)) });
+    const lines = readLines(telemetryFiles([...new Set(inputs)], range)), sel = { ...range, session: opt('session', null), game: opt('game', null) };
+    // (a Windows game's page sends its samples as well: they tell its minutes' videos, menus and hidden tab apart)
+    const samples = new Map([...buildSessions(lines, sel).values()].map((s) => [s.id, s.samples]));
+    const groups = perfReport(perfSessions(lines, { ...sel, gpu: opt('gpu', null), players: args.includes('--players') }), { minSeconds: Number(opt('min-seconds', 60)), samples });
     console.log(args.includes('--json') ? JSON.stringify(groups, null, 1) : formatPerf(groups));
     return 0;
   }
