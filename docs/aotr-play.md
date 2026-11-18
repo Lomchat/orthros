@@ -362,3 +362,54 @@ two alternate); a game that redraws its frames (AotR does) cannot see it, and ch
 a single back buffer keeping its contents. **Not done**: the game's depth surface (`SetDepthStencilSurface`) is still
 not what GL attaches — each color target keeps its own; AotR's reflection and glow targets use the main 1600x1200 depth
 surface with a smaller viewport, which this happens to reproduce since they clear it first.
+
+## The pause menu's veil: RotWK 2.02, the owner's display report (2026-11-18, cause still open)
+
+**What his report shows** (session t8flwb3q: RotWK 2.02 at 1400x1050, RTX 4050 / ANGLE D3D11, render worker,
+`dbg=ORTHROS_FLIP_ROTATE=0`; `node tools/dev/flicker-report.mjs <telemetry> --session t8flwb3q`): 60 back buffers at
+30 fps, one command signature for all of them, and the pause menu's darkening fainter in some frames. Measured on the
+pictures (each frame's scene pixels against a normal frame, away from the menu's additive disc: the veil multiplies the
+scene by 1 - alpha, alpha 0.80 normally): **every third frame, in bursts every 14-17 frames** — frames 1683, 1686, 1689,
+1692 | 1697, 1700, 1703 | 1714, 1717, 1720 | 1728, 1731, 1734, 1737 —, alpha falling within a burst (~0.73 → ~0.55 →
+~0.32 or ~0.06), the same levels coming back exactly (1686 = 1731, 1689 = 1734, 1700 = 1714). The scene is the same
+behind, the UI over it unchanged, the screen shows those back buffers.
+
+**What the veil is** (Node runs and the game's code): a 9 x 5 grid of 45 vertices / 64 triangles covering the screen
+(not a disc: the circle is the next layer's additive swirl texture), `XYZ|NORMAL|DIFFUSE`, a MANAGED vertex buffer
+(usage WRITEONLY) never locked in the pause menu, vertex alpha 255, lit with a black material; alpha = vertex alpha x
+TEXTUREFACTOR (stage 1 MODULATE CURRENT, TFACTOR). The game sets TEXTUREFACTOR = trunc(255 x opacity)
+(lotrbfme2ep1.exe 0x5475f7..0x547693, cached at 0xdd3128); the opacity is the render object's +0x90 x +0x94 x +0x2f4
+(0x549010), +0x90 copied every frame from its pivot (0x59cd70 → 0x46c695), the pivot's opacity the HLOD animation's
+opacity channel at the integer frame (HTree update 0x563310: `fistp` of the float frame, 0 when not below the frame
+count; channel lookup 0x563d97). The float frame (Compute_Current_Frame, 0x5a4770) advances by frame rate x (sync time
+− last sync) — an unsigned millisecond difference — and, in this animation's mode (4: once, to an end frame), is clamped
+at its end frame 30 (31 frames at 30 fps: the fade-in is its first ~16 frames, 0.044 → 0.8). The pause layer has its
+own sync time (0x4a8a07..0x4a8a83: base + timeGetTime() − t0, a step outside [0, 100] ms — backwards included — taken as
++100 ms and the base reset; the game's sync times restored after it). Once the fade has ended no time value the game
+reads can bring this frame back below 30.
+
+**Not reproduced in Node** (tools/bench/startbench.mjs rotwk-202, rotwk-skirmish.txt's start then Escape, the real clock:
+the pause menu paced at 30.2 fps, frame p50 33 ms; a `node --import` hook logging, per pause frame, the layer's draws as
+the game made them and as they reach GL through a shadow of the no-op WebGL context):
+| run | pause frames | the veil (guest) | the veil (GL) |
+|---|---|---|---|
+| 1024x768, in-thread backend | 880 | vertex alpha 255 x 45, TEXTUREFACTOR 0xcc000000 in every frame after the fade-in (0x0b 0x28 0x50 0x7b 0xa3 0xc0 0xcc), material unchanged, buffer never locked | same program, uniforms (u_tfactor 0.8), vertex bytes, indices, raster state in every frame (only the FLIP chain's framebuffer rotates) |
+| 1400x1050, the render worker's recording replayed in-thread (inline), mouse moved over the menu every 0.4 s | 997 | the same | the same |
+| 1024x768, host stalls (95 x 20 ms, frame p99 89 ms) | 798 | the same; animation frame 30 throughout | — |
+The two other layer draws (additive swirl, inscription) change only by their texture matrices (a scroll; lost on this
+build: the texture-transform padding fix 15f9729 is not on main). The time the game read per frame: timeGetTime 50-85
+times and QueryPerformanceCounter 3-5 times on the main thread (their JIT fast paths off for the count), 1 ms steps,
+never backwards nor repeated, both from the same clock; the frame limiter's Sleep(0) 50-80 times. So neither the game's
+own vertex alpha nor Orthros' uploads (no ring, no stale buffer: nothing is written) move the veil here; the game's
+clock cannot either (above). His levels are the opacity channel's own values at earlier animation frames (0.044 at
+frame 0, 0.315 near frame 4, 0.756 near 13) — or a TEXTUREFACTOR coming from elsewhere: open.
+
+**To tell them apart on his machine**: the display report now carries, per back buffer, a values record beside the
+command signature (d3d8-webgl.js `valDraw`: `vsig`, a hash of the color values the draws read — TEXTUREFACTOR, material,
+ambient, alpha reference, fog —, and `tf`, the draws whose TEXTUREFACTOR changed since the previous frame, with both
+values; flicker-report.mjs prints them). In his next pause report, a dip frame whose `tf` names the veil's draw
+(0xcc000000 → a lower value) is the game's (or the emulator's) value — the animation frame to follow up —; a dip frame
+with the same `vsig` is GL's work on the same commands and values. Checked on the game in Node (every frame signed,
+1400x1050, in-thread backend): one values signature over 850 still pause frames, and the fade-in's frames named — the
+veil's draw (#298 of ~300) 0x0b → 0x28 → 0x50 → 0x7b → 0xa3 → 0xc0 → 0xcc, the two other layers after it. (`tf` compares
+draws by index: a frame with another number of draws shows the shifted ones too.)

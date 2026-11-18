@@ -4,7 +4,8 @@
 //   buffers the renderer presented, and screen-<session>-<id>-p<n>.png, what the page's canvases held at each
 //   requestAnimationFrame; under each picture its number, frame / time (ms since the report's start, one clock for both
 //   strips), its change since the previous picture (C, %), the still A-B-A of the last three (A, %: where nothing else
-//   moved) and the A-B-B-A of the last four (B, %); the back buffers' framebuffer and command signature, the screen's
+//   moved) and the A-B-B-A of the last four (B, %); the back buffers' framebuffer and command signature (and, in the
+//   text, the values signature and the draws whose TEXTUREFACTOR changed: d3d8-webgl.js valDraw), the screen's
 //   canvas on top, the bitmaps received since the previous rAF and the back buffer it matched. A border marks a frame:
 //   red still A-B-A >= 0.1 %, orange A-B-B-A >= 0.1 %, magenta a screen picture no back buffer had, cyan a screen that
 //   went back to an older back buffer;
@@ -44,6 +45,11 @@ function report(rec) {
     summary('back buffers', B, rec.bb.analysis?.summary);
     const fbs = [...new Set(B.frames.map((f) => f.fb))], sigs = [...new Set(B.frames.map((f) => f.sig))];
     console.log(`  framebuffers blitted: ${fbs.join(' ')} (${B.frames.map((f) => f.fb).join(' ').slice(0, 400)}); command signatures: ${sigs.length} distinct (${seqOf(B.frames.map((f) => f.sig)).slice(0, 400)})`);
+    // (the values the draws read beside the commands — TEXTUREFACTOR, material...: a later build's reports; d3d8-webgl.js valDraw)
+    if (B.frames.some((f) => f.vsig)) {
+      const vs = [...new Set(B.frames.map((f) => f.vsig))], tfs = B.frames.map((f, k) => [f, k]).filter(([f]) => f.tf?.length);
+      console.log(`  values signatures: ${vs.length} distinct (${seqOf(B.frames.map((f) => f.vsig)).slice(0, 400)}); frames whose draws' TEXTUREFACTOR changed: ${tfs.length ? tfs.map(([f, k]) => `#${k} f${f.f} [${f.tf.map(([i, a, b]) => `draw ${i} ${a}->${b}`).join(', ')}]`).join('; ').slice(0, 1200) : 'none'}`);
+    }
   } else console.log('--- no back-buffer strip');
   if (C) {
     const ls = rec.screen.layers ?? [];
@@ -69,7 +75,7 @@ function report(rec) {
   // (frame by frame: every frame with --frames, else the marked ones)
   const flagB = (k) => (B.an.still[k] ?? 0) >= 1000 || (B.an.abba[k] ?? 0) >= 1000;
   const flagC = (k) => (C.an.still[k] ?? 0) >= 1000 || (C.an.abba[k] ?? 0) >= 1000 || C.frames[k].match?.unmatched || C.frames[k].match?.back;
-  if (B) { const rows = B.frames.map((f, k) => [f, k]).filter(([, k]) => allFrames || flagB(k)); if (rows.length) console.log(`--- back-buffer frames${allFrames ? '' : ' marked'} (t: ms since the report's start; C changed, A still A-B-A, B A-B-B-A, %):`); for (const [f, k] of rows) console.log(`  #${k} f${f.f} t ${f.rt} picture ${f.img} fb ${f.fb} bb ${f.bb} sig ${f.sig}${f.gamma ? ' gamma' : ''}${f.db ? ` drawing buffer ${f.db}` : ''}: C ${pct(B.an.chg[k])} A ${pct(B.an.still[k])} (any ${pct(B.an.aba[k])}) B ${pct(B.an.abba[k])}`); }
+  if (B) { const rows = B.frames.map((f, k) => [f, k]).filter(([, k]) => allFrames || flagB(k)); if (rows.length) console.log(`--- back-buffer frames${allFrames ? '' : ' marked'} (t: ms since the report's start; C changed, A still A-B-A, B A-B-B-A, %):`); for (const [f, k] of rows) console.log(`  #${k} f${f.f} t ${f.rt} picture ${f.img} fb ${f.fb} bb ${f.bb} sig ${f.sig}${f.vsig ? ` vals ${f.vsig}` : ''}${f.tf?.length ? ` TF ${f.tf.map(([i, a, b]) => `d${i} ${a}->${b}`).join(' ')}` : ''}${f.gamma ? ' gamma' : ''}${f.db ? ` drawing buffer ${f.db}` : ''}: C ${pct(B.an.chg[k])} A ${pct(B.an.still[k])} (any ${pct(B.an.aba[k])}) B ${pct(B.an.abba[k])}`); }
   if (C) { const rows = C.frames.map((f, k) => [f, k]).filter(([, k]) => allFrames || flagC(k)); if (rows.length) console.log(`--- screen frames${allFrames ? '' : ' marked'}:`); for (const [f, k] of rows) { const m = f.match; console.log(`  #${k} t ${f.rt} picture ${f.img} top ${f.top} state ${f.ls} bitmaps ${f.a}: C ${pct(C.an.chg[k])} A ${pct(C.an.still[k])} (any ${pct(C.an.aba[k])}) B ${pct(C.an.abba[k])}${f.df !== undefined ? ` device frame ${f.df}` : ''}${m?.none ? '; no back buffer recorded in its time' : m ? `; shows back buffer #${m.j} (f${m.f}, ${m.lag} ms before, by ${m.by}) ${pct(m.diff)} % apart (mean ${m.mad})${m.other !== undefined ? `, closer to #${m.other} (${pct(m.otherDiff)} %)` : ''}${m.unmatched ? ' UNMATCHED' : ''}${m.back ? ' BACK' : ''}` : ''}`); } }
   if (B) sheets(`bb-${S}`, B, (f, k) => [`#${k} F${f.f} T${f.rt}`, `C${pct(B.an.chg[k])} A${pct(B.an.still[k])} B${pct(B.an.abba[k])}`, `${f.fb} ${f.sig ?? ''}`], (k) => ((B.an.still[k] ?? 0) >= 1000 ? RED : (B.an.abba[k] ?? 0) >= 1000 ? ORANGE : null));
   if (C) sheets(`screen-${S}`, C, (f, k) => [`#${k} T${f.rt} ${String(f.top ?? '-').toUpperCase()} N${f.a}`, `C${pct(C.an.chg[k])} A${pct(C.an.still[k])} B${pct(C.an.abba[k])}`, f.match ? (f.match.none ? 'NO BB IN TIME' : `BB#${f.match.j} F${f.match.f} ${f.match.lag}MS ${pct(f.match.diff)}`) : ''],

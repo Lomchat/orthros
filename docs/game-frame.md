@@ -64,7 +64,10 @@ What it records (`src/shared/display-report.js`), at the same time:
 - **the back buffers** (`src/gfx/frame-report.js`, in the renderer — the render worker, or the emulator's worker with
   `?glworker=0`): every presented back buffer downscaled on the GPU (halving blits, then ≤ 320x180, read back through
   pixel buffers and fences: no stall), its device frame, present time, the framebuffer blitted to the canvas, the
-  back-buffer surface, the gamma pass and the frame's command signature. The page asks for it through the worker debug
+  back-buffer surface, the gamma pass, the frame's command signature and its values record (`vsig`: a hash of the color
+  values the draws read — TEXTUREFACTOR, material, ambient, alpha reference, fog —, `tf`: the draws whose
+  TEXTUREFACTOR changed since the previous frame; `d3d8-webgl.js` valDraw: under one command signature, a picture that
+  changes with the values is the game's, one that changes without them is GL's). The page asks for it through the worker debug
   global `ORTHROS_FLICKER_REPORT=<id>` (the worker's `dbg` message, forwarded to the render worker): `src/web/worker.js`,
   a snapshot source, is unchanged;
 - **the screen** (`src/web/screen-report.js`, in the page): at every requestAnimationFrame, the visible game canvases
