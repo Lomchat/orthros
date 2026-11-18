@@ -21,8 +21,8 @@
 //   tms, pics, summary, notes, took }:
 // - `rects`: [x, y, w, h] in grid points (rows from the top of the picture), each RECT x RECT points; `rectKinds`: 'var'
 //   (where the presented frames varied most), 'fix' (fixed places);
-// - a frame: { f (device frame), t (ms since the first), n (draws), sig, vsig, tf (the values record: d3d8-webgl.js
-//   valDraw), fb, ctl (1: control phase), odd (ppm of the grid points that went A-B-A, or came back after a run of frames: runOdd, ODD_PPM), away (ppm away from the
+// - a frame: { f (device frame), t (ms since the first), n (draws), sig, vsig, tf, csig, cn (the values record and the
+//   shader constants read: d3d8-webgl.js valDraw), fb, ctl (1: control phase), odd (ppm of the grid points that went A-B-A, or came back after a run of frames: runOdd, ODD_PPM), away (ppm away from the
 //   median picture), mad (mean absolute difference from it), d: [[draw index, meta index, vals index, tms index (-1
 //   none), start, count, vertex base, buffer uploads], ...], p: base64 of uint16 little-endian sums of each rect's
 //   luminance (0-255 per point, RECT x RECT points): for each probed draw in `d`'s order its before then its after (2 x

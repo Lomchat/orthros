@@ -3,6 +3,7 @@
 // attributes `a_s<usage>_<index>`, 256/32 float constants, integer/bool constants, static flow
 // control) to GLSL ES 3.00. Public documentation of the token format only.
 import { MAX_STAGES, D3D_TO_GL_POSITION, VS_INVARIANT, fragmentTail, leanShaders, usedRegs, texelOf } from './d3d8-shaders.js';
+import { shaderInfo, RSET } from '../win32/d3dx9-preshader.js';
 
 export const DECLTYPE = { FLOAT1: 0, FLOAT2: 1, FLOAT3: 2, FLOAT4: 3, D3DCOLOR: 4, UBYTE4: 5, SHORT2: 6, SHORT4: 7, UBYTE4N: 8, SHORT2N: 9, SHORT4N: 10, USHORT2N: 11, USHORT4N: 12, UDEC3: 13, DEC3N: 14, FLOAT16_2: 15, FLOAT16_4: 16, UNUSED: 17 };
 export const USAGE = { POSITION: 0, BLENDWEIGHT: 1, BLENDINDICES: 2, NORMAL: 3, PSIZE: 4, TEXCOORD: 5, TANGENT: 6, BINORMAL: 7, TESSFACTOR: 8, POSITIONT: 9, COLOR: 10, FOG: 11, DEPTH: 12, SAMPLE: 13 };
@@ -76,6 +77,37 @@ function* instructions(code) {
     yield { op, ctrl, args, coissue: (t & 0x40000000) !== 0 };
     i = j;
   }
+}
+
+/** the matrix instructions' rows: their last source names that many consecutive registers (m4x4, m4x3, m3x4, m3x3, m3x2) */
+const MATRIX_ROWS = { 20: 4, 21: 3, 22: 4, 23: 3, 24: 2 };
+/**
+ * The float constant registers a shader (vs / ps 1.x - 3.0) reads from the device, in order, without the ones it
+ * defines itself (def) — what a signed frame's constants record hashes for a draw (d3d8-webgl.js valDraw). A register
+ * read through an address register (c[a0.x + n]: a matrix palette) stands for every register from n to the end of
+ * the constant its table names there (D3DX's CTAB comment), or to the last register when the shader carries no table.
+ */
+export function constReads9(code, limit = 256) {
+  const major = (code[0] >>> 8) & 0xff, defs = new Set(), used = new Set(), rel = [];
+  for (const ins of instructions(code)) {
+    const a = ins.args;
+    if (ins.op === 81) { defs.add(a[0] & 0x7ff); continue; }
+    if (ins.op === 31 || ins.op === 47 || ins.op === 48 || ins.op === 0xfffd) continue; // (dcl, defb, defi, phase)
+    for (let k = NO_DST_OPS.has(ins.op) ? 0 : 1; k < a.length; k++) {
+      const tok = a[k], indexed = (tok & 0x2000) !== 0;
+      if (regType(tok) === 2) {
+        const n = tok & 0x7ff;
+        if (indexed) rel.push(n);
+        else for (let r = 0, rows = k === a.length - 1 ? MATRIX_ROWS[ins.op] ?? 1 : 1; r < rows; r++) used.add(n + r);
+      }
+      if (indexed && major >= 2) k++; // (the address register's token)
+    }
+  }
+  if (rel.length) {
+    const table = shaderInfo(new Uint8Array(code.buffer, code.byteOffset, code.byteLength)).constants.filter((c) => c.set === RSET.FLOAT4);
+    for (const n of rel) { const c = table.find((x) => n >= x.reg && n < x.reg + x.count); for (let r = n, e = c ? c.reg + c.count : limit; r < e; r++) used.add(r); }
+  }
+  return Uint16Array.from([...used].filter((r) => r < limit && !defs.has(r)).sort((x, y) => x - y));
 }
 
 /**

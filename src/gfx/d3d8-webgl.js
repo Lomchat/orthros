@@ -6,7 +6,7 @@
 // sampler states, shader objects (SM 1.x–2.x), stream offsets, base vertices, MRT/scissor.
 import { FMT, FLOAT_FORMATS, surfacePitch, surfaceBytes, readFloatTexels, writeFloatTexels, floatsToRgba8, texKindOf, texChannels } from '../win32/d3d8.js';
 import { fvfLayout, declLayout, ffVertexShader, ffFragmentShader, ffProgramFromKey, flatVaryings, translateVertexShader, translatePixelShader, leanShaders, RS, TSS, TOP, TS_WORLD, TS_VIEW, TS_PROJECTION, TS_TEXTURE0, MAX_STAGES, MAX_LIGHTS } from './d3d8-shaders.js';
-import { translateVertexShader9, translatePixelShader9, semName, disasmShader9, OPN, instanceCount, streamDivisor } from './d3d9-shaders.js';
+import { translateVertexShader9, translatePixelShader9, semName, disasmShader9, OPN, instanceCount, streamDivisor, constReads9 } from './d3d9-shaders.js';
 import { programSourceKey, programSourceId, PROGRAM_GLSL_VERSION } from './program-id.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { apiOpt } from '../core/api-opt.js';
@@ -245,6 +245,8 @@ export class WebGLDevice {
     this.frameSig = 0; this.sigSeq = 0; this.sigOn = false; // (the frame's command signature, made while sigOn: sigMix)
     // (and its values record, made with it: valDraw — `valFrame` the last signed frame's, read at its present)
     this.valSig = 0; this.valN = 0; this.valTf = new Uint32Array(256); this.valPrev = new Uint32Array(256); this.valPrevN = -1; this.valFrame = null;
+    // (the shader constants its draws read: each draw's hash and the frame's, the registers each shader reads — valConsts)
+    this.valCsig = 0; this.valC = new Uint32Array(256); this.valPrevC = new Uint32Array(256); this.valReads = new WeakMap(); this.valCw = [null, null];
     this.captureAt = opts.captureFrame ?? 0; this.frame = 0; this.capturing = false; // one-frame draw dump (like a mini PIX)
     this.dump = opts.dump ?? null; this.captureDraws = !!opts.captureDraws; this.dumpedTex = new Set(); // capture images: bound textures, target after each draw
     // adaptive internal render resolution (render-scale.js): the scale of the back buffers and of the render targets of
@@ -951,14 +953,25 @@ export class WebGLDevice {
    * game sets per draw — TEXTUREFACTOR, the material, the ambient color, the alpha reference, the fog color and range —
    * mixed into `valSig`, and each draw's TEXTUREFACTOR kept (`valTf`, by draw index). At the present (valPresent) the
    * frame's record: that hash and the draws whose TEXTUREFACTOR differs from the previous signed frame's draw of the same
-   * index. Matrices and shader constants are left out (they move by themselves: a camera, a scrolling texture). A
-   * picture that changes under one command signature then says whether the game's own values changed with it — the
-   * owner's RotWK pause menu, whose darkening layer (TEXTUREFACTOR x vertex alpha) faded for one frame every third one
-   * (docs/aotr-play.md "The pause menu's veil") — or not (the same commands and values: what GL makes of them).
+   * index. Matrices are left out (they move by themselves: a camera, a scrolling texture). A picture that changes
+   * under one command signature then says whether the game's own values changed with it — the owner's RotWK pause
+   * menu, whose darkening layer (TEXTUREFACTOR x vertex alpha) faded for one frame every third one (docs/aotr-play.md
+   * "The pause menu's veil") — or not (the same commands and values: what GL makes of them).
+   * The float constants a draw's shaders read (constReads9) are a record of their own — a D3DX effect's values, an
+   * opacity or a color, reach the shaders there and not in TEXTUREFACTOR, but so do a camera's matrices and a clock,
+   * which move in any moving picture: `valC`, each draw's hash of them, and `valCsig`, the frame's; at the present,
+   * how many draws read other constants than the previous signed frame's draw of the same index, and the first of
+   * them. On a still screen (a pause, a menu) a few animated draws at most differ; when most do, the materials are
+   * taking turns (Age of the Ring's flicker while a building is under construction: D3DX parameter blocks applied
+   * for one another, docs/aotr-play.md "Parameter blocks").
    */
   valDraw(dev) {
     const k = this.valN++;
     if (k >= this.valTf.length) { const n = new Uint32Array(this.valTf.length * 2); n.set(this.valTf); this.valTf = n; }
+    if (k >= this.valC.length) { const n = new Uint32Array(this.valC.length * 2); n.set(this.valC); this.valC = n; }
+    let ch = 0;
+    if (dev.api9) { if (dev.vsObj) ch = this.valConsts(0x3c6ef372, 0, dev.vsObj, dev.vsConst); if (dev.psObj) ch = this.valConsts(ch ^ 0x5bd1e995, 1, dev.psObj, dev.psConst); }
+    this.valC[k] = ch; this.valCsig = Math.imul((this.valCsig ^ (this.valCsig >>> 15)) ^ ch, 0x2c1b3c6d);
     const tf = this.rs(RS.TEXTUREFACTOR, 0xffffffff) >>> 0;
     this.valTf[k] = tf;
     const m = dev.material, mw = m ? (this.valMatW?.buffer === m.buffer && this.valMatW.byteOffset === m.byteOffset ? this.valMatW : (this.valMatW = new Int32Array(m.buffer, m.byteOffset, m.length))) : null;
@@ -967,13 +980,28 @@ export class WebGLDevice {
     for (const s of VAL_RS) h = Math.imul((h ^ (h >>> 13)) ^ (this.rs(s, 0) | 0), 0xc2b2ae35);
     this.valSig = h;
   }
-  /** a signed frame's values record (valDraw), at its present: { vsig, draws, tf: [[draw, previous, now], ...] (8 at most) } */
+  /** `h` mixed with the float constants shader `sh` reads (constReads9, kept per shader) in `src`, the device's registers of `slot` (0 vertex, 1 pixel) */
+  valConsts(h, slot, sh, src) {
+    let reads = this.valReads.get(sh);
+    if (reads === undefined) this.valReads.set(sh, reads = constReads9(sh.code, src.length >> 2));
+    let w = this.valCw[slot];
+    if (w === null || w.buffer !== src.buffer || w.byteOffset !== src.byteOffset || w.length !== src.length) w = this.valCw[slot] = new Int32Array(src.buffer, src.byteOffset, src.length);
+    for (let i = 0; i < reads.length; i++) { const o = reads[i] << 2; h = Math.imul((h ^ (h >>> 15)) ^ w[o], 0x9e3779b1); h = Math.imul(h ^ w[o + 1], 0x85ebca6b); h = Math.imul(h ^ w[o + 2], 0xc2b2ae35); h = Math.imul(h ^ w[o + 3], 0x27d4eb2f); }
+    return h;
+  }
+  /**
+   * a signed frame's values record (valDraw), at its present: { vsig, draws, tf: [[draw, previous, now], ...] (8 at
+   * most), csig, cn (draws reading other shader constants than the previous signed frame's), cd (the first 8 of them) }
+   */
   valPresent() {
-    const n = this.valN, prev = this.valPrev, pn = this.valPrevN, tf = [];
+    const n = this.valN, prev = this.valPrev, pn = this.valPrevN, tf = [], pc = this.valPrevC, cd = [];
+    let cn = 0;
     if (pn >= 0) for (let i = 0, e = Math.min(n, pn); i < e && tf.length < 8; i++) if (prev[i] !== this.valTf[i]) tf.push([i, prev[i], this.valTf[i]]);
-    const rec = { vsig: this.valSig >>> 0, draws: n, tf };
+    if (pn >= 0) for (let i = 0, e = Math.min(n, pn); i < e; i++) if (pc[i] !== this.valC[i]) { if (cn++ < 8) cd.push(i); }
+    const rec = { vsig: this.valSig >>> 0, draws: n, tf, csig: this.valCsig >>> 0, cn, cd };
     this.valPrev = this.valTf; this.valTf = prev; this.valPrevN = n; // (valDraw grows it as needed)
-    this.valSig = 0; this.valN = 0;
+    this.valPrevC = this.valC; this.valC = pc;
+    this.valSig = 0; this.valN = 0; this.valCsig = 0;
     return rec;
   }
   /** the signature's hash of the raster states (RASTER_KEYS, what applyRaster reads), made again only after one of them was set */
@@ -994,7 +1022,7 @@ export class WebGLDevice {
     gl.disable(gl.SCISSOR_TEST); this.gs.en[gl.SCISSOR_TEST] = false;
     if (globalThis.ORTHROS_FRAME_GRAB > 0 && this.dump) this.grabFrame(bf);
     const sig = this.sigOn ? this.frameSig >>> 0 : undefined; this.frameSig = 0; // (the frame's command signature, when the probe asked for it: sigMix)
-    if (this.sigOn) this.valFrame = this.valPresent(); else if (this.valPrevN >= 0 || this.valFrame) { this.valFrame = null; this.valPrevN = -1; this.valN = 0; this.valSig = 0; } // (its values: valDraw)
+    if (this.sigOn) this.valFrame = this.valPresent(); else if (this.valPrevN >= 0 || this.valFrame) { this.valFrame = null; this.valPrevN = -1; this.valN = 0; this.valSig = 0; this.valCsig = 0; } // (its values: valDraw)
     if (this.probe?.flicker && !this.glNull && this.probe.flicker.present(bf.fbo, bf.w, bf.h, this, sig)) this.invalidateGlState(); // (telemetry: flicker-probe.js — its sample's draw set GL state directly)
     if (this.gammaLut) this.presentGamma(w, h);
     else {

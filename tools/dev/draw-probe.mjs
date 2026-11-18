@@ -39,7 +39,7 @@ function report(rec) {
   console.log(`started by ${triggerText(rec.trigger)}; ${rec.gl?.renderer ?? '?'}; frames ${rec.size?.join('x')} (mode ${rec.mode}); path ${rec.path} (the game's TEXTUREFACTOR ${rec.stamps ? 'known' : 'NOT known'}); last ${rec.lastN} draws probed; page ${JSON.stringify(rec.page ?? {})}`);
   if (rec.notes?.length) console.log(`notes: ${rec.notes.join(' | ')}`);
   if (rec.cut?.length) console.log(`cut: ${rec.cut.join(', ')}`);
-  console.log(`frames: ${a.frames} (${a.probed} probed, ${a.control} control); odd: ${a.odd} (${a.oddProbed} probed, ${a.oddControl} control); signatures ${[...new Set(rec.frames.map((f) => f.sig))].join(' ')}; values ${[...new Set(rec.frames.map((f) => f.vsig))].join(' ')}`);
+  console.log(`frames: ${a.frames} (${a.probed} probed, ${a.control} control); odd: ${a.odd} (${a.oddProbed} probed, ${a.oddControl} control); signatures ${[...new Set(rec.frames.map((f) => f.sig))].join(' ')}; values ${[...new Set(rec.frames.map((f) => f.vsig))].join(' ')}${rec.frames.some((f) => f.csig) ? `; shader constants ${new Set(rec.frames.map((f) => f.csig)).size} distinct, draws reading other constants than the frame before: ${rec.frames.map((f) => f.cn ?? 0).join(' ').slice(0, 300)}` : ''}`);
   console.log(`VERDICT: ${a.verdict}`);
   const [W, H] = rec.size ?? [GW, GH];
   console.log('rectangles (grid points; frame pixels):');
