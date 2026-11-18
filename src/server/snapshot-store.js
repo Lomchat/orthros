@@ -216,11 +216,12 @@ export class SnapshotQueue {
   }
   want(name, lang, key, kind = 'publish', { mode = '' } = {}) {
     const now = Date.now();
-    // (a job past its ttl only keeps its key from being queued again within retryMs: one of the same version, language
-    // and kind under another key is moot — a deploy changed the key — and goes; when full, the oldest past ttl go first:
-    // a few deploys a day of 11-16 jobs each must not fill the queue and refuse a player's 404 for hours)
+    // (a job past its ttl only keeps its key from being queued again within retryMs: one of the same version, language,
+    // kind and display mode under another key is moot — a deploy changed the key — and goes (another mode's is not: its
+    // key is another one anyway); when full, the oldest past ttl go first: a few deploys a day of 11-16 jobs each must
+    // not fill the queue and refuse a player's 404 for hours)
     this.jobs = this.jobs.filter((j) => now - j.at < Math.max(this.ttlMs, this.retryMs)
-      && !(now - j.at >= this.ttlMs && j.name === name && j.lang === lang && (j.kind ?? 'publish') === kind && j.key !== key));
+      && !(now - j.at >= this.ttlMs && j.name === name && j.lang === lang && (j.kind ?? 'publish') === kind && (j.mode ?? '') === mode && j.key !== key));
     if (this.jobs.some((j) => j.name === name && j.lang === lang && j.key === key && (j.kind ?? 'publish') === kind)) return false;
     if (this.jobs.length >= this.max) {
       const old = this.jobs.filter((j) => now - j.at >= this.ttlMs).sort((a, b) => a.at - b.at);

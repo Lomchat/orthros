@@ -22,7 +22,8 @@
 //            --snapshot-queue: the request is only queued, in <learn>/snapshots/queue.json, for tools/snapshot-jobs.mjs
 //            (a sandboxed server: no browser from it)
 //   --warm-jobs: (with --snapshot-jobs or --snapshot-queue) the same jobs queued ahead, one at a time, for every installed
-//            Win32 version in each language its players use (then its default one) whose current key has no shared snapshot,
+//            Win32 version in each language its players use (then its default one) whose current key has no shared snapshot
+//            (a version whose settings name the display mode: at 1920x1080, then at the modes its new players asked for),
 //            then a learn session for a version with no learned list (warm-jobs.js); --warm-langs <l,...>: those languages
 //            first, wherever a version declares them; --warm-only <manifest,...>: only those versions; --warm-delay <s> (20)
 //            before the first look, --warm-every <s> (600) between looks, --warm-poll <s> (60) while a job runs
@@ -65,7 +66,7 @@ import { RangeHeat } from '../cpu/jit/heat.js';
 import { CodeShare, servedHeat, servedRegions } from './code-share.js';
 import { snapshotSourcesHash } from './snapshot-sources.js';
 import { SnapshotStore, SnapshotJobs, SnapshotQueue, SNAPSHOT_KEY, publishMode } from './snapshot-store.js';
-import { Warmer, LearnedScenarios, learnScenarios } from './warm-jobs.js';
+import { Warmer, LearnedScenarios, ModeUse, learnScenarios } from './warm-jobs.js';
 import { pipeline } from 'node:stream/promises';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -1501,6 +1502,8 @@ export function createServer(opts = {}) {
         : opts.snapshotJobs;
   // (the warm jobs' learn scenarios played on this server, warm-jobs.js)
   const learnedScenarios = snapshots ? new LearnedScenarios(path.join(snapshots.dir, 'learned-scenarios.json')) : null;
+  // (the display modes new players ask their shared snapshot at: the warm jobs make those too, warm-jobs.js)
+  const modeUse = snapshots ? new ModeUse(path.join(snapshots.dir, 'mode-use.json')) : null;
   // operator-made sets (seedcanon-<manifest>.json, tools/ops/profile-seed-make.mjs): offered first, whatever the sessions
   // report (a first launch's settings depend on the emulated machine's speed, so independent reports rarely agree);
   // read again when the file changes (written by the tool while this server runs)
@@ -2107,8 +2110,11 @@ export function createServer(opts = {}) {
         // (?piece=i: piece i of the snapshot, compressed alone — snapshot-store.js pieces —, the page downloading it into
         // its store, resumable: snapshot-fetch.js; else the whole snapshot, as before)
         const piece = url.searchParams.get('piece'), accept = String(req.headers['accept-encoding'] ?? ''), f = snapshots.open(m[1], lang, key, accept);
+        const mode = publishMode(man, url.searchParams.get('mode')); // (null: a mode no publishing session can run at)
+        // (a page's first request — the whole snapshot, or its first piece: a resumed download asks from a later one — at
+        // a display mode of the key's: counted for the warm jobs, which make the modes new players use, warm-jobs.js ModeUse)
+        if (mode && (piece === null || piece === '0')) try { modeUse.add(m[1], lang, mode, seedReporter(req, '')); } catch { /* not counted */ }
         if (!f || (f.meta.seed ?? null) !== seed) {
-          const mode = publishMode(man, url.searchParams.get('mode')); // (null: a mode no publishing session can run at)
           if (mode !== null) snapshotJobs?.want(m[1], lang, key, 'publish', { mode });
           return send(res, 404, 'none yet');
         }
@@ -2361,6 +2367,7 @@ export function createServer(opts = {}) {
         return use;
       },
       prefer: typeof opts.warmJobs === 'object' && Array.isArray(opts.warmJobs.langs) ? opts.warmJobs.langs : [],
+      modesUsed: (name, lang) => modeUse.used(name, lang),
       jobs: snapshotJobs, log: (l) => console.log(`orthros: ${l}`),
     });
     server.on('listening', () => server.warmer.start());

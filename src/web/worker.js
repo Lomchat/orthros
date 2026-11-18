@@ -200,6 +200,12 @@ function profileDump() { return profileDumpOf(profile, profileReady, profileFile
 async function start(m) {
   manifestName = m.name;
   const manifest = m.manifest;
+  // (a snapshot to go on from, docs/snapshot.md: a Blob — the page's stored file, its bytes never in the page — read
+  // here while the machine is built; or its bytes. Not kept on `m`: the buffer goes once restored)
+  const snapMiB = m.snapshot ? ((m.snapshot.size ?? m.snapshot.byteLength) / 1048576).toFixed(1) : null, snapT0 = performance.now();
+  let snapRead = m.snapshot ? (m.snapshot instanceof Blob ? m.snapshot.arrayBuffer() : Promise.resolve(m.snapshot)).then((b) => ({ b, ms: performance.now() - snapT0 })) : null;
+  snapRead?.catch(() => {});
+  m.snapshot = null;
   const clock = new RealClock(m.opts.timeScale || 1); // (debugging: ?timescale=0.5 shows the guest a machine twice as fast)
   const ctl = new Int32Array(m.ctl), inputRing = new Int32Array(m.inputRing), audioRing = new Float32Array(m.audioRing);
   // the worker owns its canvases and hands complete frames to the page as ImageBitmaps (see BrowserDisplay)
@@ -476,10 +482,11 @@ async function start(m) {
   const exePath = normalizeWin(manifest.mount + '\\' + manifest.exe);
   // (a snapshot of this game's machine, docs/snapshot.md: it goes on from there instead of starting)
   let restored = false;
-  if (m.snapshot) {
-    const t0 = performance.now();
-    let snap = null;
-    try { snap = decodeSnapshot(new Uint8Array(m.snapshot)); } catch (e) { log('loader', `snapshot not used: ${e.message}`); post({ type: 'snapshot-stale', reason: e.message }); }
+  if (snapRead) {
+    let snap = null, t0 = performance.now(), readMs = 0;
+    // (its parts are views on the bytes read: let go once restored — the guest memory holds the pages)
+    try { let buf; ({ b: buf, ms: readMs } = await snapRead); t0 = performance.now(); snap = decodeSnapshot(new Uint8Array(buf)); buf = null; } catch (e) { log('loader', `snapshot not used: ${e.message}`); post({ type: 'snapshot-stale', reason: e.message }); }
+    snapRead = null;
     // (the server's shared snapshot, for a new player — no profile of their own here, at most the shared first-launch
     // one it started from too: the profile its game had at the capture put in place first, nothing of theirs replaced)
     if (snap && m.snapshotShared && snap.meta?.profile && profileFilesRestored === 0 && !(m.opts.profileFiles?.length)) {
@@ -494,9 +501,10 @@ async function start(m) {
       if (!(e instanceof SnapshotStale)) { post({ type: 'snapshot-failed', error: String(e.stack || e) }); return; }
       log('loader', `snapshot not used: ${e.message}`); post({ type: 'snapshot-stale', reason: e.message });
     }
+    snap = null;
     // (the host's side catching up first — the game's fonts decoded again by this page's browser — at most 5 s)
     if (restored && vm.restoring) await Promise.race([vm.restoring, new Promise((r) => setTimeout(r, 5000))]);
-    if (restored) log('loader', `restored from a snapshot of ${(m.snapshot.byteLength / 1048576).toFixed(1)} MiB in ${(performance.now() - t0).toFixed(0)} ms`);
+    if (restored) log('loader', `restored from a snapshot of ${snapMiB} MiB in ${(performance.now() - t0).toFixed(0)} ms (its bytes read in ${readMs.toFixed(0)} ms, while the machine was set up)`);
   }
   // (refined at each later settled stretch until the player acts — a restored session too: snapshot-watch.js)
   if (m.opts.snapshotAuto) snapshotWatch = new SnapshotWatch({ opens: vm.vfs.opens });

@@ -144,7 +144,7 @@ test('a shared snapshot downloaded piece by piece into the store: resumed after 
     const asked = [];
     const ab = await fetchSharedSnapshot({ name: 'g', key: KEY, lang: 'en', dir: async () => opfs, log: (m) => logs.push(m), fetch: (url, init) => { asked.push(url.split('piece=')[1]); return fetch(u(url), init); } });
     assert.ok(ab, logs.join('\n'));
-    assert.ok(Buffer.from(ab).equals(body));
+    assert.ok(ab instanceof Blob && Buffer.from(await ab.arrayBuffer()).equals(body), 'a Blob of the stored pieces, whole and in order');
     assert.equal(ab.how.chosen, 'snapshot'); assert.ok(ab.how.resumed >= PIECE, logs.join('\n'));
     assert.ok(asked.length < 3, asked.join()); // (what was there not asked again)
     assert.equal((await fetch(u(`/api/snapshot/g?key=${KEY}&lang=en&piece=3`))).status, 416);
@@ -157,12 +157,12 @@ test('a shared snapshot downloaded piece by piece into the store: resumed after 
     sh2.files.set('info.json', new Blob([JSON.stringify({ key: KEY, lang: 'en', id: 'older', piece: PIECE, count: 3, bytes: body.length })]));
     for (let i = 0; i < 3; i++) sh2.files.set(String(i), new Blob([body.subarray(i * PIECE, Math.min(body.length, (i + 1) * PIECE))]));
     const ab2 = await fetchSharedSnapshot({ name: 'g', key: KEY, lang: 'en', dir: async () => opfs2, log: (m) => logs.push(m), fetch: (url, init) => fetch(u(url), init) });
-    assert.ok(ab2 && Buffer.from(ab2).equals(body2), 'the new snapshot, whole and in order');
+    assert.ok(ab2 && Buffer.from(await ab2.arrayBuffer()).equals(body2), 'the new snapshot, whole and in order');
     // a store over its quota from the second piece: the download goes on in memory, not lost
     const full = memDir(); let writes = 0;
     const real = full.getDirectoryHandle.bind(full);
     full.getDirectoryHandle = async (n, o) => { const d = await real(n, o), fh = d.getFileHandle.bind(d); d.getFileHandle = async (f, oo) => { const h = await fh(f, oo); if (/^\d+$/.test(f)) { const cw = h.createWritable; h.createWritable = async () => { if (++writes > 1) throw new Error('QuotaExceededError'); return cw(); }; } return h; }; return d; };
     const ab3 = await fetchSharedSnapshot({ name: 'g', key: KEY, lang: 'en', dir: async () => full, log: (m) => logs.push(m), fetch: (url, init) => fetch(u(url), init) });
-    assert.ok(ab3 && Buffer.from(ab3).equals(body2), logs.slice(-3).join('\n'));
+    assert.ok(ab3 && Buffer.from(await ab3.arrayBuffer()).equals(body2), logs.slice(-3).join('\n'));
   } finally { s.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
