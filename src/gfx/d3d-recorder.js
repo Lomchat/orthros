@@ -15,6 +15,7 @@
 import { OP, CTL, VERSION_FIELDS, CONST_FIELDS, RingWriter, TWO32, ACK_SLOTS } from './cmd-ring.js';
 import { copyRectsCpu } from './d3d8-webgl.js';
 import { fvfLayout, declLayout } from './d3d8-shaders.js';
+import { instanceCount, streamDivisor } from './d3d9-shaders.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { resAlloc, resFree } from '../win32/res-mem.js';
 
@@ -353,7 +354,7 @@ export class Recorder {
     this.srKey = undefined; this.sr = null; // (streamsRead: the last layout's streams)
     this.fbos = new Set(); // surfaces the backend holds a framebuffer for (its `fbos` keys): StretchRect's GPU path
     this.s = { api9: !!dev.api9, rs: null, tss: null, samplers: null, pp: null, bb: null, rt: undefined, rtRes: null, ds: undefined, vp: null, sc: undefined, fvf: undefined, decl: undefined, vs: undefined, ps: undefined, vs8: undefined, vs8o: undefined, ps8: undefined, ps8o: undefined,
-      texArr: null, tex: [], texRes: [], streamsArr: null, sVb: [], sStride: [], sOff: [], sRes: [], indices: null, ib: undefined, ibase: undefined, ibRes: null,
+      texArr: null, tex: [], texRes: [], streamsArr: null, sVb: [], sStride: [], sOff: [], sFreq: [], sRes: [], indices: null, ib: undefined, ibase: undefined, ibRes: null,
       versions: new Array(VERSION_FIELDS.length).fill(NaN), xf: null, xfSlots: null, xfVer: NaN, lights: null, lightVer: NaN, lightSize: -1, lightShadow: new Map(), enabled: [], enabledSet: null, material: null, matArr: null, matW: null,
       consts: CONST_FIELDS.map(() => null), cWords: CONST_FIELDS.map(() => null), cLo: new Array(6).fill(Infinity), cHi: new Array(6).fill(-1) };
     link.curDev = this.id;
@@ -370,6 +371,7 @@ export class Recorder {
   }
   setTexture(st) { this.texHook |= 1 << st; }
   setStreamSource(n) { this.streamHook |= 1 << n; }
+  setStreamSourceFreq(n) { this.streamHook |= 1 << n; }
   setIndices() { this.s.ib = NaN; }
   createVertexShader() { this.shaderHook = true; }
   createPixelShader() { this.shaderHook = true; }
@@ -532,10 +534,10 @@ export class Recorder {
     if (st !== s.streamsArr) {
       s.streamsArr = st; W.c1(OP.STREAMS, st.length);
       for (const r of s.sRes) L.unbind(r);
-      s.sVb = new Array(st.length).fill(0); s.sStride = new Array(st.length).fill(0); s.sOff = new Array(st.length).fill(d.api9 ? 0 : undefined); s.sRes = new Array(st.length).fill(null);
+      s.sVb = new Array(st.length).fill(0); s.sStride = new Array(st.length).fill(0); s.sOff = new Array(st.length).fill(d.api9 ? 0 : undefined); s.sFreq = new Array(st.length).fill(d.api9 ? 1 : undefined); s.sRes = new Array(st.length).fill(null);
       this.streamHook = -1;
     }
-    // (every change of a stream goes through gfx.setStreamSource, or replaces the array)
+    // (every change of a stream goes through gfx.setStreamSource / setStreamSourceFreq, or replaces the array)
     if (this.streamHook) { // (the streams it names, lowest first)
       for (let m = this.streamHook, n = st.length; m !== 0; m &= m - 1) { const i = 31 - Math.clz32(m & -m); if (i >= n) break; this.syncStream(i, st[i]); }
       this.streamHook = 0;
@@ -592,6 +594,7 @@ export class Recorder {
   syncStream(i, x) {
     const d = this.dev, s = this.s, L = this.link;
     const r = x.vb ? d.com.implAt(x.vb) : null, nres = r ? (this.ensureRes(r), r.rec) : null;
+    if (x.freq !== s.sFreq[i]) { s.sFreq[i] = x.freq; this.w.c2(OP.STREAM_FREQ, i, x.freq); } // (Direct3D 9 instancing; a Direct3D 8 stream has none)
     if (nres === s.sRes[i] && x.vb === s.sVb[i] && x.stride === s.sStride[i] && x.offset === s.sOff[i]) return; // (set again: nothing the mirror does not hold)
     s.sVb[i] = x.vb; s.sStride[i] = x.stride; s.sOff[i] = x.offset;
     if (nres !== s.sRes[i]) { L.unbind(s.sRes[i]); L.bind(nres); s.sRes[i] = nres; }
@@ -761,7 +764,8 @@ export class Recorder {
    * Before a draw (`first` index and `nIdx` indices, or first < 0: `nv` vertices from `start`): the bytes it reads of
    * buffers whose contents travel in the ring and that were written since their last copy go into the ring now — its
    * indices, and for each stream of the layout the vertices from the lowest to the highest one it reads (the indices'
-   * own range, from the index data). Anything that cannot be bounded copies the whole buffer.
+   * own range, from the index data; an instance data stream: its elements the instances read, d3d9-shaders.js). Anything
+   * that cannot be bounded copies the whole buffer.
    */
   readBuffers(first, nIdx, start, base) {
     const d = this.dev, s = this.s, L = this.link;
@@ -772,21 +776,27 @@ export class Recorder {
       if (ibr.lz?.length) L.lazyTake(ib, ibr, first * isz, first * isz + nIdx * isz);
       v0 = 0; v1 = -1;
     }
+    const ni = first >= 0 && d.freqMask ? instanceCount(d) : -1; // (the instances of an indexed draw with stream frequencies set; -1: none set)
+    if (ni === 0) return; // (no instance: nothing read)
     const sr = this.streamsRead(), st = d.streams;
     for (let k = 0; k < sr.length; k += 2) {
       const n = sr[k], rr = s.sRes[n], b = rr?.buf;
       if (!b || !(rr.lz?.length || rr.model)) continue;
       if (rr.lz?.length && pendingBytes(rr.lz) <= LAZY_ALL) { L.lazyTake(b, rr, 0, b.length); continue; } // (few bytes pending: all of them, without bounding the draw)
-      if (first >= 0 && v1 < v0) { const e = this.indexRange(ib, ibr, first, nIdx); if (e === null) return; v0 = e[1]; v1 = e[2]; }
-      if (v1 < v0) return;
-      const x = st[n], ext = sr[k + 1], stride = x.stride || ext, off = x.offset ?? 0;
-      let lo = off + (base + v0) * stride, hi = off + (base + v1) * stride + ext;
+      const x = st[n], ext = sr[k + 1], stride = x.stride || ext, off = x.offset ?? 0, div = ni > 0 ? streamDivisor(x) : 0;
+      let lo, hi;
+      if (div !== 0) { lo = off; hi = off + Math.floor((ni - 1) / div) * stride + ext; } // (instance data: from its first element, whatever the base vertex)
+      else {
+        if (first >= 0 && v1 < v0) { const e = this.indexRange(ib, ibr, first, nIdx); if (e === null) return; v0 = e[1]; v1 = e[2]; }
+        if (v1 < v0) return;
+        lo = off + (base + v0) * stride; hi = off + (base + v1) * stride + ext;
+      }
       if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = 0; hi = b.length; } // (anything else: the whole buffer)
       if (lo < 0) lo = 0;
       if (hi > b.length) hi = b.length;
       if (rr.lz?.length) L.lazyTake(b, rr, lo, hi);
     }
-    if (L.vbCheck !== null) this.checkReads(first, nIdx, start, base, ib, ibr);
+    if (L.vbCheck !== null) this.checkReads(first, nIdx, start, base, ib, ibr, ni);
   }
   /**
    * ORTHROS_VB_CHECK=1 (a worker debug global): after the copies of a draw, every byte it reads of a buffer whose
@@ -794,7 +804,7 @@ export class Recorder {
    * extent — is compared with guest memory through the link's copy of the mirror's contents. A difference is a draw
    * that would read stale data: counted (stats.vbStale), the first ones logged.
    */
-  checkReads(first, nIdx, start, base, ib, ibr) {
+  checkReads(first, nIdx, start, base, ib, ibr, ni) {
     const d = this.dev, s = this.s, L = this.link, u8 = this.mem.u8;
     const same = (rr, b, lo, hi) => { if (lo < 0) lo = 0; if (hi > b.length) hi = b.length; const m = rr.model, a = b.mem >>> 0; for (let i = lo; i < hi; i++) if (m[i] !== u8[a + i]) return i; return -1; };
     let bad = null;
@@ -809,9 +819,10 @@ export class Recorder {
     for (let k = 0; k < sr.length && bad === null; k += 2) {
       const n = sr[k], rr = s.sRes[n], b = rr?.buf;
       if (!b || !rr.model) continue;
-      const x = d.streams[n], ext = sr[k + 1], stride = x.stride || ext, off = x.offset ?? 0;
-      const one = (v) => { const lo = off + (base + v) * stride, at = same(rr, b, lo, lo + ext); if (at >= 0) bad = `stream ${n} buffer #${b.id} byte ${at} (vertex ${v}, base ${base}, stride ${stride}, offset ${off}${idx ? `, indices ${first}+${nIdx}` : `, vertices ${start}+${nIdx}`})`; };
-      if (idx) { const seen = new Set(); for (const v of idx) { if (seen.has(v)) continue; seen.add(v); one(v); if (bad !== null) break; } } else for (let v = start; v < start + nIdx && bad === null; v++) one(v);
+      const x = d.streams[n], ext = sr[k + 1], stride = x.stride || ext, off = x.offset ?? 0, div = ni > 0 ? streamDivisor(x) : 0;
+      const one = (v) => { const lo = off + (div ? 0 : base + v) * stride, at = same(rr, b, lo, lo + ext); if (at >= 0) bad = `stream ${n} buffer #${b.id} byte ${at} (vertex ${v}, base ${base}, stride ${stride}, offset ${off}${idx ? `, indices ${first}+${nIdx}` : `, vertices ${start}+${nIdx}`})`; };
+      if (div) { for (let e = 0; e <= Math.floor((ni - 1) / div) && off + e * stride < b.length && bad === null; e++) one(e); } // (instance data: element e at off + e * stride)
+      else if (idx) { const seen = new Set(); for (const v of idx) { if (seen.has(v)) continue; seen.add(v); one(v); if (bad !== null) break; } } else for (let v = start; v < start + nIdx && bad === null; v++) one(v);
     }
     L.stats.vbChecked++;
     if (bad !== null) { L.stats.vbStale++; if (L.stats.vbStale <= 20) L.log(`render record: VB check: draw ${d.draws} reads stale data: ${bad}`); }

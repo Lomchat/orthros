@@ -29,7 +29,7 @@ import { RS } from './d3d8-shaders.js';
 
 /** commands a plain frame may hold (absolute setters, target work, the present) */
 const PLAIN = new Uint8Array(OPS.length);
-for (const k of ['TSET', 'TSETS', 'VIEWPORT', 'SCISSOR', 'FVF', 'DECL', 'VS9', 'PS9', 'VS8', 'PS8', 'STREAM', 'INDICES', 'TEXTURE', 'RT', 'VERSION', 'XFORM', 'LIGHT', 'LIGHTS_ON', 'MATERIAL', 'CONST', 'BUF_DATA', 'SURF_MEM', 'SURF_DIRTY', 'BEGIN_SCENE', 'CLEAR', 'DRAW', 'DRAW_INDEXED', 'DRAW_UP', 'DRAW_INDEXED_UP', 'PRESENT']) PLAIN[OP[k]] = 1;
+for (const k of ['TSET', 'TSETS', 'VIEWPORT', 'SCISSOR', 'FVF', 'DECL', 'VS9', 'PS9', 'VS8', 'PS8', 'STREAM', 'STREAM_FREQ', 'INDICES', 'TEXTURE', 'RT', 'VERSION', 'XFORM', 'LIGHT', 'LIGHTS_ON', 'MATERIAL', 'CONST', 'BUF_DATA', 'SURF_MEM', 'SURF_DIRTY', 'BEGIN_SCENE', 'CLEAR', 'DRAW', 'DRAW_INDEXED', 'DRAW_UP', 'DRAW_INDEXED_UP', 'PRESENT']) PLAIN[OP[k]] = 1;
 /** work on the targets: not replayed for a reused frame */
 const WORK = new Uint8Array(OPS.length);
 for (const k of ['BEGIN_SCENE', 'CLEAR', 'DRAW', 'DRAW_INDEXED', 'DRAW_UP', 'DRAW_INDEXED_UP']) WORK[OP[k]] = 1;

@@ -56,7 +56,10 @@ async function run(exe, remote) {
 
 for (const exe of ['dx.exe', 'dx9.exe']) {
   test(`${exe} through the render worker (worker thread): the same WebGL calls, frames presented, readbacks answered`, { skip: skip(exe) }, async () => {
-    const a = await run(exe, false), b = await run(exe, true);
+    // (buffer bytes copied at Unlock, ORTHROS_VB_LAZY=0: the same uploads — dx9.exe refills a dynamic buffer, which the
+    // default copies when a draw reads it, only what it reads; render-worker.test.js compares those draws by their reads)
+    const a = await run(exe, false);
+    globalThis.ORTHROS_VB_LAZY = 0; let b; try { b = await run(exe, true); } finally { globalThis.ORTHROS_VB_LAZY = undefined; }
     assert.equal(b.code, a.code);
     assert.equal(b.out, a.out, 'the program saw the same results (readbacks)');
     assert.ok(!b.logs.some((l) => /FAIL|failed|stalled/.test(l)), b.logs.join('\n'));

@@ -249,7 +249,7 @@ export function stateBlocks(H) {
       s.stride = x.stride; if (api9) s.offset = x.offset;
       if (api9) gfx?.setStreamSource?.(n, x.vb ? com.implAt(x.vb) : null, x.stride, x.offset); else gfx?.setStreamSource?.(n, x.vb ? com.implAt(x.vb) : null, x.stride);
     }
-    for (const [n, v] of sb.freq) if (dev.streams[n]) dev.streams[n].freq = v;
+    for (const [n, v] of sb.freq) dev.setFreq?.(n, v); // (Direct3D 9 only: freqMask and the backend follow)
     if (sb.indices) {
       const ix = dev.indices, ib = sb.indices.ib;
       if (ix.ib !== ib) { R.hold(ib); R.drop(ix.ib); ix.ib = ib; }

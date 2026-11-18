@@ -5,7 +5,7 @@
 import { snapKnown, snapClass } from '../core/snapshot.js';
 import { readGuid, writeGuid, S_OK, S_FALSE, E_NOINTERFACE, E_POINTER, E_NOTIMPL, E_OUTOFMEMORY } from './com.js';
 import { d3dCore, FMT, FLOAT_FORMATS, floatFormat, D3D_OK, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, D3DERR_NOTFOUND, D3DERR_MOREDATA, surfacePitch, surfaceBytes, noteState, SAMP_NOTE_GROUPS, tracingResources, readShaderTokens, writeFloatTexels } from './d3d8.js';
-import { declLayout9 } from '../gfx/d3d9-shaders.js';
+import { declLayout9, FREQ_INDEXED, FREQ_INSTANCE } from '../gfx/d3d9-shaders.js';
 import { StateTable } from './state-table.js';
 import { acct, C as ACCT } from '../core/frame-acct.js';
 import { SHADOW_IB } from '../cpu/jit/runtime.js';
@@ -150,7 +150,7 @@ export function registerDirect3D9(api, vm) {
       this.fvf = 0; this.vertexDecl = null; this.vsObj = null; this.psObj = null;
       this.vsConst = new Float32Array(256 * 4); this.psConst = new Float32Array(32 * 4);
       this.vsConstI = new Int32Array(16 * 4); this.psConstI = new Int32Array(16 * 4); this.vsConstB = new Uint8Array(16); this.psConstB = new Uint8Array(16);
-      this.streams = Array.from({ length: 16 }, () => ({ vb: 0, offset: 0, stride: 0, freq: 1 }));
+      this.streams = Array.from({ length: 16 }, () => ({ vb: 0, offset: 0, stride: 0, freq: 1 })); this.freqMask = 0;
       this.renderTargets = [null, null, null, null];
       this.scissor = null; this.softwareVP = false; this.npatch = 0;
       this.textures = new Array(MAX_SAMPLERS + 4).fill(0);
@@ -304,7 +304,21 @@ export function registerDirect3D9(api, vm) {
     GetVertexShaderConstantB(c) { const reg = c.arg(1), p = c.arg(2), n = c.arg(3); for (let i = 0; i < n; i++) mem.write32(p + 4 * i, this.vsConstB[reg + i]); return D3D_OK; }
     SetStreamSource(c) { const n = c.arg(1), vb = c.arg(2), offset = c.arg(3), stride = c.arg(4); if (n >= 16) return D3DERR_INVALIDCALL; if (this.recording) { SB.rec.stream(this.recording, n, vb, offset, stride); return D3D_OK; } const s = this.streams[n]; if (s.vb === vb && s.offset === offset && s.stride === stride) this.sameSets++; if (s.vb !== vb) { if (vb) com.addRef(com.objectAt(vb)); if (s.vb) com.release(com.objectAt(s.vb)); s.vb = vb; } s.offset = offset; s.stride = stride; if (this.shadow) this.shadowStream(n); this.gfx?.setStreamSource?.(n, vb ? com.implAt(vb) : null, stride, offset); return D3D_OK; }
     GetStreamSource(c) { const n = c.arg(1); if (n >= 16) return D3DERR_INVALIDCALL; const s = this.streams[n]; c.out32(2, s.vb); if (s.vb) com.addRef(com.objectAt(s.vb)); c.out32(3, s.offset); c.out32(4, s.stride); return D3D_OK; }
-    SetStreamSourceFreq(c) { const n = c.arg(1); if (n >= 16) return D3DERR_INVALIDCALL; if (this.recording) { SB.rec.freq(this.recording, n, c.arg(2)); return D3D_OK; } this.streams[n].freq = c.arg(2); return D3D_OK; }
+    // (hardware instancing: d3d9-shaders.js FREQ_*; refused as Direct3D 9 refuses them: a setting of 0, both flags at
+    // once, instance data on stream 0)
+    SetStreamSourceFreq(c) {
+      const n = c.arg(1), v = c.arg(2);
+      if (n >= 16 || !v || ((v & FREQ_INSTANCE) && ((v & FREQ_INDEXED) || n === 0))) return D3DERR_INVALIDCALL;
+      if (this.recording) { SB.rec.freq(this.recording, n, v); return D3D_OK; }
+      this.setFreq(n, v);
+      return D3D_OK;
+    }
+    /** a stream's divider set (SetStreamSourceFreq, a state block's Apply): freqMask and the backend follow */
+    setFreq(n, v) {
+      const s = this.streams[n]; if (!s || s.freq === v) return;
+      s.freq = v; if (v === 1) this.freqMask &= ~(1 << n); else this.freqMask |= 1 << n;
+      this.gfx?.setStreamSourceFreq?.(n, v);
+    }
     GetStreamSourceFreq(c) { const n = c.arg(1); if (n >= 16) return D3DERR_INVALIDCALL; c.out32(2, this.streams[n].freq); return D3D_OK; }
     SetIndices(c) { const ib = c.arg(1); if (ib && !com.implAt(ib)) return D3DERR_INVALIDCALL; if (this.recording) { SB.rec.indices(this.recording, ib, 0); return D3D_OK; } if (this.indices.ib === ib) this.sameSets++; if (this.indices.ib !== ib) { if (ib) com.addRef(com.objectAt(ib)); if (this.indices.ib) com.release(com.objectAt(this.indices.ib)); this.indices.ib = ib; } if (this.shadow) this.shadowSet(SHADOW_IB, ib); this.gfx?.setIndices?.(ib ? com.implAt(ib) : null, 0); return D3D_OK; }
     GetIndices(c) { c.out32(1, this.indices.ib); if (this.indices.ib) com.addRef(com.objectAt(this.indices.ib)); return D3D_OK; }

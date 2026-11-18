@@ -64,8 +64,9 @@ function readsSim(E) {
   const target = (t) => (t === AB ? arrayBuf : t === EAB ? vao.eab : null);
   const bytes = (v) => new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
   const read = (h, buf, lo, n) => { const d = buf ? data.get(buf) : null; if (!d || lo < 0 || lo + n > d.length) return Math.imul(h ^ 0x6f6f62, 0x01000193); for (let i = 0; i < n; i++) h = Math.imul(h ^ d[lo + i], 0x01000193); return h; };
-  const vertex = (h, v) => { for (let i = 0; i < vao.attrs.length; i++) { const x = vao.attrs[i]; if (!x?.on || !x.p) continue; const n = x.p.comps * (size.get(x.p.type) ?? 4); h = read(Math.imul(h ^ i, 0x01000193), x.p.buf, x.p.offset + v * (x.p.stride || n), n); } return h; };
-  const attr = (i) => (vao.attrs[i] ??= { on: false, p: null });
+  // (an attribute with a divisor reads element instance / divisor: hardware instancing)
+  const vertex = (h, v, inst = 0) => { for (let i = 0; i < vao.attrs.length; i++) { const x = vao.attrs[i]; if (!x?.on || !x.p) continue; const n = x.p.comps * (size.get(x.p.type) ?? 4); h = read(Math.imul(h ^ i, 0x01000193), x.p.buf, x.p.offset + (x.div ? Math.floor(inst / x.div) : v) * (x.p.stride || n), n); } return h; };
+  const attr = (i) => (vao.attrs[i] ??= { on: false, p: null, div: 0 });
   return (k, a) => {
     switch (k) {
       case 'bindBuffer': if (a[0] === AB) arrayBuf = a[1]; else if (a[0] === EAB) vao.eab = a[1]; return SKIP;
@@ -75,15 +76,18 @@ function readsSim(E) {
       case 'enableVertexAttribArray': attr(a[0]).on = true; return undefined;
       case 'disableVertexAttribArray': attr(a[0]).on = false; return undefined;
       case 'vertexAttribPointer': attr(a[0]).p = { buf: arrayBuf, comps: a[1], type: a[2], stride: a[4], offset: a[5] }; return undefined;
+      case 'vertexAttribDivisor': attr(a[0]).div = a[1]; return undefined;
       case 'drawArrays': { let h = 0x811c9dc5; for (let v = a[1]; v < a[1] + a[2]; v++) h = vertex(h, v); return `reads:${(h >>> 0).toString(16)}`; }
-      case 'drawElements': {
+      case 'drawElements': case 'drawElementsInstanced': {
         const isz = size.get(a[2]) ?? 2, d = vao.eab ? data.get(vao.eab) : null;
         let h = 0x811c9dc5;
-        for (let i = 0; i < a[1]; i++) {
-          const p = a[3] + i * isz;
-          if (!d || p + isz > d.length) { h = Math.imul(h ^ 0x6f6f62, 0x01000193); continue; }
-          const v = isz === 2 ? d[p] | d[p + 1] << 8 : isz === 1 ? d[p] : (d[p] | d[p + 1] << 8 | d[p + 2] << 16 | d[p + 3] << 24) >>> 0;
-          h = vertex(Math.imul(h ^ v, 0x01000193), v);
+        for (let inst = 0; inst < (k === 'drawElements' ? 1 : a[4]); inst++) {
+          for (let i = 0; i < a[1]; i++) {
+            const p = a[3] + i * isz;
+            if (!d || p + isz > d.length) { h = Math.imul(h ^ 0x6f6f62, 0x01000193); continue; }
+            const v = isz === 2 ? d[p] | d[p + 1] << 8 : isz === 1 ? d[p] : (d[p] | d[p + 1] << 8 | d[p + 2] << 16 | d[p + 3] << 24) >>> 0;
+            h = vertex(Math.imul(h ^ v, 0x01000193), v, inst);
+          }
         }
         return `reads:${(h >>> 0).toString(16)}`;
       }

@@ -244,6 +244,8 @@ test('dx9.exe: Direct3D 9 device, texture, vertex declaration, draw and readback
   assert.deepEqual([out.texrefs, out.vbrefs, out.devrelease, out.d3drelease], ['1', '1', '0', '0'], 'reference counting');
   for (const k of ['settransform', 'rs_zwrite', 'rs_zwrite2', 'gettransform']) assert.equal(out[k], '0x00000000', k);
   assert.deepEqual([out.transform5, out.zwrite], ['5', '1'], 'deferred state setters: arguments taken at the call, applied in order before a getter');
+  for (const k of ['inst_decl', 'inst_vs', 'inst_ps', 'inst_ib', 'freq0', 'freq1', 'freq2', 'inst_draw0', 'inst_draw']) assert.equal(out[k], '0x00000000', k);
+  assert.deepEqual([out.freq_inst0, out.freq_both, out.freq_zero, out.getfreq2], ['0x8876086c', '0x8876086c', '0x8876086c', '0x80000002'], 'SetStreamSourceFreq: instance data on stream 0, both flags and 0 refused as Direct3D 9 does; a setting kept');
   assert.ok(vm.deferredCalls >= 1, 'state setters went through the deferred call queue');
   assert.equal(vm.proc.unknownImports.size, 0);
 });

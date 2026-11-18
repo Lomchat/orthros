@@ -90,6 +90,11 @@ for (const exe of ['dx.exe', 'dx9.exe', 'd3dlost.exe']) for (const M of MODES) {
     const d = firstDifference(a.calls, b.calls);
     assert.equal(d, null, d ? `first difference at call ${d.index} (${d.lengths}):\nin-thread\n  ${d.a.join('\n  ')}\nreplayed\n  ${d.b.join('\n  ')}` : '');
     if (M.lazy) assert.equal(b.link.stats.vbStale, 0, 'draws that read stale buffer bytes');
+    // (hardware instancing, SetStreamSourceFreq: four instances, the offsets per instance, the colors per two)
+    if (exe === 'dx9.exe') {
+      assert.ok(a.calls.some((c) => c[0] === 'drawElementsInstanced' && c[5] === 4), 'dx9.exe\'s instanced draw: 4 instances');
+      assert.deepEqual(a.calls.filter((c) => c[0] === 'vertexAttribDivisor').map((c) => c[2]), [1, 2], 'its instance data streams\' divisors');
+    }
   }));
 }
 void OP;

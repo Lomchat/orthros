@@ -33,6 +33,19 @@ export function declLayout9(mem, addr) {
   return { streams, elements, rhw, texCount: all.filter((a) => a.usage === USAGE.TEXCOORD).length, blend: all.some((a) => a.usage === USAGE.BLENDWEIGHT) ? (all.find((a) => a.usage === USAGE.BLENDWEIGHT).comps + (all.some((a) => a.usage === USAGE.BLENDINDICES) ? 1 : 0)) : 0, attrs: all, dx9: true };
 }
 
+// ------------------------------------------------------------------ hardware instancing (SetStreamSourceFreq)
+// A stream's frequency setting: D3DSTREAMSOURCE_INDEXEDDATA | n on stream 0 draws an indexed draw's geometry n times
+// (n instances), D3DSTREAMSOURCE_INSTANCEDATA | d on another stream reads that stream once per instance, advancing
+// every d instances (from the stream's offset: the draw's BaseVertexIndex moves only the indexed data). Only
+// DrawIndexedPrimitive instances; the other draws, and a plain value without a flag (the vs_3_0 vertex frequency
+// divider: not offered, VertexShaderVersion is 2.0), read every stream per vertex. The device's `freqMask` has bit n set
+// while stream n's setting is not the default 1: zero for every game that never sets one.
+export const FREQ_INDEXED = 0x40000000, FREQ_INSTANCE = 0x80000000, FREQ_VALUE = 0x3fffffff;
+/** the instances of an indexed draw: stream 0's INDEXEDDATA count (0: none drawn), 1 without it */
+export const instanceCount = (dev) => { const f = dev.streams[0]?.freq; return f & FREQ_INDEXED ? f & FREQ_VALUE : 1; };
+/** a stream's divisor in an indexed draw: its INSTANCEDATA value (0 read as 1), 0 for data read per vertex */
+export const streamDivisor = (s) => { const f = s?.freq; return f & FREQ_INSTANCE ? (f & FREQ_VALUE) || 1 : 0; };
+
 // ------------------------------------------------------------------ bytecode helpers
 const SWZ = 'xyzw';
 const swizzle = (tok) => { let s = ''; for (let i = 0; i < 4; i++) s += SWZ[(tok >> (16 + 2 * i)) & 3]; return s; };
