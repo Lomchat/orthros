@@ -10,12 +10,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { GuestMemory, SMC_MAP_BASE, SMC_CODE } from '../src/cpu/memory.js';
-import { CpuState, THREAD_STATES_BASE, ST } from '../src/cpu/state.js';
+import { GuestMemory, SMC_MAP_BASE, SMC_CODE, THUNK_BASE } from '../src/cpu/memory.js';
+import { CpuState, THREAD_STATES_BASE, ST, EXIT } from '../src/cpu/state.js';
 import { Interp } from '../src/cpu/interp.js';
 import '../src/cpu/interp-x87.js';
 import '../src/cpu/interp-sse.js';
 import { Jit } from '../src/cpu/jit/jit.js';
+import { FAST_TABLE, FAST } from '../src/cpu/jit/runtime.js';
 import { PeImage, mapImage } from '../src/loader/pe.js';
 import { LIB_KERNELS, LIB_LIVE } from '../src/cpu/jit/libkernels.js';
 import { depth } from './depth.js';
@@ -105,6 +106,7 @@ test('library kernels: floor, ceil, fabs, memcmp, memcpy against the interpreter
     const A = machine(img, base, null), B = machine(img, base, { ...jitOpts, libKernels: true }), D = machine(img, base, { ...jitOpts, libKernels: false });
     const data = [B.mod.base + dataSec.rva, B.mod.base + dataSec.rva + dataSec.virtualSize];
     for (const def of LIB_KERNELS) {
+      if (STRING_KINDS.has(def.kind)) continue; // (the C runtime's per-thread data and locale: the test below)
       const [, fn] = def.name.split('!');
       const entry = B.mod.exports.get(fn);
       assert.ok(entry !== undefined, fn);
@@ -229,3 +231,102 @@ test('library kernels run inline: memcmp through an import stub and through call
   }
 });
 function le32(v) { return [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24]; }
+
+// The string functions' kernels (_stricmp, tolower: the "C" locale, through _getptd — GetLastError, TlsGetValue,
+// SetLastError as the fast APIs run them) against the interpreter (on their path) and the JIT without kernels (always):
+// entered at the function (the kernel function), through an import stub and through `call [slot]` (run inline), the
+// DLL at its base and relocated. The APIs the dispatcher leaves to JavaScript (a parked call being resumed, a TLS index
+// past the TEB's slots, a thunk without its fast path) are emulated here. Randomized strings (letters of both cases,
+// shared prefixes, the bytes around the letters), a string in the frame the code writes or in the first 64 KiB, any
+// 32-bit tolower argument; registers, flags read after the call, the stack around the frame, the strings, the library's
+// data, the last error and the instructions compared; the kernel taken exactly on its path, inline after the first call.
+const STRING_KINDS = new Set(['stricmp', 'tolower']);
+test('library kernels: _stricmp and tolower against the interpreter, at their entry and run inline', { skip }, () => {
+  const img = new PeImage(new Uint8Array(fs.readFileSync(DLL)));
+  const dataSec = img.sections.find((s) => s.name === '.data');
+  const TEB = 0x00600000, PTD = 0x00610000, CALLER = 0x00500000, STUB = 0x00500100, SLOT = 0x00500200, n = depth(300, 60);
+  const GLE = 1, TLS = 2, SLE = 3; // (thunk indexes)
+  const LETTERS = [...Array(26)].flatMap((_, i) => [0x41 + i, 0x61 + i]), AROUND = [0x40, 0x5b, 0x60, 0x7b, 0x5f, 0x2e, 0x5c, 0x30, 0x39, 0x20, 0xc0, 0xe0, 0xff];
+  const ch = () => (rnd(6) ? LETTERS[rnd(52)] : rnd(2) ? AROUND[rnd(AROUND.length)] : 1 + rnd(255));
+  /** the APIs a thunk exit leaves to JavaScript, as kernel32 answers them */
+  const api = (M) => {
+    const { cpu, mem } = M, sp = cpu.esp, ret = mem.read32(sp), idx = cpu.exitArg;
+    if (idx === GLE) { cpu.setReg(0, mem.read32(TEB + 0x34)); cpu.esp = sp + 4; }
+    else if (idx === TLS) { const i = mem.read32(sp + 4); mem.write32(TEB + 0x34, 0); cpu.setReg(0, i < 64 ? mem.read32(TEB + 0xe10 + 4 * i) : PTD); cpu.esp = sp + 8; }
+    else if (idx === SLE) { mem.write32(TEB + 0x34, mem.read32(sp + 4)); cpu.setReg(0, 0); cpu.esp = sp + 8; }
+    else throw new Error(`thunk ${idx}`);
+    cpu.eip = ret;
+  };
+  const runTo = (M, max) => {
+    let done = 0;
+    for (;;) {
+      const r = M.jit ? M.jit.run({ stopAt: RET, maxInsns: max - done }) : M.I.run({ stopAt: RET, maxInsns: max - done });
+      done += max - done - (M.jit ? M.jit.remaining() : M.I.remaining() + 1);
+      if (r !== EXIT.THUNK) return [r, done];
+      api(M);
+    }
+  };
+  for (const def of LIB_KERNELS.filter((d) => STRING_KINDS.has(d.kind))) {
+    const argc = def.kind === 'stricmp' ? 2 : 1, k = def.k;
+    for (const [form, base, jitOpts] of [['entry', img.imageBase, {}], ['stub', 0x10000000, {}], ['call', img.imageBase, { chain: false }], ['entry', 0x10000000, { chain: false }]]) {
+      const A = machine(img, base, null), D = machine(img, base, { ...jitOpts, libKernels: false });
+      const B = machine(img, base, { ...jitOpts, libKernels: def.name, libInline: true, profile: true });
+      const entry = B.mod.exports.get(def.name.split('!')[1]), data = [B.mod.base + dataSec.rva, B.mod.base + dataSec.rva + dataSec.virtualSize];
+      const loc = B.mem.read32(entry + k.ploc); // (__ptlocinfo: the library's initial "C" locale data)
+      const push = [0xff, 0x74, 0x24, 4 * argc], start = form === 'entry' ? entry : CALLER;
+      const rel = STUB - (CALLER + 2 + 4 * argc + 5), call = form === 'stub' ? [0xe8, ...le32(rel)] : [0xff, 0x15, ...le32(SLOT)];
+      for (const M of [A, B, D]) {
+        // (test ecx, ecx ; the arguments pushed again ; the call ; lea esp, [esp + 4 * argc] ; setb dl — the carry the
+        // function left — ; ret)
+        M.mem.writeBytes(CALLER, [0x85, 0xc9, ...Array(argc).fill(push).flat(), ...call, 0x8d, 0x64, 0x24, 4 * argc, 0x0f, 0x92, 0xc2, 0xc3]);
+        M.mem.writeBytes(STUB, [0xff, 0x25, ...le32(SLOT)]); M.mem.write32(SLOT, entry);
+        for (const [i, fid] of [[GLE, FAST.GetLastError], [TLS, FAST.TlsGetValue], [SLE, FAST.SetLastError]]) M.mem.u8[FAST_TABLE + i] = fid;
+        M.mem.write32(entry + k.gle, THUNK_BASE + 16 * GLE); M.mem.write32(entry + k.tlsv, THUNK_BASE + 16 * TLS); M.mem.write32(entry + k.sle, THUNK_BASE + 16 * SLE);
+        M.mem.write32(PTD + 0x64, loc);
+      }
+      assert.equal(A.mem.read32(loc + 0x14), 0, 'the initial locale is "C"');
+      let expectFallbacks = 0, expectInline = 0;
+      const fallbacks0 = B.jit.stats.libFallbacks;
+      for (let i = 0; i < n; i++) {
+        const c = { esp: STACK - 0x400 + 4 * rnd(64), regs: Array.from({ length: 8 }, r32), eflags: (r32() & 0x8d5) | 2, garbage: Array.from({ length: 0x80 }, r32),
+          tls: rnd(16) ? rnd(64) : 64 + rnd(200), resuming: rnd(16) ? 0 : 1, slow: rnd(16) ? 0 : 1 + rnd(3), err: r32(), buf: new Uint8Array(0x1000) };
+        const S = form === 'entry' ? c.esp : c.esp - 4 * argc - 4; // (ESP at the function's entry)
+        let path = !c.resuming && c.tls < 64 && !c.slow;
+        if (def.kind === 'stricmp') {
+          const len = rnd(5) ? rnd(12) : rnd(300), s1 = Array.from({ length: len }, ch);
+          let s2 = s1.map((b) => (rnd(3) ? b : b ^ 0x20));
+          if (rnd(3)) s2 = rnd(2) ? s2.slice(0, rnd(len + 1)) : [...s2.slice(0, rnd(len + 1)), ...Array.from({ length: rnd(4) }, ch)];
+          const o1 = rnd(16), o2 = 0x800 + rnd(16);
+          for (let j = 0; j < c.buf.length; j++) c.buf[j] = rnd(256);
+          c.buf.set([...s1, 0], o1); c.buf.set([...s2, 0], o2);
+          c.args = [BUF + o1, BUF + o2];
+          const bad = rnd(16);
+          if (bad === 0) { c.args[rnd(2)] = S - 4 * (1 + rnd(10)); path = false; } // (in the frame the code writes)
+          else if (bad === 1) { c.args[rnd(2)] = rnd(0x10000); path = false; } // (the null page: the exact way)
+        } else c.args = [rnd(3) ? rnd(256) : rnd(2) ? r32() : [0x40, 0x41, 0x5a, 0x5b, -1, 0x80000000][rnd(6)]];
+        for (const M of [A, B, D]) {
+          const { mem, cpu } = M;
+          cpu.reset();
+          mem.fill(STACK - 0x2000, 0x3000, 0);
+          for (let j = 0; j < 0x200; j += 4) mem.write32(c.esp - 0x100 + j, c.garbage[j >> 2]);
+          mem.write32(c.esp, RET); c.args.forEach((v, j) => mem.write32(c.esp + 4 + 4 * j, v));
+          mem.writeBytes(BUF, c.buf);
+          c.regs.forEach((v, j) => cpu.setReg(j, v)); cpu.esp = c.esp; cpu.eip = start; cpu.eflags = c.eflags;
+          cpu.fsBase = TEB; mem.write32(TEB + 0x34, c.err); mem.fill(TEB + 0xe10, 0x100, 0); if (c.tls < 64) mem.write32(TEB + 0xe10 + 4 * c.tls, PTD);
+          mem.write32(entry + k.tlsi, c.tls); mem.write32(cpu.base + ST.RESUMING, c.resuming);
+          for (const [j, fid] of [[GLE, FAST.GetLastError], [TLS, FAST.TlsGetValue], [SLE, FAST.SetLastError]]) mem.u8[FAST_TABLE + j] = c.slow === j ? 0 : fid;
+        }
+        const [ra, na] = runTo(A, 20000), [rb, nb] = runTo(B, 20000), [rd, nd] = runTo(D, 20000);
+        const what = `${def.name} (${form} @${base.toString(16)}, ${JSON.stringify(jitOpts)}) case ${i}: ${JSON.stringify({ ...c, garbage: undefined, buf: undefined })}`;
+        const sb = { ...snapshot(B, c, data), err: B.mem.read32(TEB + 0x34) };
+        assert.equal(rb, rd, what); assert.deepEqual(sb, { ...snapshot(D, c, data), err: D.mem.read32(TEB + 0x34) }, what); assert.equal(nb, nd, `${what}: instructions`);
+        if (!path) { expectFallbacks++; continue; }
+        assert.equal(rb, ra, what); assert.deepEqual(sb, { ...snapshot(A, c, data), err: A.mem.read32(TEB + 0x34) }, what); assert.equal(nb, na, `${what}: instructions`);
+        if (form !== 'entry' && i > 0) expectInline++;
+      }
+      assert.ok(B.jit.libLive?.has(entry), `${def.name}: recognised`);
+      assert.equal(B.jit.stats.libFallbacks - fallbacks0, expectFallbacks, `${def.name} (${form}): kernel taken exactly on its path`);
+      if (form !== 'entry') assert.equal(B.jit.stats.prof.libInline, expectInline, `${def.name} (${form}): every call on the path after the first ran inline`);
+    }
+  }
+});

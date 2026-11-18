@@ -127,7 +127,7 @@ export class Jit {
     /** region entries translated at a miss, [eip, x87 mode assumed (null: none / generic), ms since start] (learnRegions) */
     this.learned = null;
     this.nextFn = 0;
-    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, libKernels: 0, libFallbacks: 0, libInline: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, smcKept: 0, smcChecks: 0, smcGroups: 0, smcGrouped: 0, nestSites: 0, linkedSites: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
+    this.stats = { regions: 0, blocks: 0, native: 0, fallback: 0, translateMs: 0, tEmit: 0, tBuild: 0, tModule: 0, tInstance: 0, tTableSet: 0, tConsolidate: 0, bytes: 0, misses: 0, invalidations: 0, dropped: 0, live: 0, fallbackSteps: 0, libKernels: 0, libFallbacks: 0, libInline: 0, loopBulk: 0, chained: 0, inlineApi: 0, consolidations: 0, bgInstallMs: 0, ifcvt: 0, fpuModeMisses: 0, fpuVersions: 0, genericTop: 0, dispatchBlocks: 0, reinserts: 0, steps: 0, prewarmMs: 0, prewarmed: 0, abSwitches: 0, interpRangeSteps: 0, smcKept: 0, smcChecks: 0, smcGroups: 0, smcGrouped: 0, nestSites: 0, linkedSites: 0, prof: null }; // (every field declared: one hidden class, see Vm's constructor)
     this.fallbackHist = opts.fallbackHist ? new Map() : null; // mnemonic -> interpreter fallback executions (diagnostic)
     this.lastFault = null;
     this.boundaries = null; // extra region boundaries (tests)
@@ -320,6 +320,7 @@ export class Jit {
     const t1 = performance.now();
     if (stats.inlineApi) this.stats.inlineApi = (this.stats.inlineApi ?? 0) + stats.inlineApi; // (API call sites run inline, see translate.js inlineApiOf)
     if (stats.libInline) this.stats.libInline += stats.libInline; // (library kernels run inline, see translate.js libInlineOf)
+    if (stats.loopBulk) this.stats.loopBulk += stats.loopBulk; // (copy and fill loops taken at once, translate.js bulkLoopOf)
     // (stores' SMC checks emitted, groups and the stores they cover: translate.js planSmcGroups)
     if (stats.smcChecks) { this.stats.smcChecks += stats.smcChecks; this.stats.smcGroups += stats.smcGroups ?? 0; this.stats.smcGrouped += stats.smcGrouped ?? 0; }
     if (stats.dispatchBlock) this.stats.dispatchBlocks++; // (regions whose dispatcher is no loop)
