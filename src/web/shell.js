@@ -15,7 +15,7 @@ import { accountState, signIn, onAccountChange, googleSignIn, googleText, GOOGLE
 import { REPORT_GAP_MS } from '../shared/display-report.js';
 import { KeepAwake } from './background-play.js';
 
-const LOGO = '/src/web/orthros_logo.png';
+const LOGO = new URL('./orthros_logo.png', import.meta.url).href;
 const STRINGS = {
   en: {
     games: '☰ Games', gamesTitle: 'quit the game and return to the game list', fullscreen: '⛶ Full screen', fullscreenTitle: 'full screen: only the game, the mouse captured (hold Esc to leave)',

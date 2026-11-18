@@ -9,6 +9,9 @@ import { GameData, PIECE } from '../vfs/data-client.js';
 import { mountFiles } from '../vfs/emscripten-files.js';
 import { eachStorage, removeStorage } from './goldsrc/storage.js';
 
+// (the indicator's worker beside it, in this page's build — docs/builds.md)
+globalThis.orthrosDataMeterStart?.(new URL('../web/data-meter-worker.js', import.meta.url));
+
 /**
  * A port page's engine file addresses: `at(rel)` the URL of release path `rel` — by its content when the server gives it
  * (/api/manifest engineUrls, src/server/engine-content.js: a release's unchanged files keep their address, and the

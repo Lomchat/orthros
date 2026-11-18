@@ -10,6 +10,7 @@ import { escapeToGame } from '../../web/escape.js';
 import { endonym } from '../../web/lang.js';
 import { linkRate } from '../../vfs/data-client.js';
 import { pageStorage } from '../../web/storage-persist.js';
+import { OWN_BUILD } from '../../shared/build-path.js';
 
 const STRINGS = {
   en: {
@@ -98,7 +99,7 @@ async function enter(chosen) {
     let src;
     if (chosen === 'multi') {
       const data = await api(`/api/openmw/${encodeURIComponent(id)}/launch`, 'POST');
-      src = `app/join#${new URLSearchParams({ mpticket: data.ticket, mpaccount: data.account, mplocker: data.locker })}`;
+      src = `app/join${OWN_BUILD ? `?b=${OWN_BUILD}` : ''}#${new URLSearchParams({ mpticket: data.ticket, mpaccount: data.account, mplocker: data.locker })}`;
       shell.setSave({ state: 'server' });
     } else {
       src = man.openmw.example ? `app/index.html?nomw${man.openmw.startCell ? '&start=' + encodeURIComponent(man.openmw.startCell) : ''}` : 'app/index.html?src=hosted';
@@ -113,6 +114,8 @@ async function enter(chosen) {
     // (the engine page's JSPI switches on this page — ?jspipresent=N, ?jspigl=N…, play/index.html: a measure's A/B
     // through the player's own entry, tools/openmw/place-load.mjs --query — handed to it)
     if (src.startsWith('app/index.html')) for (const [k, v] of params) if (/^jspi[a-z]*$/.test(k) && /^[\w.]*$/.test(v)) src += `&${k}=${v}`;
+    // (the engine page's Orthros scripts from this page's build: the server puts them in from ?b= — docs/builds.md)
+    if (OWN_BUILD && src.startsWith('app/index.html')) src += `&b=${OWN_BUILD}`;
     frame.src = src; frame.hidden = false;
     session.state = 'running';
   } catch (e) { session.state = 'ready'; shell.phase(S.failed + e.message, true); shell.choices.querySelectorAll('button').forEach((b) => { b.disabled = false; }); }

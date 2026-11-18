@@ -57,7 +57,8 @@
   // engine's frames (browser frames with draws), its GPU time on its context, the game data's waits (streamfs.js),
   // the phase (loading, the menus, the world: view-grow.js), the quality tier (tier.js) and the browser's storage — the
   // Orthros page's (play.js asks persistence as the game starts), else this page's own, asked here
-  Promise.all([import('/src/web/perf-page.js'), import('/src/ports/openmw/view-grow.js'), import('/src/web/storage-persist.js')]).then(([perf, view, sp]) => {
+  // (beside this script — the page's build, docs/builds.md: an import in a classic script is resolved from its address)
+  Promise.all([import('../../web/perf-page.js'), import('./view-grow.js'), import('../../web/storage-persist.js')]).then(([perf, view, sp]) => {
     const id = decodeURIComponent(location.pathname.split('/')[3] ?? '');
     let storage = null; try { storage = framed ? window.parent.orthrosStorage ?? null : null; } catch { /* another origin */ }
     if (!storage) { storage = sp.pageStorage(); storage.ask(); }

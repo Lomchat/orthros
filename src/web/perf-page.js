@@ -13,6 +13,7 @@ import { runTimingProbe } from './timing-probe.js';
 import { gpuClass, gpuInfo } from './gpu-class.js';
 import { pageStorage, withStorage } from './storage-persist.js';
 import { RefreshClock, PaceMeter } from '../shared/display-pacing.js';
+import { withBuild } from '../shared/build-path.js';
 
 export { SLOW_A };
 /** the clock's period (ms); the timing probe once after this much visible time */
@@ -256,7 +257,7 @@ export function canvasGl(canvas) {
  */
 export function portPerf(o) {
   const h = { session: null, frames: null, ended: false, shown() { h.frames?.shown(); }, end() { h.ended = true; h.session?.end(); } };
-  fetch('/api/config').then((r) => (r.ok ? r.json() : {})).catch(() => ({})).then((c) => {
+  fetch(withBuild('/api/config')).then((r) => (r.ok ? r.json() : {})).catch(() => ({})).then((c) => {
     if (!c?.telemetry || h.ended) return;
     h.session = new PerfSession({ ...o, build: c.version ?? null });
     h.frames = h.session.watchFrames({ gl: o.gl, draws: o.draws });

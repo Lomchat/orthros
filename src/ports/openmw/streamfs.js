@@ -12,9 +12,12 @@
 // play: crossings and doors", place-lead.js).
 (() => {
   'use strict';
+  // (this script's address: the modules it names are its build's — docs/builds.md; an import in a classic script is
+  // resolved from its address, a module handed to the data worker is named whole)
+  const HERE = (typeof document === 'object' && document.currentScript?.src) || location.href;
   // (a classic script — the page calls StreamFS synchronously — loading the shared modules at once: they are here long
   // before the engine's first mount, which comes after its own requests)
-  const modules = Promise.all([import('/src/vfs/data-client.js'), import('/src/vfs/emscripten-files.js'), import('/src/ports/openmw/view-grow.js'), import('/src/ports/openmw/save-place.js'), import('/src/ports/openmw/boot-reads.js')]);
+  const modules = Promise.all([import('../../vfs/data-client.js'), import('../../vfs/emscripten-files.js'), import('./view-grow.js'), import('./save-place.js'), import('./boot-reads.js')]);
   let M = null; modules.then(([client, files, view, place, boot]) => {
     M = { ...client, ...files, inWorld: view.inWorld, savePlace: place, bootReads: boot.bootReads };
     // (the engine's package in — openmw.data, its own download —, its main() initialising for seconds before its first
@@ -142,7 +145,7 @@
       anticipate().catch((e) => console.warn('[streamfs] place', e?.message ?? e));
       // (in play: the next row's learned set ahead — only with ?lead=1 on this page or the play page: an A/B, off by
       // default — docs/openmw-history.md "In play: crossings and doors": the learned order already covers a taught row)
-      if (pageParam('lead') === '1') import('/src/ports/openmw/place-lead.js').then(leadInPlay).catch((e) => console.warn('[streamfs] lead', e?.message ?? e));
+      if (pageParam('lead') === '1') import('./place-lead.js').then(leadInPlay).catch((e) => console.warn('[streamfs] lead', e?.message ?? e));
     }
     return S.data;
   }
@@ -435,7 +438,7 @@
       const data = need(), rel = treePath(url);
       if (rel === null) return node(path, data.source({ url: new URL(url, location.href).href, size, label: path }));
       // (a copy an earlier page kept of it: taken before its first read — legacy-copies.js, in the data worker)
-      S.legacy.push({ name, path: rel, module: '/src/ports/openmw/legacy-copies.js', args: { url: new URL(url, location.href).pathname, size, mtime: mtime || 0 } });
+      S.legacy.push({ name, path: rel, module: new URL('legacy-copies.js', HERE).pathname, args: { url: new URL(url, location.href).pathname, size, mtime: mtime || 0 } });
       if (S.legacy.length === 1) queueMicrotask(() => data.legacy(S.legacy.splice(0)));
       S.byKey.set(name + '\n' + rel.toLowerCase(), path);
       return node(path, data.fileAs(name, rel, size));
