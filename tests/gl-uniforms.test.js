@@ -115,7 +115,8 @@ for (const recorded of [false, true]) {
     } finally { delete globalThis.ORTHROS_GL_UNIFORM_CHECK; }
   });
 
-  test(`two devices on one GL context: each draw runs with its own program, uniforms and vertex array${recorded ? ' (render worker)' : ''}`, () => {
+  // (in the emulator's thread tests/webgl-bindings.test.js covers it; here the render worker's path and the uniform values)
+  if (recorded) test(`two devices on one GL context: each draw runs with its own program, uniforms and vertex array${recorded ? ' (render worker)' : ''}`, () => {
     const { T, E, gfx, glOf, out, device: create } = setup(recorded), { mem, ctx, com } = E;
     const device = (tf, colorOp) => {
       const D = create(); D.tf = tf;

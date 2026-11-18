@@ -1647,7 +1647,7 @@ export class WebGLDevice {
     // every draw, whatever GL is believed to hold)
     if (this.noStateCache) { P.v = undefined; P.cs = null; P.ibU = undefined; }
     const U = P.u;
-    const pv = P.v ?? (P.v = { flip: undefined, t: -1, vp: -1, l: -1, lt: -1, ls: -1, s: -1, c: -1, pk: 1 });
+    const pv = P.v ?? (P.v = { flip: undefined, t: -1, vp: -1, vpo: null, l: -1, lt: -1, ls: -1, s: -1, c: -1, pk: 1 });
     if (pv.pk !== tgt.kx) { pv.pk = tgt.kx; pv.s = -1; } // (the point size follows the target's scale: render states compared again)
     if (pv.flip !== flip) { pv.flip = flip; if (U('u_flipY')) gl.uniform1f(U('u_flipY'), flip ? -1 : 1); }
     if (this.capturing) this.captureDraw(P, info, v, flip);
