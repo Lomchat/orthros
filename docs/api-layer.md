@@ -476,6 +476,49 @@ array selector picking the vertex shader 7 %), render states 18 %; the time of `
   range (clamped, ±1e9 included), the device's shader set directly between commits (to none or another element),
   against the reference path after every call.
 
+### Effect pass plan (2026-11-18): measured, not kept
+
+An outside audit of main cf698a2 (Node, Age of the Ring, 29.2 fps) found 1.53 ms per frame of V8 samples in
+d3dx9-effect.js, the pass application first (117 `BeginPass` per frame in its scene), and proposed applying each pass
+as a precomputed plan in one call. Measured here first — AotR skirmish (`fixes-aotr-play`'s start), Node, virtual clock,
+`--gfx recorder`, play +25 to +45 s: 30 `BeginPass` and 185 `CommitChanges` per frame in that window, 488 frames:
+
+- `BeginPass` ~11 µs (frame accounting, its own work: the queue's drain is timed apart): its two shader bindings
+  ~5.7 µs — the stage's constants compared again after another object's shaders wrote it, sampler states walked again
+  after `End` and other objects changed their tables (~1.4 µs of `SetSamplerState` / `SetTexture`), preshaders —, render
+  states ~2.6 µs (half of them a real change: `End` restored them, ~5.3 per object), ~11 device calls per pass. A commit
+  ~1.1 µs: 92 % of its shader bindings find their stage unchanged, 85 % of the constant bindings are skipped, 95 % of the
+  sampler bindings take the texture-only shortcut. In all ~0.6 ms per frame of a thread at ~20 ms per frame; about
+  1 M user instructions per frame in d3dx9-effect.js (perf).
+- Tried (local branch `d3dx-pass-plan-experiment`, two commits on c8e0d4c): (1) each pass compiled into typed arrays
+  (kind, arguments, constant values, value functions, objects) applied by one loop in state order, sampler parameters
+  likewise, the top-level parameters' versions side by side for the bindings' and programs' checks; (2) on top, a
+  commit applying only the operations that read a parameter changed since the pass was last applied, when the device
+  changed nothing the pass sets meanwhile (state version, each stage's constant version, its shaders, the version of
+  each of its registers' sampler tables; never with two operations setting one state from different sources, nor with a
+  rarer operation). Both exact: the same device calls, in order and with their arguments, as the base on the bind
+  test's random sessions and on a session covering every pass-state kind (a shader picked by an expression, states
+  from parameters and expressions, stage / sampler / pass sampler / texture / FVF / light / transform states, state
+  blocks recording, a state manager) — 93 000 steps, ~110 000 device calls —, nine mutations of (2) each caught; and the
+  same render command stream in AotR play (`startbench --gfx-hash`: 149 816 745 words, hash d97d40d5, in every run of
+  the base and of each variant) and in RotWK play with (1) (`rotwk-short`'s start, play +20 to +40 s: 91 755 938 words).
+- Not faster. Instructions (perf stat, one process per variant): `effect-object-bench` 11.19-11.28 G → (1) 11.29-11.35 G,
+  (2) 11.49-11.50 G; `effect-pass-bench` 2.29-2.38 G → (1) 2.40-2.45 G, (2) 2.54 G. AotR play: user instructions per
+  frame outside the guest's code and the compilers 23.3 / 21.7 M (two base runs) → (1) 21.7 / 23.0 M, (2) 24.1 M — the
+  base's own spread (±1.6 M) is larger than the whole pass application; `BeginPass` 12.7-13.8 → 12.2-14.2 µs per call.
+  RotWK play (19 `BeginPass` per frame): 9.9 → (1) 11.4 M per frame, `BeginPass` 11.1 → 11.0 µs. (2)'s bookkeeping (a
+  changed-parameter list kept by every setter, the device's versions noted after every application) costs more than it
+  saves: a commit binds its shaders again anyway whenever the world matrix moved — nearly always —, and what it skips
+  is cheap. What `BeginPass` spends is the device's work (states `End` restored, constants and samplers other objects
+  changed), not the closure dispatch a plan removes.
+- Kept: the tools — `startbench --gfx-hash` (the recorder's command words hashed at every scenario mark: an API-layer
+  change compared word for word with its base on the same guest work) and `Math.random` seeded under `--virtual` (the
+  guest's random bytes — CryptGenRandom, RtlGenRandom, CoCreateGuid — made two unseeded runs of one tree differ from
+  the main menu on).
+- For measurements of this size: the V8 profile's and perf's attribution by file moves with V8's inlining from run to
+  run (d3dx9-effect.js 0.26 or 0.98 M instructions per frame in two runs of one tree, the rest in its callers), so
+  compare the API path as a whole, and in-process A/B (dbg switches) rather than separate runs.
+
 ## WebGL backend (src/gfx/d3d8-webgl.js, applyState)
 
 - The depth / stencil / blend / color mask / culling block is skipped while the render state table's version, the target's
