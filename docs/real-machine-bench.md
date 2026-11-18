@@ -466,6 +466,24 @@ percentiles of all their frames merged; the slow frames' time by cause (%); the 
 battery); one line per session (machine, build, tier, whether its end record arrived). `--from`, `--to`, `--session`,
 `--min-seconds` (60 s of visible play) apply.
 
+**Play only** (since 2026-11-18: the owner's worst minutes were a 24 fps intro video and frames spanning a hidden tab).
+Every figure above is the visible play's: each minute is classed first (`windowClass` in the report) — `hidden` (any
+hidden time in it: the frame back from a hidden tab spans it, up to hundreds of seconds), `video/loading` (under 1 frame
+a second, or fewer than 8 draws a frame: a movie at its own rate, ~2 draws a frame, every frame over 40 ms; a loading
+or still screen), `menu` (fewer than 50: a 2D screen), `play` (a 3D scene — a menu over a 3D backdrop as well: the draws
+cannot tell it). A Windows game's minutes are classed by the session's 0.5 s samples (its page sends both: visibility,
+draws per frame), a port's by its phase (`menu`, `loading`; OpenMW `world`). The other minutes are counted apart
+(`set apart: …`). A session with other minutes than play gets its play figures from its play minutes; a record keeps a
+minute's p50 / p90 / p99 / max, not its histogram, and no rebuilt histogram is faithful (the first version put each
+minute's frames at its percentiles: its p99 came out 1.5 to 7 times too high), so its frame-time percentiles come from
+its ~20 s summaries classed play (a Windows game: their histograms, exact over the play windows, `(summaries)`), else
+they are only bounded (`p99 ≤ x`: the worst play minute's — the union's quantile is at most its parts' largest), left
+out of the medians and of the merged frames. The classic
+report (without `--perf`) prints the same per session: its time by class, the visible play's figures (samples: rates,
+causes, JIT and GL program compiles; summaries: percentiles, GPU, draws), the hidden tab's effect (guest MIPS hidden vs
+visible and in the 10 s before hiding, frames presented while hidden), and any sample / summary / minute field it
+does not know as its mean over the play (a newer page's counters show up without a change here).
+
 ## Bench scenarios
 
 `tools/scenarios/bench/index.json` lists them: `name` (the link's `bench=`), `title`, `manifests` (versions it plays;
@@ -508,8 +526,9 @@ node tools/dev/telemetry-report.mjs /var/lib/private/orthros/telemetry --bench v
 
 Options: `--from` / `--to` (dates, inclusive: file names and the server's receipt time), `--session <id>`,
 `--game <manifest>`, `--min-seconds` (60), `--bench [name]`, `--json`. Per session: machine line (GPU, cores, memory,
-screen, Chrome version, OS, cross-origin isolation, WebGPU adapter), build, render mode, options; the stretches of the
-0.5 s samples (as before); the summaries merged per stretch (frame-time percentiles from the merged histograms, slow
+screen, Chrome version, OS, cross-origin isolation, WebGPU adapter), build, render mode, options; its time by window
+class and the visible play's figures, the hidden tab's effect ("Play only" above); the stretches of the 0.5 s samples
+(one class each); the summaries merged per stretch (frame-time percentiles from the merged histograms, slow
 frames per minute, draws and GL calls per frame, GPU time, render worker waits, the work by category and the slow
 frames' shares); the bench runs with their phases. Then per bench: one line per run (date, session, version,
 outcome, first launch, machine, build, render mode, display) and its phases side by side (fps, p99, > 33 ms per

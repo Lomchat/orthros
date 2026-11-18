@@ -334,7 +334,7 @@ test('--perf: sessions per game × GPU, medians, the worst minutes, slow frames\
   assert.deepEqual(fil.map((g) => g.gpu), ['Intel Iris Xe Graphics']);
   const text = formatPerf(groups);
   assert.match(text, /g1 \(goldsrc\) × Intel Iris Xe Graphics: 2 session\(s\), [\d.]+ min of visible play; 1 session\(s\) without a frame shown/);
-  assert.match(text, /worst minute: s1aaaa/);
+  assert.match(text, /worst play minute: s1aaaa/);
   assert.match(text, /slow frames' time by cause/);
   assert.equal(gpuLabel('ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)'), 'Apple M2');
   // (the classic per-session report keeps the page's own machine: a perf record of the same session does not replace it)
