@@ -12,7 +12,7 @@
 //
 // { <profile path, '/'-separated>: { <section; '' = the top of the file, before any header>: { <key>: <value> } } }
 
-import { setIni, bytesToText, textToBytes } from '../shared/ini.js';
+import { setIni, readIni, bytesToText, textToBytes } from '../shared/ini.js';
 import { profilePathOk } from './profile-moves.js';
 
 const MAX_FILES = 8, MAX_SECTIONS = 16, MAX_KEYS = 32;
@@ -48,6 +48,35 @@ export function newProfileIniProblem(spec) {
 /** Does a manifest's newProfileIni name the display mode (its sessions, and so its snapshots, differ by mode)? */
 export const profileIniUsesMode = (spec) => isObj(spec) && !newProfileIniProblem(spec)
   && Object.values(spec).some((sections) => Object.values(sections).some((keys) => Object.values(keys).some((v) => MODE.test(v))));
+
+/**
+ * The display mode a player's own settings name, [width, height], or null: the value of a newProfileIni key naming
+ * {modeWidth} and {modeHeight}, read back from the profile with the same pattern ("Resolution = {modeWidth}
+ * {modeHeight}" -> "Resolution = 2560 1440"). The machine then lists that mode even on a smaller screen (display-modes.js
+ * extraModes): a profile saved on a larger screen asks the game for it, and a game finding its saved mode missing from
+ * the list may fail to start (Age of the Ring did, 2026-11-18).
+ */
+export function profileIniMode(backend, spec) {
+  if (!isObj(spec) || newProfileIniProblem(spec)) return null;
+  for (const [file, sections] of Object.entries(spec)) {
+    for (const [section, keys] of Object.entries(sections)) {
+      for (const [key, value] of Object.entries(keys)) {
+        if (!value.includes('{modeWidth}') || !value.includes('{modeHeight}')) continue;
+        const st = backend.stat(file);
+        if (!st || st.isDir || st.size > 1 << 20) continue;
+        const have = readIni(bytesToText(backend.open(file).read(0, st.size))).get(section.toLowerCase())?.get(key.toLowerCase());
+        if (have === undefined) continue;
+        const order = [...value.matchAll(/\{mode(Width|Height)\}/g)].map((m) => m[1]);
+        const re = new RegExp('^' + value.split(/\{mode(?:Width|Height)\}/).map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ +/g, '\\s+')).join('(\\d{3,5})') + '$');
+        const m = re.exec(have.trim());
+        if (!m) continue;
+        const w = Number(m[1 + order.indexOf('Width')]), h = Number(m[1 + order.indexOf('Height')]);
+        if (w >= 320 && h >= 200 && w <= 7680 && h <= 4320) return [w, h];
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Sets a manifest's newProfileIni in the profile held at the root of `backend` (MemBackend: the page's profile). `mode`:

@@ -38,7 +38,7 @@ import { compatSummary } from '../core/compat-stats.js';
 import { SeedWatch, toBase64, fromBase64, seedPathOk } from '../shared/profile-seed.js';
 import { localeTag } from '../win32/locale.js';
 import { applyProfileMoves } from '../vfs/profile-moves.js';
-import { applyNewProfileIni } from '../vfs/profile-ini.js';
+import { applyNewProfileIni, profileIniMode } from '../vfs/profile-ini.js';
 import { parseMode } from '../win32/display-modes.js';
 import { flushProfileOpfs, profileDumpOf } from '../vfs/profile-opfs.js';
 import { LearnedHeat } from '../cpu/jit/heat.js';
@@ -395,6 +395,13 @@ async function start(m) {
   if (profileWasNew && manifest.newProfileIni) {
     const mode = parseMode(m.opts.displayMode), changed = applyNewProfileIni(profile, manifest.newProfileIni, { mode });
     if (changed.length) log('file', `profile: a new player's settings set (manifest newProfileIni${mode ? `, display mode ${mode.join('x')}` : ''}): ${changed.join(', ')}`);
+  }
+  // (the mode the player's settings name — a newProfileIni key naming the display mode, read back — listed by the
+  // machine even when this screen is smaller than the one it was chosen on: the game finds its saved mode, the page
+  // scales the picture down; display-modes.js extraModes)
+  if (manifest.newProfileIni) {
+    const own = profileIniMode(profile, manifest.newProfileIni);
+    if (own) { host.display.extraModes = [own]; log('file', `profile: display mode ${own.join('x')} from the player's settings listed`); }
   }
   // (the profile is the player's, kept across sessions: what the game sees of it from here is recorded — a snapshot
   // applies only to a profile as its machine saw it, docs/snapshot.md)
