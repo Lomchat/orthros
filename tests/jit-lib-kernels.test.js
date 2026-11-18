@@ -232,16 +232,18 @@ test('library kernels run inline: memcmp through an import stub and through call
 });
 function le32(v) { return [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24]; }
 
-// The string functions' kernels (_stricmp, tolower: the "C" locale, through _getptd — GetLastError, TlsGetValue,
-// SetLastError as the fast APIs run them) against the interpreter (on their path) and the JIT without kernels (always):
-// entered at the function (the kernel function), through an import stub and through `call [slot]` (run inline), the
-// DLL at its base and relocated. The APIs the dispatcher leaves to JavaScript (a parked call being resumed, a TLS index
-// past the TEB's slots, a thunk without its fast path) are emulated here. Randomized strings (letters of both cases,
-// shared prefixes, the bytes around the letters), a string in the frame the code writes or in the first 64 KiB, any
-// 32-bit tolower argument; registers, flags read after the call, the stack around the frame, the strings, the library's
-// data, the last error and the instructions compared; the kernel taken exactly on its path, inline after the first call.
-const STRING_KINDS = new Set(['stricmp', 'tolower']);
-test('library kernels: _stricmp and tolower against the interpreter, at their entry and run inline', { skip }, () => {
+// The string functions' kernels (_stricmp, tolower: the "C" locale; strtok; all through _getptd — GetLastError,
+// TlsGetValue, SetLastError as the fast APIs run them) against the interpreter (on their path) and the JIT without
+// kernels (always): entered at the function (the kernel function), through an import stub and through `call [slot]`
+// (run inline), the DLL at its base and relocated. The APIs the dispatcher leaves to JavaScript (a parked call being
+// resumed, a TLS index past the TEB's slots, a thunk without its fast path) are emulated here. Randomized strings
+// (letters of both cases, shared prefixes, the bytes around the letters; tokens and runs of delimiters, the search going
+// on from _token, the token's end over translated code), a string in the frame the code writes or in the first 64 KiB,
+// any 32-bit tolower argument; registers, flags read after the call, the stack around the frame, the strings, the
+// library's data, the last error, _token and the instructions compared; the kernel taken exactly on its path, inline
+// after the first call.
+const STRING_KINDS = new Set(['stricmp', 'tolower', 'strtok']);
+test('library kernels: _stricmp, tolower and strtok against the interpreter, at their entry and run inline', { skip }, () => {
   const img = new PeImage(new Uint8Array(fs.readFileSync(DLL)));
   const dataSec = img.sections.find((s) => s.name === '.data');
   const TEB = 0x00600000, PTD = 0x00610000, CALLER = 0x00500000, STUB = 0x00500100, SLOT = 0x00500200, n = depth(300, 60);
@@ -267,7 +269,7 @@ test('library kernels: _stricmp and tolower against the interpreter, at their en
     }
   };
   for (const def of LIB_KERNELS.filter((d) => STRING_KINDS.has(d.kind))) {
-    const argc = def.kind === 'stricmp' ? 2 : 1, k = def.k;
+    const argc = def.kind === 'tolower' ? 1 : 2, k = def.k;
     for (const [form, base, jitOpts] of [['entry', img.imageBase, {}], ['stub', 0x10000000, {}], ['call', img.imageBase, { chain: false }], ['entry', 0x10000000, { chain: false }]]) {
       const A = machine(img, base, null), D = machine(img, base, { ...jitOpts, libKernels: false });
       const B = machine(img, base, { ...jitOpts, libKernels: def.name, libInline: true, profile: true });
@@ -303,6 +305,26 @@ test('library kernels: _stricmp and tolower against the interpreter, at their en
           const bad = rnd(16);
           if (bad === 0) { c.args[rnd(2)] = S - 4 * (1 + rnd(10)); path = false; } // (in the frame the code writes)
           else if (bad === 1) { c.args[rnd(2)] = rnd(0x10000); path = false; } // (the null page: the exact way)
+        } else if (def.kind === 'strtok') {
+          // the control: a few delimiters (none now and then); the string: tokens and runs of delimiters
+          const ctl = [...new Set(Array.from({ length: rnd(8) ? 1 + rnd(5) : 0 }, () => (rnd(3) ? [0x20, 0x2c, 0x09, 0x3d, 0x3b, 0x0a, 0x0d][rnd(7)] : ch())))];
+          const str = Array.from({ length: rnd(5) ? rnd(30) : rnd(300) }, () => (ctl.length && rnd(3) === 0 ? ctl[rnd(ctl.length)] : ch()));
+          const o1 = rnd(16);
+          for (let j = 0; j < c.buf.length; j++) c.buf[j] = rnd(256);
+          c.buf.set([...str, 0], o1); c.buf.set([...ctl, 0], 0xc00);
+          // str null: the search goes on from _token (somewhere in the string, or null)
+          c.args = [rnd(4) ? BUF + o1 : 0, BUF + 0xc00]; c.token = rnd(8) ? BUF + o1 + rnd(str.length + 1) : 0;
+          if (!c.args[0] && !c.token) path = false;
+          const bad = rnd(16);
+          if (bad === 0) { c.args[rnd(2)] = S - 4 * (1 + rnd(19)); path = false; } // (in the frame the code writes)
+          else if (bad === 1) { c.args[1] = rnd(0x10000); path = false; } // (the null page: the exact way)
+          // translated code where the token's end is written now and then: the exact way when a delimiter ends it
+          c.code = rnd(12) === 0;
+          if (c.code && path) {
+            const set = new Set([...ctl, 0]), b = c.buf, at0 = (c.args[0] || c.token) - BUF;
+            let j = at0; while (set.has(b[j]) && b[j]) j++;
+            if (b[j]) { while (!set.has(b[j])) j++; if (b[j]) path = false; }
+          }
         } else c.args = [rnd(3) ? rnd(256) : rnd(2) ? r32() : [0x40, 0x41, 0x5a, 0x5b, -1, 0x80000000][rnd(6)]];
         for (const M of [A, B, D]) {
           const { mem, cpu } = M;
@@ -315,13 +337,19 @@ test('library kernels: _stricmp and tolower against the interpreter, at their en
           cpu.fsBase = TEB; mem.write32(TEB + 0x34, c.err); mem.fill(TEB + 0xe10, 0x100, 0); if (c.tls < 64) mem.write32(TEB + 0xe10 + 4 * c.tls, PTD);
           mem.write32(entry + k.tlsi, c.tls); mem.write32(cpu.base + ST.RESUMING, c.resuming);
           for (const [j, fid] of [[GLE, FAST.GetLastError], [TLS, FAST.TlsGetValue], [SLE, FAST.SetLastError]]) mem.u8[FAST_TABLE + j] = c.slow === j ? 0 : fid;
+          mem.write32(PTD + 0x18, c.token ?? 0);
+          if (M.jit) mem.u8[SMC_MAP_BASE + (BUF >>> 12)] = c.code ? SMC_CODE : 0;
         }
         const [ra, na] = runTo(A, 20000), [rb, nb] = runTo(B, 20000), [rd, nd] = runTo(D, 20000);
+        for (const M of [B, D]) M.mem.u8[SMC_MAP_BASE + (BUF >>> 12)] = 0;
         const what = `${def.name} (${form} @${base.toString(16)}, ${JSON.stringify(jitOpts)}) case ${i}: ${JSON.stringify({ ...c, garbage: undefined, buf: undefined })}`;
-        const sb = { ...snapshot(B, c, data), err: B.mem.read32(TEB + 0x34) };
-        assert.equal(rb, rd, what); assert.deepEqual(sb, { ...snapshot(D, c, data), err: D.mem.read32(TEB + 0x34) }, what); assert.equal(nb, nd, `${what}: instructions`);
+        const sb = { ...snapshot(B, c, data), err: B.mem.read32(TEB + 0x34), token: B.mem.read32(PTD + 0x18) };
+        // (strtok: the slot of _getptd's last return address, [S - 0x4c], which the translation's inline fast APIs never
+        // write — they push no return address — and the kernel writes as the interpreter does)
+        const hide = (x) => { if (def.kind !== 'strtok') return x; const o = 2 * (S - 0x4c - (c.esp - 0x100)); return { ...x, stack: x.stack.slice(0, o) + '-'.repeat(8) + x.stack.slice(o + 8) }; };
+        assert.equal(rb, rd, what); assert.deepEqual(hide(sb), hide({ ...snapshot(D, c, data), err: D.mem.read32(TEB + 0x34), token: D.mem.read32(PTD + 0x18) }), what); assert.equal(nb, nd, `${what}: instructions`);
         if (!path) { expectFallbacks++; continue; }
-        assert.equal(rb, ra, what); assert.deepEqual(sb, { ...snapshot(A, c, data), err: A.mem.read32(TEB + 0x34) }, what); assert.equal(nb, na, `${what}: instructions`);
+        assert.equal(rb, ra, what); assert.deepEqual(sb, { ...snapshot(A, c, data), err: A.mem.read32(TEB + 0x34), token: A.mem.read32(PTD + 0x18) }, what); assert.equal(nb, na, `${what}: instructions`);
         if (form !== 'entry' && i > 0) expectInline++;
       }
       assert.ok(B.jit.libLive?.has(entry), `${def.name}: recognised`);
