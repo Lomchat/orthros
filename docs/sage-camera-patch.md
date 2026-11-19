@@ -302,7 +302,8 @@ them too, for texels 9 % larger still; not done: that band is the game's own des
 Headless Chromium (SwiftShader, 1024x768, through the browser slots), the same steps in each run: the Harlindon start
 at the farthest zoom (20 s measured), 18 notches in (about 376 over the ground, 20 s measured), the farthest zoom again
 and the camera scrolled south in steps of one second of the down arrow, a screenshot after each (the screenshots and
-before/after crops are the shadow investigation's evidence of 2026-11-19 in `data/proof/`, its `fix/` folder):
+before/after crops are in `data/proof/sage-shadow-depth-2026-11-19/fix/`; the independent check's in `verify/`, the
+two frames of the owner's video in `owner-video/`):
 
 | Age of the Ring 10.0.2, Harlindon start | draws per frame | fps | render ms per frame |
 | --- | --- | --- | --- |
@@ -333,3 +334,12 @@ the same bytes and were not run.
 Caveat: a map without `cameraMaxHeight` in its WorldInfo keeps the INI's default maximum (the D112 patch only scales a
 value the map gives); there the factor reaches 1.5 at the map's own maximum height, a deeper (coarser) region than the
 game's at the top third of its zoom range, never less coverage.
+
+Installed in the five manifests on 2026-11-19 (restic snapshot a02611ea taken first). An independent review disassembled
+the five sites again and confirmed `from` (unique in each file), the moved `mov ecx,[edi+4]`, the x87 depth (4 at most,
+one register left as the original `fld`), dead `eax` / `xmm0` / flags after the site, no outside jump into the replaced
+range, and the reads of TheTacticalView and its +0x50 / +0x24d0 fields. A second independent browser check confirmed
+the farthest zoom (top rows shadowed with the patch, not without, same position) and the mid zoom (same shadow edges,
+draws 389.4 / 389.5 per frame). Not checked in a browser: the closest zoom (the factor is 1 there by construction,
+`used` = 1500 measured in Node at every height up to the map's own maximum), 16:9, continuous scrolling at the farthest
+zoom, RotWK 2.01, BFME II 1.09 and 1.06.
