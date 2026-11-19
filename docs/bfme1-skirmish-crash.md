@@ -105,6 +105,12 @@ the sentinel, no fault; the profile dialog, "Orthros" typed, the skirmish loaded
 written with the name. The manifest is part of the snapshot key (src/web/snapshot-key.js): adding the patch gives the
 three BFME1 versions new snapshots (the shared ones taken again by the snapshot jobs).
 
+**Installed 2026-11-19** with the owner's agreement, in `data/games/bfme1/manifest.json` `defaults.patches` (restic
+snapshot 67211443 taken first). Checked on the installed catalog: the server serves it to `bfme1-108` and `bfme-vanilla`.
+In Node `startbench` from a fresh profile (1.08: `bfme1-108-phases.txt`, 2.22: `bfme-phases.txt`, `--coords 800,600`),
+both runs logged `lotrbfme.exe+0x9f06b patched`, then went through the first SKIRMISH click and the profile dialog with
+no exception. 1.08 reached play and 2.22 its loading screen; both wrote `Skirmish.ini` with the name.
+
 ## Diagnostics kept
 
 - `tools/bench/startbench.mjs` prints the exit report of a failure exit (`process exit with code 666`, the exceptions
